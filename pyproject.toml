@@ -1,0 +1,38 @@
+[project]
+name = "codex-swap"
+version = "0.1.0"
+description = "Multi-account switcher for the Codex CLI — stores, probes, and rotates ChatGPT accounts"
+requires-python = ">=3.11"
+# 런타임 의존 없음. 프로브는 표준 라이브러리 subprocess + json 으로 app-server 와
+# 직접 NDJSON JSON-RPC 를 주고받는다. 이식하는 bash 판이 요구하던 jq · base64 · node
+# 는 전부 표준 라이브러리로 대체된다.
+dependencies = []
+
+[project.scripts]
+# 진입점은 이것 하나뿐이다. 호환 이름 `codex-account` 를 여기서 노출하면
+# `uv tool install` 이 dotfiles 가 소유한 ~/.local/bin/codex-account 심링크와 충돌해
+# 설치 자체가 실패한다 (uv 는 자신이 관리하지 않는 실행 파일을 덮지 않는다).
+# 그 이름은 마이그레이션이 끝날 때까지 dotfiles 가 계속 소유한다.
+codex-swap = "codex_swap.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_swap"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
