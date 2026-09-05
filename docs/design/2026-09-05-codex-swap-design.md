@@ -254,7 +254,7 @@ bash 는 `jq -r` 로 문자열화한 뒤 `^[0-9]+$` 로 판정한다. 초안에 
 
 ```python
 def accepts_pct(v):
-    if isinstance(v, bool):        # bool 이 int 하위타입이라 반드시 먼저 거른다
+    if isinstance(v, bool):  # bool 이 int 하위타입이라 반드시 먼저 거른다
         return None
     if isinstance(v, int):
         return v if v >= 0 else None
