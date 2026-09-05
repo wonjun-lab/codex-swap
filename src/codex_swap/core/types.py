@@ -16,10 +16,16 @@ class Usage:
     """한 계정의 사용량. bash 프로브가 뱉던 한 줄 JSON 과 같은 내용이다."""
 
     used_percent: int
+    """판단에 쓰이는 값. 두 창의 max 에 정수 게이트를 통과한 것만 여기 온다."""
+
     email: str | None = None
     plan_type: str | None = None
-    primary_percent: int | None = None
-    secondary_percent: int | None = None
+
+    # 아래 둘은 **표시용**이라 정수 게이트를 받지 않는다. bash 는 정수 판정을
+    # `usedPercent` 하나에만 걸고 창별 값은 그대로 싣는다. primary=50 · secondary=37.5
+    # 처럼 max 만 정수인 조합이 실제로 있으므로 float 을 받는다.
+    primary_percent: float | None = None
+    secondary_percent: float | None = None
     resets_at: int | None = None
     reached: bool = False
     """소진 여부.
