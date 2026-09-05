@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from codex_swap import __version__
@@ -72,6 +73,62 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
     dest.chmod(0o600)
     print(f"등록: {label} ({identity.email_of(dest) or '이메일 불명'})")
     return 0
+
+
+def cmd_add(
+    settings: config.Settings,
+    label: str,
+    *,
+    runner: Callable[[list[str], dict[str, str]], int] | None = None,
+) -> int:
+    """새 슬롯에 브라우저 로그인시킨다.
+
+    `adopt` 와 달리 자격증명을 **복사하지 않고** codex 에게 슬롯 홈으로 로그인시킨다.
+    그래서 이 명령만은 사용자 상호작용(브라우저)을 끼고 돈다.
+
+    `runner` 는 테스트가 갈아끼우는 자리다. 실제 로그인은 사람 없이는 재현할 수 없지만,
+    **무엇을 어떤 환경으로 부르는지**는 그것 없이도 고정할 수 있다 — 그 조립이 틀리면
+    자격증명이 엉뚱한 홈에 떨어지거나 wrapper 재귀가 생긴다.
+    """
+    if not store.label_syntax_ok(label):
+        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+    if store.slot_auth(settings, label).exists():
+        raise CliError(f"이미 있는 라벨이다: {label} (지우려면 remove)")
+
+    try:
+        codex_bin = discovery.resolve_codex_bin()
+    except Exception as exc:
+        raise CliError(f"codex 바이너리를 찾지 못했다: {exc}") from exc
+
+    paths.ensure_root(settings)
+    slot = store.slot_dir(settings, label)
+    slot.mkdir(mode=0o700, parents=True, exist_ok=True)
+    slot.chmod(0o700)
+
+    print(f"새 슬롯 '{label}' 에 로그인한다. 지금 활성 계정과 **다른** 계정으로 로그인하라.")
+
+    # `CODEX_ROTATE_SKIP=1` 이 없으면 이 로그인이 띄우는 codex 가 wrapper 를 거쳐 다시
+    # rotate 를 부르고, 그 rotate 가 지금 만들고 있는 슬롯을 후보로 본다. `CODEX_HOME` 이
+    # 슬롯을 가리키므로 rotate 의 홈 가드에도 걸리지만, 두 겹으로 막는다.
+    env = discovery.env_with_bin_dir(codex_bin)
+    env["CODEX_ROTATE_SKIP"] = "1"
+    env["CODEX_HOME"] = str(slot)
+
+    run = runner or _run_login
+    if run([str(codex_bin), "login"], env) != 0:
+        raise CliError("로그인 실패")
+
+    dest = store.slot_auth(settings, label)
+    if not dest.is_file():
+        raise CliError("로그인은 끝났는데 auth.json 이 생기지 않았다")
+    dest.chmod(0o600)
+    print(f"등록: {label} ({identity.email_of(dest) or '이메일 불명'})")
+    return 0
+
+
+def _run_login(argv: list[str], env: dict[str, str]) -> int:
+    """브라우저 로그인은 대화형이라 stdio 를 그대로 물려준다."""
+    return subprocess.call(argv, env=env)
 
 
 def cmd_list(settings: config.Settings) -> int:
@@ -239,7 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "adopt":
                 return cmd_adopt(settings, args.label)
             case "add":
-                raise CliError("add 는 아직 없다. `codex login` 후 adopt 를 쓴다.")
+                return cmd_add(settings, args.label)
             case "list" | "ls":
                 return cmd_list(settings)
             case "status":
