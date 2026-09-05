@@ -241,7 +241,8 @@ def test_a_switch_syncs_back_before_installing(env) -> None:
 
 def test_a_switch_leaves_a_ledger_line_without_credentials(env) -> None:
     s = two_accounts(env, 95, 1)
-    assert isinstance(rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)})), Switched)
+    d = rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)}))
+    assert isinstance(d, Switched)
     ledger = paths.log_path(s).read_text()
     assert "a -> b" in ledger
     assert "id_token" not in ledger and "eyJ" not in ledger
@@ -249,5 +250,6 @@ def test_a_switch_leaves_a_ledger_line_without_credentials(env) -> None:
 
 def test_a_switch_invalidates_the_cache(env) -> None:
     s = two_accounts(env, 95, 1)
-    assert isinstance(rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)})), Switched)
+    d = rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)}))
+    assert isinstance(d, Switched)
     assert not paths.cache_path(s).exists()
