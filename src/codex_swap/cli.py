@@ -1,19 +1,188 @@
-"""CLI adapter.
+"""CLI 어댑터.
 
-이 층은 서식과 exit code 만 다룬다. 판단은 전부 core 가 하고, 여기서는 그 결과를
-사람이 읽을 문자열로 옮긴다. bash 판에서 정책과 출력이 섞여 있던 것을 가르는 것이
-이 이관의 목적 중 하나다.
+이 층은 서식과 exit code 만 다룬다. 판단은 전부 core 가 하고, 여기서는 그 결과를 사람이
+읽을 문자열로 옮긴다. bash 에서 정책과 출력이 한 함수에 섞여 있던 것을 가르는 것이 이
+이관의 목적 중 하나다.
+
+`rotate` 만은 출력 규율이 특별하다 (계약 2 · 설계문 §5.1). wrapper 가 매 codex 호출마다
+이 명령을 부르고 **stdout 만** 버리므로, stderr 로 나가는 것은 전부 사용자 화면에 실린다.
+그래서 rotate 는 stdout 을 비우고 stderr 에는 전환이 실제로 일어났을 때만 한 줄 쓴다.
 """
 
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from collections.abc import Sequence
+from typing import Any
 
 from codex_swap import __version__
+from codex_swap.core import cache, config, discovery, identity, paths, probe, rotate, store
+from codex_swap.core.types import ProbeOutcome, Switched, Usage, decision_exit_code
 
-COMMANDS = ("adopt", "add", "list", "status", "use", "rotate", "remove", "clean")
+
+class CliError(Exception):
+    """사용자에게 보여줄 실패. stderr 한 줄로 나가고 exit 1 이다."""
+
+
+# ── 서식 ─────────────────────────────────────────────────────────────────────
+
+
+def _opt(v: object) -> str:
+    """bash 의 `// "-"` — 없는 값은 대시로 보인다."""
+    return "-" if v is None else str(v)
+
+
+def _usage_line(u: Usage) -> str:
+    return (
+        f"사용량: {u.used_percent}% "
+        f"(primary {_opt(u.primary_percent)}%, secondary {_opt(u.secondary_percent)}%) "
+        f"· plan {_opt(u.plan_type)} · reset {_opt(u.resets_at)}"
+    )
+
+
+def _usage_from_cache(d: dict[str, Any]) -> Usage:
+    return Usage(
+        used_percent=int(d["usedPercent"]),
+        email=d.get("email"),
+        plan_type=d.get("planType"),
+        primary_percent=d.get("primaryPercent"),
+        secondary_percent=d.get("secondaryPercent"),
+        resets_at=d.get("resetsAt"),
+        reached=bool(d.get("reached")),
+    )
+
+
+# ── 명령 ─────────────────────────────────────────────────────────────────────
+
+
+def cmd_adopt(settings: config.Settings, label: str) -> int:
+    if not store.label_syntax_ok(label):
+        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+    live = store.active_auth(settings)
+    if not live.is_file():
+        raise CliError(f"로그인 상태가 아니다 ({live} 없음)")
+    paths.ensure_root(settings)
+    slot = store.slot_dir(settings, label)
+    slot.mkdir(mode=0o700, parents=True, exist_ok=True)
+    slot.chmod(0o700)
+    dest = store.slot_auth(settings, label)
+    shutil.copy2(live, dest)
+    dest.chmod(0o600)
+    print(f"등록: {label} ({identity.email_of(dest) or '이메일 불명'})")
+    return 0
+
+
+def cmd_list(settings: config.Settings) -> int:
+    labels = store.labels(settings)
+    if not labels:
+        print("등록된 계정이 없다. 먼저: codex-swap adopt <label>")
+        return 0
+    active = store.active_label(settings)
+    print(f"{'':<3} {'LABEL':<14} {'EMAIL':<34} USED")
+    for label in labels:
+        email = identity.email_of(store.slot_auth(settings, label)) or "?"
+        cached = cache.read(settings, label)
+        used = f"{cached['usedPercent']}%" if cached and "usedPercent" in cached else "?"
+        print(f"{'*' if label == active else ' ':<3} {label:<14} {email:<34} {used}")
+    print()
+    ladder = ",".join(str(x) for x in settings.ladder)
+    print(
+        f"사다리 {ladder} · 마진 {settings.margin}%p · "
+        f"캐시 {settings.cache_ttl}s · 쿨다운 {settings.cooldown}s"
+    )
+    if settings.off_switch.exists():
+        print(f"자동 전환: 꺼짐 ({settings.off_switch})")
+    return 0
+
+
+def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
+    active = store.active_label(settings)
+    if active is None:
+        email = identity.email_of(store.active_auth(settings)) or "로그인 안 됨"
+        print(f"활성 계정: {email} (슬롯 미등록)")
+    else:
+        print(f"활성 계정: {active}")
+
+    if not fresh and active is not None:
+        cached = cache.read(settings, active)
+        if cached is not None and "usedPercent" in cached:
+            print(_usage_line(_usage_from_cache(cached)))
+            return 0
+
+    # 활성이 어느 슬롯에도 없으면 홈을 직접 고른다. bash 는 이 경우 가짜 라벨
+    # `__active__` 를 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌리는데,
+    # 자격증명은 실제로 기본 홈에 있으므로 그 파생은 결함이다 (설계문 §7.5 D3).
+    home = settings.default_home if active is None else store.slot_dir(settings, active)
+    try:
+        result = probe.probe(str(discovery.resolve_codex_bin()), str(home))
+    except Exception:
+        # 조회 실패는 한 줄로만 알린다. bash 도 프로브의 모든 비인증 실패를 이 한 줄로
+        # 접는다 — 사용자에게 유용한 것은 "왜 실패했는가" 가 아니라 "지금 모른다" 다.
+        print("사용량: 조회 실패")
+        return 1
+    if result.outcome is ProbeOutcome.OK and result.usage is not None:
+        print(_usage_line(result.usage))
+        return 0
+    print("사용량: 조회 실패")
+    return 1
+
+
+def cmd_use(settings: config.Settings, label: str) -> int:
+    if not store.label_syntax_ok(label):
+        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+    with store.switch_lock(settings):
+        store.switch(settings, label, "manual")
+    print(
+        f"전환했다: {label}. "
+        "떠 있는 브로커는 옛 토큰을 들고 있으니 다음 프롬프트에서 자동 재시작된다."
+    )
+    return 0
+
+
+def cmd_remove(settings: config.Settings, label: str) -> int:
+    if not store.label_syntax_ok(label):
+        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+    target = store.slot_dir(settings, label)
+    if not target.is_dir() or target.is_symlink():
+        raise CliError(f"없는 라벨이다: {label}")
+    shutil.rmtree(target)
+    print(f"삭제: {label}")
+    return 0
+
+
+def cmd_clean(settings: config.Settings) -> int:
+    """슬롯의 프로브 부산물을 지운다. `auth.json` 은 보존한다."""
+    for label in store.labels(settings):
+        for entry in store.slot_dir(settings, label).iterdir():
+            if entry.name == "auth.json":
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+    cache.clear(settings)
+    print("슬롯의 프로브 부산물을 지웠다 (auth.json 은 보존).")
+    return 0
+
+
+def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
+    """정책 실행. 평상시에는 **아무것도 출력하지 않는다.**"""
+    decision = rotate.rotate(settings, dry_run=dry_run)
+    origin = decision.from_label or "(로그아웃)" if isinstance(decision, Switched) else ""
+    if dry_run:
+        if isinstance(decision, Switched):
+            print(f"would switch: {origin} -> {decision.to_label} [{decision.reason}]")
+        else:
+            print(f"no switch: {decision.reason}")
+    elif isinstance(decision, Switched):
+        # 전환이 실제로 일어난 경우에만 한 줄. 이 줄은 사용자 터미널에 그대로 실린다.
+        print(f"codex-swap: {origin} -> {decision.to_label}", file=sys.stderr)
+    return decision_exit_code(decision)
+
+
+# ── 진입점 ───────────────────────────────────────────────────────────────────
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,7 +214,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("label")
 
     sub.add_parser("clean", help="슬롯의 프로브 부산물 정리")
-
     return parser
 
 
@@ -55,7 +223,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
-    raise NotImplementedError(f"{args.command} is not wired up yet")
+
+    try:
+        settings = config.load()
+    except config.ConfigError as exc:
+        # rotate 는 fail-open 이다. 설정이 깨졌다고 여기서 시끄럽게 죽으면 그 출력이
+        # 매 codex 호출에 실린다 — 조용히 무동작으로 끝낸다.
+        if args.command == "rotate":
+            return 1
+        print(f"codex-swap: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        match args.command:
+            case "adopt":
+                return cmd_adopt(settings, args.label)
+            case "add":
+                raise CliError("add 는 아직 없다. `codex login` 후 adopt 를 쓴다.")
+            case "list" | "ls":
+                return cmd_list(settings)
+            case "status":
+                return cmd_status(settings, fresh=args.fresh)
+            case "use" | "switch":
+                return cmd_use(settings, args.label)
+            case "rotate":
+                return cmd_rotate(settings, dry_run=args.dry_run)
+            case "remove" | "rm":
+                return cmd_remove(settings, args.label)
+            case "clean":
+                return cmd_clean(settings)
+            case _:
+                raise CliError(f"모르는 명령: {args.command}")
+    except CliError as exc:
+        print(f"codex-swap: {exc}", file=sys.stderr)
+        return 1
+    except (store.StoreError, store.LockBusy, store.LockUnusable) as exc:
+        print(f"codex-swap: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover
