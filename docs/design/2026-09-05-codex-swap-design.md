@@ -49,9 +49,21 @@ node 가 필요해서가 아니다. `.mjs` 가 하는 일은 `spawn(codexBin, ["
 | bash | 문제 | Python |
 | --- | --- | --- |
 | `find -newermt` | BSD 에 없다. 락 stale 판정이 macOS 에서 항상 참이 되어 정상 락도 회수한다 | `stat` 비교 |
-| `find -mmin` 폴백 | `(window+59)/60` 정수 나눗셈이 61 초를 2 분으로 올림 | 초 단위 그대로 |
 | `date -Iseconds` | BSD 와 출력이 다르다 | `datetime` |
 | `sort -rV` | 버전 정렬. 단순 문자열 역정렬은 v9 를 v20 보다 앞에 둔다 | 튜플 비교 |
+
+### 2.3.1 busy 창은 이식성 문제가 아니라 패리티 선택이다
+
+처음에 `find -mmin` 폴백을 "BSD 전용 결함" 으로 적었는데 **틀렸다.** 폴백은 첫
+`-newermt` 결과가 비면 **무조건** 실행되고 GNU find 도 `-mmin` 을 지원한다. 그래서
+Linux 에서도 실효 busy 창은 언제나 둘 중 거친 쪽 — `ceil(window/60)*60` 초다.
+
+초 단위로 구현하면 `window=100` · 나이 110 초에서 bash 는 busy(전환 차단), Python 은
+not-busy(전환)로 갈려 §7.3 차등이 이 축에서 **상시** 불일치한다. 그래서 선택해야 한다.
+
+**결정: 패리티를 택한다.** `effective_window = ceil(window / 60) * 60`. 차등 테스트가
+살아 있는 동안 이 축에서 잡음이 나면 안 되기 때문이다. bash 를 제거하는 PR 에서
+초 단위로 좁히고, 그때 이 문단을 지운다.
 
 ## 3. 확정된 결정
 
@@ -91,7 +103,7 @@ codex_swap/
 | # | 계약 | 깨지면 |
 | --- | --- | --- |
 | 1 | 활성 계정은 `~/.codex/auth.json` 의 email 로만 판정. 별도 상태 필드 없음 | 사용자가 직접 `codex login` 하면 표식과 실제가 어긋난다 |
-| 2 | fail-open — 어떤 실패도 원래 호출을 막지 않는다 | wrapper 안에서 죽으면 `codex` 자체가 죽는다 |
+| 2 | **출력 규율** — rotate 경로는 stdout 을 비우고, stderr 에는 의도된 한 줄 통지만 쓴다 | §5.1 |
 | 3 | 프로브 exit 3(인증실패) ↔ 1(기타) 구분 | 전환이 가장 절실한 순간(토큰 사망)에 스위처가 손을 놓는다 |
 | 4 | 슬롯 디렉토리를 프로브용 `CODEX_HOME` 으로 재사용 | 보관 토큰이 갱신되지 않아 썩는다 |
 | 5 | 떠나기 전 현재 자격증명을 자기 슬롯에 되쓴다 | 돌아올 때 만료 토큰을 집는다 |
@@ -100,6 +112,35 @@ codex_swap/
 | 8 | 디렉토리 0700 · 자격증명 0600 | 자격증명 노출 |
 | 9 | 소진·인증실패면 사다리·마진·쿨다운·busy 를 **전부** 건너뛴다 | 양쪽에 여유가 남았는데 전부 막힌 채 끝난다 |
 | 10 | 로그아웃 복구는 사다리 밖 경로이며 슬롯 1 개로도 성립한다 | `codex login` 이 중간에 끊기면 손으로 고칠 때까지 401 이 계속된다 |
+| 11 | **`.last-check` 스탬프는 판단 *전에* 찍는다** | §5.2 |
+| 12 | **`auth.json` 의 mtime 을 보존한다** (`cp -p` 동치) | §5.3 |
+| 13 | **`CODEX_HOME` 가드는 물리 경로 비교** | 문자열 비교하면 `/home/x/.codex/` 처럼 슬래시 하나로 가드가 뚫린다 |
+
+### 5.1 계약 2 — 처음 적은 근거가 틀렸다
+
+초안에 "wrapper 안에서 죽으면 codex 자체가 죽는다" 고 적었다. **HEAD 에서 거짓이다.**
+`codex.sh` 는 라이브러리를 source 하지 않고 CLI 를 **자식 프로세스로** 띄운 뒤
+`|| true` 로 결과를 버린다. 우리가 죽어도 codex 는 산다.
+
+진짜 이유는 다른 데 있다. wrapper 는 `rotate > /dev/null` 로 **stdout 만** 버리고
+**stderr 는 사용자 터미널로 그대로 흘린다.** 그래서 stderr 는 매 codex 호출에 노출되는
+채널이고, 자격증명을 다루는 코드가 여기에 트레이스백을 뱉으면 토큰이 화면에 실린다.
+
+따라서 계약은 이렇게 다시 쓴다 — rotate 진입점은 **어떤 예외도 밖으로 내보내지 않고**
+0/1 로만 끝나며, stderr 에는 의도된 두 줄(로그아웃 복구 통지, 전환 통지)만 쓴다.
+
+### 5.2 계약 11 — 스탬프는 성공 경로가 아니라 진입 직후
+
+`.last-check` 는 `CODEX_HOME` 가드 직후, **로그아웃 복구보다도 먼저** 찍힌다. 판단 결과와
+무관하다. 이것을 성공 경로로 옮기면 실패가 반복될 때 스로틀이 걸리지 않아 매 codex
+호출이 프로브를 돈다. `--dry-run` 은 읽기와 쓰기를 **둘 다** 건너뛴다.
+
+### 5.3 계약 12 — mtime 이 뒤로 갈 수 있다
+
+`cp -p` + `mv -f` 라 대상이 원본 슬롯의 mtime 을 물려받는다. 즉 전환이
+`~/.codex/auth.json` 의 mtime 을 **과거로** 되돌릴 수 있다. Claude 훅이 낡은 broker 를
+판정할 때 이 mtime 을 쓰므로, 새 바이트를 쓰는 순진한 구현(`shutil.copy`·`write_bytes`)은
+훅의 판정을 바꾼다. `shutil.copy2` 또는 명시적 `os.utime` 을 쓴다.
 
 ## 6. 이관에서 틀리기 쉬운 지점
 
@@ -115,6 +156,40 @@ bash `:=` 와 `:-` 는 **미설정뿐 아니라 빈 문자열도** 기본값으�
 
 `CODEX_ROTATE_SKIP` 은 불리언이 아니라 **비어 있지 않음**이다. `CODEX_ROTATE_SKIP=0` 은
 bash 에서 회전을 **끈다**. 일반적인 불리언 파서는 이를 false 로 읽는다.
+
+숫자 노브는 bash 가 **파싱하지 않는다** — `(( ))` 안에 그대로 보간한다. 그래서 값이
+숫자가 아니면 bash 는 그것을 **변수 이름으로** 해석하고, `set -u` 아래서는 unbound
+variable 로 프로세스가 죽는다. 어느 노브가 먼저 터지는지는 어떤 가드가 먼저 단락되는지에
+달려 있고, 일부는 명령 치환 안에서 죽어 **서브셸만** 죽고 rotate 는 0 으로 전환까지 한다.
+
+이 동작을 흉내내지 않는다. `config.py` 에 파서 하나를 두고, 미설정·빈 문자열은 기본값,
+그 밖에 숫자가 아니면 예외를 올려 `rotate.py` 의 fail-open 경계에서 "전환 안 함" 으로
+접는다. 대신 §7.3 차등에서 이 축은 **제외**한다 — bash 쪽 결과가 {전환됨, 조용한 rc=1,
+중단된 rc=1, rc=0 인데 stderr 에 진단} 으로 갈려 비교 대상이 되지 않는다.
+
+### 6.1.1 `~/.codex/.env` 가 실제 설정 채널이다
+
+wrapper 가 rotate 를 부르기 전에 `set -a`(자동 export)로 이 파일을 source 한다. 이 기기에
+실제로 존재한다(mode 600). 즉 사다리·마진·SKIP 을 여기서 설정할 수 있다.
+
+경로마다 보이는 설정이 다르다.
+
+| 호출 경로 | `.env` 를 보나 |
+| --- | --- |
+| 터미널에서 `codex` — `~/.local/bin/codex` 가 `codex.sh` 심링크다 | **본다** |
+| wrapper 가 부르는 rotate | **본다** |
+| 터미널에서 `codex-account` 직접 | 안 본다 |
+| Claude 훅 (`SessionStart`) | 안 본다 |
+
+그래서 `.env` 의 `CODEX_ROTATE_SKIP=1` 은 codex 경유 회전은 막지만 훅의 회전은 못 막는다.
+
+`config.py` 는 `.env` 를 읽지 **않는다.** wrapper 가 살아 있는 동안 변수는 이미 export 되어
+도착하고, 여기서 읽으면 오늘 `.env` 를 보지 못하는 두 경로(훅·직접 호출)에서 **새로**
+유효해진다 — 그건 이관이 아니라 동작 변경이다. wrapper 를 걷어내는 PR 에서 결정한다.
+
+> 부수 효과 하나: `codex.sh` 는 `set -euo pipefail` 이라 `.env` 의 마지막 명령이 non-zero 면
+> wrapper 가 거기서 죽는다. 즉 `.env` 는 fail-**closed** 다 — 라이브러리의 fail-open 이
+> 시작되기도 전이다.
 
 ### 6.2 프로브의 PATH 보정 (검증됨)
 
@@ -170,13 +245,55 @@ Python 이 stderr 의 `401` 이나 exit 127 을 인증 실패로 분류하면, b
 
 ### 6.4 JSON 값의 수용 범위
 
-bash 는 `jq -r` 로 문자열화한 뒤 숫자 정규식으로 판정한다. 그래서 숫자 `95` 와 문자열
-`"95"` 를 **둘 다** 받고 float·음수·boolean 을 거부한다.
+bash 는 `jq -r` 로 문자열화한 뒤 `^[0-9]+$` 로 판정한다. 초안에 "float·음수·boolean 을
+거부한다" 고 적었는데 **float 부분이 틀렸다.** jq 는 정수값 double 을 소수점 없이
+렌더링하므로 `usedPercent: 4.0` 은 `"4"` 가 되어 **통과한다.** 문자열 `"95"` 도 통과한다.
+실제로 거부되는 것은 비정수 실수·음수·boolean 이다.
 
-Python 에서 `isinstance(x, int)` 는 `bool` 이 `int` 의 하위 타입이라 `True` 를 통과시킨다.
-`jq` 의 `// empty` 는 missing·null·**false** 를 접지만 `0` 은 `"0"` 으로 남긴다.
-`reached: 0` 은 bash 에서 non-empty 라 소진으로 처리되지만 `if payload.get("reached")` 는
-false 로 처리한다.
+수용 판정을 하나로 만든다.
+
+```python
+def accepts_pct(v):
+    if isinstance(v, bool):        # bool 이 int 하위타입이라 반드시 먼저 거른다
+        return None
+    if isinstance(v, int):
+        return v if v >= 0 else None
+    if isinstance(v, float):
+        return int(v) if v.is_integer() and v >= 0 else None
+    if isinstance(v, str):
+        return int(v) if v.isdigit() else None
+    return None
+```
+
+`re.fullmatch(r'[0-9]+', str(v))` 로 쓰면 안 된다 — `str(4.0)` 은 `'4.0'` 이라 bash 가
+통과시키는 값에서 실패한다.
+
+`reached` 는 다른 술어다. `jq` 의 `// empty` 는 missing·null·**false** 를 접지만 `0` 은
+`"0"` 으로 남긴다. 그래서 `reached: 0` 은 bash 에서 non-empty → **소진으로 처리**된다.
+`if payload.get("reached")` 는 false 로, `is not None` 은 `reached: false` 를 참으로
+처리한다. 둘 다 틀린다.
+
+프로브의 `error` 게이트도 키 존재가 아니라 **JS 진리값**이다. `error: null`·`false`·`0`·`""`
+는 전부 성공 경로로 흐르고, `error: {}` 와 `error: []` 는 오류로 잡힌다. `if 'error' in msg`
+는 네 경우를 뒤집는다.
+
+### 6.4.1 캐시는 3-상태이고 음성 캐싱이 없다
+
+`codex_account_usage` 는 0 / 1 / 3 을 돌려주는데, rc=3(인증실패) 반환이 캐시 쓰기보다
+**앞에** 있다. 그래서 인증 실패는 **절대 캐시되지 않는다.** 마찬가지로 캐시 HIT 는 구조상
+rc=3 을 낼 수 없다 — 히트 경로가 프로브를 띄우기 전에 반환한다.
+
+따라서 **죽은 토큰이 최대 한 TTL(기본 300 초) 동안 가려진다.** 이건 결함이 아니라 정해진
+지연 예산이다. 히트할 때 재검증하거나 결과 variant 를 캐시에 함께 넣어 "개선" 하면 안 된다.
+
+프로브 결과는 불리언이 아니라 3-variant 타입으로 모델링한다.
+
+```
+Ok(Usage) | AuthFailed | Unknown
+```
+
+`cache.py` 는 `Ok` 만 저장한다. `rotate.py` 는 이 enum 만 보고 분기하며 원시 exit code 를
+보지 않는다.
 
 ### 6.5 라벨 순서와 이메일 중복
 
@@ -189,14 +306,35 @@ false 로 처리한다.
 dotfiles PR #75·#76 에서 확정한 계약을 그대로 재현한다.
 
 ```
-단일 경로 요소:  ^[A-Za-z0-9_][A-Za-z0-9._-]*$
-길이:            <= 64
-슬롯이 심링크:   거부
+단일 경로 요소:      ^[A-Za-z0-9_][A-Za-z0-9._-]*$
+길이:                <= 64
+슬롯이 심링크:       거부
+슬롯 안 auth.json:   realpath 가 루트 밖이면 거부   ← bash 에 아직 없다
 ```
 
 **사용자 인자와 디스크 열거 양쪽에 적용한다.** #75 는 인자만 막았는데, 열거 경로로
 심링크 슬롯이 들어와 `use` 는 거부하는 것을 `rotate` 가 골랐다(실측: 루트 밖 자격증명으로
 실제 전환). 개행이 든 디렉토리 이름은 라벨 하나를 둘로 갈랐다.
+
+네 번째 줄은 bash 에 아직 없는 항목이다. 현재 심링크 가드는 `$root/$label` 만 보므로,
+**진짜 디렉토리**인 슬롯 안의 `auth.json` 이 바깥을 가리키는 심링크면 통과한다. Python
+판은 슬롯을 연 뒤 `os.path.realpath(root/label/'auth.json')` 이 루트 안인지 확인한다.
+
+> 이건 의도된 divergence다. bash 에 백포트할지는 §7.5 에서 정한다.
+
+### 6.7 라벨 검증은 로케일에 걸려 있다
+
+bash 의 `[[ $label =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]` 는 glibc 로케일 정렬을 쓴다.
+`LC_ALL=C` 가 아닌 보통의 UTF-8 로케일에서 `A-Za-z` 범위가 ASCII 밖 문자까지 포함할 수
+있어, 한글이 든 라벨이 **통과**할 수 있다. `LC_ALL=C` 에서는 거부된다.
+
+Python 의 `re` 는 이 문자 클래스를 항상 ASCII 로만 해석한다. 따라서 ASCII 전용 포트는
+**bash 의 `LC_ALL=C` 가지를 영구화**한다. 이미 비-ASCII 라벨로 등록된 슬롯이 있으면
+목록에서 사라지고 자동 전환 후보에서 빠진다 — 자격증명이 조용히 접근 불가가 된다.
+
+**결정: ASCII 전용을 유지하되, 설치 전 preflight 를 제공한다.** `codex-swap doctor` 가
+검증을 통과하지 못하는 기존 슬롯을 읽기 전용으로 보고한다. 현재 이 기기의 라벨은
+`master`·`shared` 라 해당 없다.
 
 ## 7. 병행 운용
 
@@ -250,6 +388,24 @@ Error(reason)           우리 잘못
 
 `NoOp` 과 `Indeterminate` 를 가르지 않으면 차등 비교가 무의미해진다.
 
+### 7.5 의도된 divergence — bash 의 결함은 옮기지 않는다
+
+차등 테스트가 이것들을 불일치로 잡을 것이므로, **미리 이름을 붙여 예외 목록에 둔다.**
+이름 없는 divergence 는 버그와 구별되지 않는다.
+
+| # | bash 의 동작 | Python | 왜 안 옮기나 |
+| --- | --- | --- | --- |
+| D1 | `switch` 의 `trap … RETURN` 은 함수 스코프가 아니라 호출자 반환 때 **다시 발화**한다 | try/finally 로 **정확히 한 번** 해제 | 남의 락을 지우는 경로다 |
+| D2 | `.lock` 이 디렉토리가 **아니면**(0바이트 파일·깨진 심링크) stale 판정 자체가 안 돌아 **영구 교착**. 복구 경로가 코드에 없다 | 디렉토리 아님을 3번째 갈래로 잡아 `Error(reason)` 로 보고 | 사람이 손으로 지울 때까지 자동 전환이 죽는다 |
+| D3 | `status` 는 활성이 어느 슬롯에도 없으면 가짜 라벨 `__active__` 를 그대로 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌린다 | `label: str \| None` 로 시그니처를 나누고, `None` 이면 home 을 `~/.codex` 로 | 자격증명은 실제로 거기 있다. 파생 경로가 결함이다 |
+| D4 | 슬롯 안 `auth.json` 이 바깥을 가리키는 심링크면 통과 (§6.6) | realpath 봉쇄 | #75·#76 이 닫은 구멍과 같은 종류다 |
+| D5 | `codex_account_cache_write` 는 루트를 만들 때 `chmod 700` 을 하지 않는다 (`ensure_root` 만 한다). rotate 가 먼저 돌면 루트가 umask 모드로 생긴다 | `paths.ensure_root()` 하나를 모든 생성 경로가 지나게 한다 | 자격증명 디렉토리가 0755 로 생길 수 있다 |
+
+반대로 **옮겨야 하는** 것도 하나 못박아 둔다. 전환 실패는 롤백되지 않는다 — sync-back 이
+install 보다 먼저 돌고 되돌려지지 않으므로, install 이 실패해도 떠나려던 슬롯은 **이미
+갱신돼 있다.** 이건 결함이 아니라 올바른 동작이다(그 바이트가 최신 토큰이다). prepare/commit
+으로 감싸서 롤백하면 오히려 토큰을 잃는다. 두 효과는 **독립적으로 커밋**된다.
+
 ## 8. 바이너리 해석
 
 | 호출 경로 | `CODEX_ACCOUNT_BIN` | discovery 필요 |
@@ -268,9 +424,13 @@ nvm 버전 역정렬. wrapper 재귀 가드(shebang 검사 후 8KB marker grep)�
 | --- | --- | --- |
 | throttle 히트 (평상시) | ~0.01 s | ~0.08 s |
 
-이 비용은 `codex` 프로세스 스폰마다, 그리고 Claude 세션 시작마다 실린다. 프롬프트마다가
-아니다 — 훅은 `SessionStart` 에 등록돼 있다. 70 ms 증가는 감당 가능하며, 핫패스 때문에
-bash 를 남길 이유는 없다.
+이 비용은 **`login`·`logout`·`mcp-server` 를 제외한** `codex` 프로세스 스폰마다, 그리고
+Claude 세션 시작마다 실린다. 프롬프트마다가 아니다 — 훅은 `SessionStart` 에 등록돼 있다.
+70 ms 증가는 감당 가능하며, 핫패스 때문에 bash 를 남길 이유는 없다.
+
+wrapper 의 제외 목록은 spec 이 기술하는 **모든** 게이트보다 앞선 첫 관문이다. 그리고
+그 분기에는 `-x "$script_dir/codex-account"` 검사가 함께 걸려 있어, 실행 권한이 빠지면
+자동 전환이 **조용히** 꺼진다. `install.sh` 가 링크와 `chmod +x` 를 함께 거는 이유다.
 
 ## 10. 범위 밖
 
