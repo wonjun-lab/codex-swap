@@ -269,3 +269,101 @@ def test_the_ladder_can_return_to_a_non_preset_value(env, monkeypatch) -> None:
         view = tui.adjust_policy(view, +1)
         ring.append(view.settings.ladder)
     assert (11, 22, 33) in ring[1:], "원래 값으로 못 돌아온다"
+
+
+# ── 사용량은 항상 보인다 ─────────────────────────────────────────────────────
+#
+# `?` 하나가 세 가지 다른 사정을 덮고 있었다 — TTL(기본 300 초) 만료, 전환 직후의 캐시
+# 삭제, 그리고 활성이 사다리 첫 칸 아래라 rotate 가 후보를 아예 조회하지 않은 경우.
+# 사용자에게는 셋이 구별되지 않아 "토큰이 끊겼나" 로 읽힌다. 아래가 그 세 경로다.
+
+
+def _cache_usage(s: config.Settings, label: str, pct: int, *, age: int = 0) -> None:
+    """캐시에 사용량 하나를 심는다. `age` 초만큼 과거로 찍는다."""
+    from codex_swap.core import cache
+
+    cache.write(s, label, {"usedPercent": pct, "resetsAt": None}, now=_now() - age)
+
+
+def _now() -> int:
+    import time
+
+    return int(time.time())
+
+
+def test_a_fresh_cached_usage_is_shown_plain(env) -> None:
+    _cache_usage(env, "master", 38)
+    row = next(r for r in tui.build_view(env).rows if r.label == "master")
+    assert (row.used, row.known, row.stale) == ("38%", True, False)
+
+
+def test_an_expired_cache_still_shows_the_number_marked_stale(env) -> None:
+    """TTL 이 지났다고 화면이 물음표가 되면 안 된다.
+
+    지난 값은 "읽지 못했다" 가 아니라 "5 분 지났다" 다. 낡았다고 표시하며 보여 주는
+    편이 언제나 낫다 — 물음표는 사용자에게 계정이 끊긴 것으로 보인다.
+    """
+    _cache_usage(env, "master", 38, age=env.cache_ttl + 10)
+    row = next(r for r in tui.build_view(env).rows if r.label == "master")
+    assert (row.used, row.known, row.stale) == ("~38%", True, True)
+
+
+def test_a_switch_wipes_the_cache_but_the_screen_keeps_the_numbers(env) -> None:
+    """전환은 캐시를 파일째 지운다(정책 쪽의 옳은 동작). 화면은 직전 값을 이어받는다."""
+    _cache_usage(env, "master", 38)
+    _cache_usage(env, "shared", 70)
+    before = tui.build_view(env)
+    assert [r.used for r in before.rows] == ["38%", "70%"]
+
+    after = tui.do_switch(tui.replace(before, cursor=1))  # shared 로 전환
+    from codex_swap.core import paths
+
+    assert not paths.cache_path(env).exists(), "전환이 캐시를 지우지 않았다 — 전제가 깨졌다"
+    assert [r.used for r in after.rows] == ["~38%", "~70%"]
+    assert all(r.known for r in after.rows)
+
+
+def test_carry_never_overrides_a_value_that_is_on_disk(env) -> None:
+    """이어받기는 **빈 자리만** 메운다. 디스크에 새 값이 있으면 그것이 이긴다."""
+    stale_screen = {
+        "master": tui.Row("master", "a@example.com", "~1%", "-", False),
+        "shared": tui.Row("shared", "b@example.com", "~2%", "-", True),
+    }
+    _cache_usage(env, "master", 38)
+    rows = {r.label: r for r in tui.build_view(env, carry=stale_screen).rows}
+    assert rows["master"].used == "38%" and rows["master"].stale is False
+    # shared 는 디스크에 없으므로 이어받는다.
+    assert rows["shared"].used == "~2%" and rows["shared"].known is True
+
+
+def test_an_unknown_row_is_not_carried_forward_as_if_known(env) -> None:
+    """물음표를 이어받아 "안다" 고 표시하면 이번에는 반대로 거짓말이 된다."""
+    unknown_screen = {"master": tui.Row("master", "a@example.com", "?", "-", False, known=False)}
+    row = next(r for r in tui.build_view(env, carry=unknown_screen).rows if r.label == "master")
+    assert (row.used, row.known) == ("?", False)
+
+
+def test_unknown_labels_lists_only_the_rows_with_nothing_to_show(env) -> None:
+    """자동 조회 대상. 낡은 값은 **아는** 값이므로 여기 들어오면 안 된다 — 들어오면
+    화면을 열 때마다 슬롯 수만큼 프로브를 돌게 된다."""
+    _cache_usage(env, "master", 38, age=env.cache_ttl + 10)
+    view = tui.build_view(env)
+    assert tui.unknown_labels(view) == ("shared",)
+
+
+def test_nothing_known_anywhere_still_says_so(env) -> None:
+    """한 번도 못 읽은 슬롯은 정직하게 물음표다. 지어내지 않는다."""
+    view = tui.build_view(env)
+    assert [r.used for r in view.rows] == ["?", "?"]
+    assert tui.unknown_labels(view) == ("master", "shared")
+
+
+def test_the_stale_marker_is_explained_only_when_something_is_stale(env) -> None:
+    """늘 떠 있는 안내는 곧 안 읽힌다. 낡은 행이 있을 때만 범례를 낸다."""
+    _cache_usage(env, "master", 38)
+    _cache_usage(env, "shared", 70)
+    assert "~ 는" not in text(tui.build_view(env))
+
+    _cache_usage(env, "master", 38, age=env.cache_ttl + 10)
+    body = text(tui.build_view(env))
+    assert "~38%" in body and "~ 는 캐시가 낡았다는 표시다" in body

@@ -90,6 +90,37 @@ def read(settings: Settings, label: str, *, now: float | None = None) -> dict[st
     return entry if hit else None
 
 
+def read_stale(
+    settings: Settings, label: str, *, now: float | None = None
+) -> tuple[dict[str, Any], int] | None:
+    """TTL 을 **무시하고** 마지막 항목과 그 나이(초)를 돌려준다. **표시 전용.**
+
+    정책 경로는 절대 이것을 쓰면 안 된다. TTL 이 있는 이유가 낡은 사용량으로 전환을
+    결정하지 않으려는 것이라, 여기를 정책에 물리면 그 예산이 통째로 사라진다.
+
+    표시는 사정이 다르다. TUI 가 `read` 만 보면 TTL 이 지난 순간부터 화면이 `?` 가
+    되는데, 그건 "읽지 못했다" 가 아니라 "5 분 지났다" 일 뿐이다. 사람은 그 둘을
+    구별할 방법이 없어 토큰이 끊긴 줄 안다 — 실제로 그 오해가 보고됐다. 낡은 값을
+    낡았다고 표시하며 보여 주는 편이 물음표보다 언제나 낫다.
+
+    나이를 함께 돌려주는 것은 호출부가 "낡음" 을 표시할 수 있어야 하기 때문이다.
+    값만 주면 신선한 값과 구별되지 않아, 이번에는 반대 방향으로 거짓말을 하게 된다.
+    """
+    path = paths.cache_path(settings)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = doc.get(label) if isinstance(doc, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    ts = _seconds(entry.get("ts"))
+    if ts is None:
+        return None
+    at = int(time.time() if now is None else now)
+    return entry, max(0, at - ts)
+
+
 def write(
     settings: Settings,
     label: str,
