@@ -309,6 +309,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
+        # 인자 없이 부르면 TUI 로 간다. 단, **TTY 일 때만** — 파이프나 스크립트에서
+        # 부르면 대화형 화면이 걸려 영영 안 끝난다. 그 경우엔 지금까지처럼 도움말이다.
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from codex_swap import tui
+
+            try:
+                settings = config.load()
+            except config.ConfigError as exc:
+                print(f"codex-swap: {exc}", file=sys.stderr)
+                return 1
+            return tui.run(settings)
         parser.print_help()
         return 0
 
