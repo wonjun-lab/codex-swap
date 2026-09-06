@@ -594,6 +594,11 @@ def test_the_axis_separates_the_current_rung_from_the_rest(env) -> None:
     [
         (10, 70, "ok"),
         (49, 70, "ok"),
+        # 첫 칸(50)은 넘었지만 **현재 관문**(70)은 아직이다. 여기가 비어 있으면 관문을
+        # `ladder[0]` 로 고정하는 실수가 테스트를 통과한다 — 실제로 통과했다.
+        (50, 70, "ok"),
+        (60, 70, "ok"),
+        (69, 70, "ok"),
         (70, 70, "warn"),
         (94, 70, "warn"),
         (95, 70, "danger"),  # 사다리 끝 — 더 올라갈 칸이 없다
@@ -621,9 +626,14 @@ def test_the_active_row_is_bold_and_the_chrome_is_dim(env) -> None:
 # ── 폭 적응 ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("width", [60, 80, 90, 91, 100, 120, 200])
+@pytest.mark.parametrize("width", [12, 20, 40, 60, 80, 90, 91, 100, 120, 200])
 def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
-    """한 줄이라도 넘치면 그리기 단계가 잘라내 열이 어긋난다."""
+    """표와 크롬은 어느 폭에서도 넘치지 않는다.
+
+    넘치는 줄은 그리기 단계가 잘라내는데, 잘린 열은 화면이 고장 난 것처럼 보인다.
+    **메시지·경고는 예외다** — 임의의 문장(오류 문구·이메일 주소)이라 어떤 폭에서도
+    들어간다고 약속할 수 없다. 그건 자르는 편이 아예 안 보이는 것보다 낫다.
+    """
     rows = tuple(
         tui.Row(
             f"label{i}",
@@ -637,6 +647,8 @@ def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
     )
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=95)
     for text, _ in tui.render_screen(view, width=width):
+        if text.lstrip().startswith("주의:") or (view.message and view.message in text):
+            continue
         assert tui._width(text) <= width, (width, text)
 
 
@@ -692,9 +704,10 @@ def test_the_current_rung_is_measured_from_the_lightest_account(env) -> None:
         tui.Row("heavy", "h@x", "90%", "-", True, percent=90),
         tui.Row("light", "l@x", "40%", "-", False, percent=40),
     ]
-    assert tui.current_rung(env, rows) == 50  # 가장 덜 쓴 40 바로 위 칸
-    assert tui.current_rung(env, []) is None
-    assert tui.current_rung(env, [tui.Row("x", "x@x", "?", "-", False, known=False)]) is None
+    assert tui.current_rung(env, rows) == (50, False)  # 가장 덜 쓴 40 바로 위 칸
+    assert tui.current_rung(env, []) == (None, False)
+    unknown = [tui.Row("x", "x@x", "?", "-", False, known=False)]
+    assert tui.current_rung(env, unknown) == (None, False)
 
 
 def test_cooldown_left_counts_down_and_then_disappears(env, monkeypatch) -> None:
@@ -730,9 +743,9 @@ def test_the_tick_crosses_exactly_where_the_policy_switches(percent: int, glyph:
 )
 def test_columns_are_dropped_in_priority_order(env, width: int, bar: bool, reset: bool) -> None:
     """버리는 순서가 우선순위다 — 바 → 리셋 시각 → 이메일 폭. 계정이 누구인지가 끝까지 남는다."""
-    with_bar, with_reset, email_cols = tui._layout(width)
+    with_bar, with_reset, label_cols, email_cols = tui._layout(width)
     assert (with_bar, with_reset) == (bar, reset)
-    assert email_cols > 0
+    assert label_cols > 0 and email_cols > 0
 
 
 def test_a_very_narrow_screen_drops_columns_instead_of_half_clipping_them(env) -> None:
@@ -742,3 +755,100 @@ def test_a_very_narrow_screen_drops_columns_instead_of_half_clipping_them(env) -
     body = next(line for line in tui.render_lines(view, width=64) if line.startswith(" >"))
     assert "09-13" not in body, "리셋 열이 남아 넘쳤다"
     assert "someone" in body, "계정을 알아볼 수 없게 잘렸다"
+
+
+# ── 리뷰가 잡은 것들 ─────────────────────────────────────────────────────────
+
+
+def test_the_gate_ignores_stale_numbers(env) -> None:
+    """화면과 정책이 다른 관문을 말하면 사용자는 화면을 믿는다.
+
+    정책이 보는 것은 TTL 안의 값 아니면 방금 돌린 프로브뿐이다. 낡은 숫자를 섞으면
+    갈린다 — 활성 90% · 인증 실패 후보의 낡은 10% · 정상 후보 80% 에서 화면은 50%,
+    정책은 85% 를 관문으로 잡는다.
+    """
+    rows = [
+        tui.Row("active", "a@x", "90%", "-", True, percent=90),
+        tui.Row("dead", "d@x", "~10%", "-", False, percent=10, stale=True),
+        tui.Row("ok", "o@x", "80%", "-", False, percent=80),
+    ]
+    assert tui.current_rung(env, rows) == (85, False)  # min(90, 80) 바로 위 칸
+    # 전부 낡았으면(전환 직후가 그렇다) 추정하되 잠정이라고 말한다. 감추면 대부분의
+    # 시간에 화면에서 관문이 사라진다.
+    assert tui.current_rung(env, [rows[1]]) == (50, True)
+    assert tui.current_rung(env, []) == (None, False)
+
+
+def test_the_cooldown_countdown_actually_counts_down(env, monkeypatch) -> None:
+    """입력 없이 기다리는 동안 루프는 같은 View 를 다시 그린다. 그냥 두면 숫자가 언다."""
+    from codex_swap.core import paths
+
+    stamp = paths.rotate_stamp_path(env)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.touch()
+    os.utime(stamp, (1_000_000, 1_000_000))
+    monkeypatch.setattr(tui.time, "time", lambda: 1_000_000 + 10)
+    view = tui.build_view(env)
+    assert view.cooldown_left == env.cooldown - 10
+
+    monkeypatch.setattr(tui.time, "time", lambda: 1_000_000 + 500)
+    assert tui.refresh_clock(view).cooldown_left == env.cooldown - 500
+    monkeypatch.setattr(tui.time, "time", lambda: 1_000_000 + env.cooldown + 1)
+    assert tui.refresh_clock(view).cooldown_left is None
+
+
+def test_a_future_stamp_cannot_report_more_than_the_configured_cooldown(env, monkeypatch) -> None:
+    """설정은 15 분인데 화면이 "3시간 남음" 이면 사용자는 설정 쪽을 의심한다."""
+    from codex_swap.core import paths
+
+    stamp = paths.rotate_stamp_path(env)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.touch()
+    os.utime(stamp, (2_000_000, 2_000_000))  # 미래
+    monkeypatch.setattr(tui.time, "time", lambda: 1_000_000)
+    assert tui.cooldown_left(env) == env.cooldown
+
+
+@pytest.mark.parametrize("rung", [0, 1, 50, 97, 98, 99, 100])
+def test_the_tick_survives_every_rung_including_the_ends(rung: int) -> None:
+    """98% 이상은 채움이 24(전부)인데 칸 번호로는 24 가 없다. 눈금이 통째로 사라졌었다."""
+    bar = tui.usage_bar(50, rung)
+    assert ("╪" in bar) or ("┆" in bar), rung
+    axis, _ = tui.ladder_axis([rung], rung)
+    marker = "╪" if "╪" in bar else "┆"
+    assert bar.index(marker) == axis.index("┻"), rung
+
+
+def test_a_crowded_ladder_keeps_the_current_gate_visible() -> None:
+    """두 칸이 같은 자리에 떨어지면 하필 지금 필요한 표시가 사라졌다."""
+    axis, _ = tui.ladder_axis([1, 2, 3, 4], 1)
+    assert "┻" in axis
+
+
+def test_a_crowded_ladder_does_not_garble_its_numbers() -> None:
+    """겹쳐 쓰면 어느 쪽도 못 읽는 문자열이 된다. 못 놓을 숫자는 아예 놓지 않는다."""
+    _, labels = tui.ladder_axis([98, 99], 98)
+    assert "98" in labels or "99" in labels
+    # 끝 칸의 숫자는 왼쪽으로 밀어 넣는다 — 그냥 자르면 `100` 이 `10` 으로 보인다.
+    _, edge = tui.ladder_axis([100], 100)
+    assert "100" in edge
+
+
+def test_an_empty_ladder_draws_an_empty_axis() -> None:
+    axis, labels = tui.ladder_axis([], None)
+    assert axis.strip() == "" and labels.strip() == ""
+
+
+def test_a_provisional_gate_says_so_instead_of_disappearing(env) -> None:
+    """전환 직후에는 캐시가 비어 모든 값이 낡는다. 그때마다 관문이 사라지면 안 된다.
+
+    감추는 편이 정직해 보이지만, 그건 **대부분의 시간에** 화면에서 관문이 없다는 뜻이다.
+    틀릴 수 있다고 표시하며 보여 주는 편이 낫다 — 사용량과 같은 `~` 를 쓴다.
+    """
+    stale_only = (tui.Row("a", "a@x", "~40%", "-", True, percent=40, stale=True),)
+    view = tui.View(rows=stale_only, cursor=0, settings=env, current_rung=50, rung_provisional=True)
+    assert "현재 관문 ~50%" in tui.render_lines(view, width=120)[0]
+
+    fresh = (tui.Row("a", "a@x", "40%", "-", True, percent=40),)
+    solid = tui.View(rows=fresh, cursor=0, settings=env, current_rung=50)
+    assert "현재 관문 50%" in tui.render_lines(solid, width=120)[0]
