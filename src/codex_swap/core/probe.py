@@ -47,17 +47,38 @@ _CLIENT_INFO = {
 }
 
 AUTH_FAILURE_RE = re.compile(
-    r"\b401\b|token_revoked|token_expired|invalid_grant|unauthorized|sign in again|logged out",
+    r"\b401\b"
+    r"|token_revoked"
+    r"|token_expired"
+    r"|invalid_grant"
+    r"|unauthorized"
+    # `signing?` 이 아니라 `sign(?:ing)?` 이다. 실물 문구가 둘로 갈린다 —
+    # `Please sign in again.` 과 `Please try signing in again.` 이고, 원래의
+    # `sign in again` 리터럴은 후자에서 `signing` 때문에 깨져 매치하지 않았다.
+    # 지금까지 후자를 살려 준 것은 같은 메시지에 우연히 들어 있던 `401` 하나뿐이라,
+    # 이 항목은 사실상 죽은 채로 단일 실패점을 만들고 있었다.
+    r"|sign(?:ing)? in again"
+    r"|logged out"
+    # `account/rateLimits/read` 가 -32600 으로 접히는 자리. 실측 두 문구가 여기 걸린다
+    # (codex-cli 0.153.4, `tests/fixtures/probe/`) —
+    #   `codex account authentication required to read rate limits`   (auth.json 미인증)
+    #   `chatgpt authentication required to read rate limits`          (auth_mode=apikey)
+    # 아래 `_account_missing` 구조 판정이 앞의 것을 잡지만 뒤의 것은 못 잡는다. 그쪽은
+    # `account` 가 `{"type":"apiKey"}` 로 **non-null** 이기 때문이다.
+    r"|authentication required",
     # ASCII 플래그를 쓰는 이유는 `\b` 다. JS 정규식은 `/u` 없이 단어 경계를 ASCII 로
     # 판정하므로, 비-ASCII 문자가 붙은 `한401` 에서 JS 는 매치하고 Python 기본(유니코드
     # 단어 경계)은 매치하지 않는다.
     re.IGNORECASE | re.ASCII,
 )
-"""인증 실패의 유일한 증거 (설계문 §6.3).
+"""인증 실패의 문구 기반 증거 (설계문 §6.3).
 
 자식의 exit code 나 stderr 가 아니라 **JSON-RPC 오류 메시지**에 이 정규식을 건다.
-stderr 의 `401` 이나 exit 127 을 인증 실패로 분류하면, bash 가 1 을 돌려줄 상황에서
-Python 만 계정을 갈아끼운다.
+stderr 의 `401` 이나 exit 127 을 인증 실패로 분류하면, 네트워크 실패로 접어야 할
+자리에서 계정을 갈아끼운다.
+
+더 이상 **유일한** 증거는 아니다. 문구는 서버 것이라 언제든 바뀌므로 `_account_missing`
+의 구조 판정을 나란히 둔다. 둘은 겹치지 않는다 — 각자 상대가 놓치는 축을 잡는다.
 """
 
 
@@ -65,8 +86,20 @@ class ProbeError(Exception):
     """프로브가 사용량을 얻지 못했다.
 
     **메시지 문자열이 계약의 일부다.** `probe()` 가 이 문자열을 `AUTH_FAILURE_RE` 에
-    걸어 bash 의 exit 3(인증 실패)과 exit 1(그 밖)을 가르므로, `.mjs` 가 던지던 문구를
-    그대로 쓴다. 이 예외는 `probe()` 밖으로 나가지 않는다.
+    걸어 인증 실패(exit 3)와 그 밖(exit 1)을 가르므로, `.mjs` 가 던지던 문구를 그대로
+    쓴다. 이 예외는 `probe()` 밖으로 나가지 않는다.
+    """
+
+
+class ProbeAuthError(ProbeError):
+    """인증 실패가 **구조로** 확정됐다. 문구 매칭을 거치지 않는다.
+
+    `AUTH_FAILURE_RE` 는 서버가 쓰는 영어 문장에 묶여 있다. 실제로 그 결합이 한 번
+    끊어졌다 — `account/read` 가 `{"account": null, "requiresOpenaiAuth": true}` 를
+    돌려주고 `account/rateLimits/read` 가 `-32600 "codex account authentication required
+    to read rate limits"` 로 접히는 미인증 상태에서, 옛 정규식은 아무 항목도 걸지 못해
+    `Unknown` 으로 갔다. 그러면 `policy.decide` 가 `Indeterminate` 로 끝내 **아무것도
+    하지 않는다** — exit-3 분기가 정확히 막으려던 상황에서 스위처가 손을 놓는 것이다.
     """
 
 
@@ -128,6 +161,9 @@ def probe(
     """
     try:
         usage = _run(codex_bin, home, timeout_ms)
+    except ProbeAuthError:
+        # 구조로 확정됐다. 문구를 다시 묻지 않는다.
+        return ProbeResult.auth_failed()
     except ProbeError as err:
         if AUTH_FAILURE_RE.search(str(err)):
             return ProbeResult.auth_failed()
@@ -178,7 +214,13 @@ def _converse(proc: subprocess.Popen[bytes], timeout_s: float) -> Usage:
         raise ProbeError(f"account/read: {_js_message(account_error)}")
     limits_error = limits.get("error")
     if js_truthy(limits_error):
-        raise ProbeError(f"account/rateLimits/read: {_js_message(limits_error)}")
+        message = f"account/rateLimits/read: {_js_message(limits_error)}"
+        # 사용량 읽기가 이미 실패한 **뒤에만** 구조 판정을 얹는다. 이 순서가 중요하다 —
+        # 앞에 두면 `account` 가 없어도 한도는 읽히는 조합에서 멀쩡한 사용량을 버리고
+        # 전환해 버린다. 여기서는 `Unknown` 으로 갈 실패를 `AuthFailed` 로 **승격**만 한다.
+        if _account_missing(account):
+            raise ProbeAuthError(f"{message} (account/read 가 account:null 을 돌려줬다)")
+        raise ProbeError(message)
 
     rate_limits = _prop(limits.get("result"), "rateLimits")
     if not js_truthy(rate_limits):
@@ -372,6 +414,33 @@ def _prop(obj: object, key: str) -> object | None:
     JS 는 그 경우 조용히 undefined 를 내고 아래의 "usedPercent 를 읽지 못했다" 로 간다.
     """
     return obj.get(key) if isinstance(obj, dict) else None
+
+
+def _account_missing(account: dict[str, object]) -> bool:
+    """`account/read` 가 계정을 못 내놨는가 — 인증 실패의 구조적 증거.
+
+    보는 것은 `result.account` **하나뿐**이다. 이 판정을 실측으로 좁힌 과정이 그대로
+    근거다 (`tests/fixtures/probe/`, codex-cli 0.153.4).
+
+    | 상태 | `result.account` | `requiresOpenaiAuth` |
+    | --- | --- | --- |
+    | 정상 (36% 를 정상 보고) | `{type, email, planType}` | **`true`** |
+    | 토큰 폐기 (401) | `{type, email, planType}` | **`true`** |
+    | access_token 빈 문자열 (401) | `{type, email, planType}` | **`true`** |
+    | id_token 만료 (401) | `{type, email, planType}` | **`true`** |
+    | 미인증 (-32600) | `null` | `true` |
+    | auth_mode=apikey (-32600) | `{"type":"apiKey"}` | `true` |
+
+    `requiresOpenaiAuth` 는 **정상 계정에도 항상 참**이다. "이 배포는 OpenAI 인증을
+    요구한다" 는 서버 구성값이지 이 계정이 인증에 실패했다는 뜻이 아니다. 그것까지
+    인증 실패로 읽으면 모든 계정이 매번 AuthFailed 로 분류되어, 살아 있는 계정을 끝없이
+    갈아끼우고 `Ok` 경로는 영영 도달하지 못한다. 그래서 이 필드는 **보지 않는다.**
+
+    `account` 가 비는 것은 자격증명이 없거나 갱신할 수 없을 때뿐이다. 그리고 이 응답은
+    로컬 `auth.json` 파싱에서 나오므로 네트워크가 죽어도 계정이 있으면 채워진다 —
+    호출부가 "한도 읽기 실패" 와 겹쳐 볼 때 네트워크 실패와 갈리는 근거가 이것이다.
+    """
+    return _prop(account.get("result"), "account") is None
 
 
 def _reached(value: object) -> bool:
