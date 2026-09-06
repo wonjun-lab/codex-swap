@@ -27,7 +27,7 @@ import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from codex_swap.core import cache, config, identity, probe, store
+from codex_swap.core import cache, config, identity, paths, policy, probe, store
 from codex_swap.core.discovery import resolve_codex_bin
 from codex_swap.core.types import ProbeOutcome
 
@@ -49,6 +49,11 @@ class Row:
 
     stale: bool = False
     """TTL 이 지난 값을 보여 주는 중인가. `used` 앞에 `~` 가 붙는다."""
+
+    percent: int | None = None
+    """사용량 원값. `used` 는 `~47%` 같은 **표시 문자열**이라 바를 그릴 수 없다.
+
+    표시와 계산을 한 필드로 겸하면 서식이 바뀔 때마다 파싱이 따라 깨진다."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,15 @@ class View:
 
     saved_settings: config.Settings | None = None
     """정책 화면에 들어올 때의 디스크 값. 무엇이 편집됐는지 가리는 기준이다."""
+
+    current_rung: int | None = None
+    """지금 넘어야 하는 사다리 칸. 사다리 전체(50,70,85,95)보다 이 하나가 행동을 정한다.
+
+    정책은 **가장 덜 쓴 계정**의 사용량 바로 위 칸을 관문으로 잡는다(`policy.rung_for`).
+    활성 기준으로 잡으면 앞선 쪽만 계속 올라가 번갈아 밟기가 성립하지 않는다."""
+
+    cooldown_left: int | None = None
+    """쿨다운이 걸려 있으면 남은 초. 화면이 "왜 안 바뀌는가" 에 답하는 자리다."""
 
 
 POLICY_FIELDS = (
@@ -127,9 +141,16 @@ def _clip(text: str, cols: int) -> str:
     return "".join(out)
 
 
-def _cell(text: str, cols: int) -> str:
-    """잘라내고 채운다. 긴 라벨·이메일이 열을 밀어내지 못하게 한다."""
-    return _pad(_clip(text, cols), cols)
+def _cell(text: str, cols: int, *, ellipsis: bool = False) -> str:
+    """잘라내고 채운다. 긴 라벨·이메일이 열을 밀어내지 못하게 한다.
+
+    `ellipsis` 는 잘렸다는 것을 보이게 한다. 표시가 없으면 `account.name@gmail.co` 가
+    실제 주소인지 잘린 것인지 구별되지 않는다 — 계정을 확인하려고 보는 칸에서 그건
+    쓸모가 없다.
+    """
+    if not ellipsis or _width(text) <= cols or cols < 2:
+        return _pad(_clip(text, cols), cols)
+    return _pad(_clip(text, cols - 1) + "…", cols)
 
 
 def _help_line(full: str, short: str, width: int | None) -> str:
@@ -190,7 +211,9 @@ def build_view(
             aged = cache.read_stale(settings, label)
             if aged is not None:
                 entry, stale = aged[0], True
+        percent: int | None = None
         if entry is not None and "usedPercent" in entry:
+            percent = entry["usedPercent"] if isinstance(entry["usedPercent"], int) else None
             used = f"{'~' if stale else ''}{entry['usedPercent']}%"
             reset = _reset_text(entry.get("resetsAt"))
             known = True
@@ -206,6 +229,7 @@ def build_view(
         ):
             # 캐시가 사라진 자리. 전환 직후가 이 경로다.
             used, reset, known, stale = prev.used, prev.reset, True, True
+            percent = prev.percent
             if not used.startswith("~"):
                 used = f"~{used}"
         else:
@@ -219,6 +243,7 @@ def build_view(
                 active=label == active,
                 known=known,
                 stale=stale,
+                percent=percent,
             )
         )
 
@@ -235,19 +260,237 @@ def build_view(
         active_email=active_email,
         active_registered=active is not None,
         saved_settings=saved_settings,
+        current_rung=current_rung(settings, rows),
+        cooldown_left=cooldown_left(settings),
     )
+
+
+def current_rung(settings: config.Settings, rows: Sequence[Row]) -> int | None:
+    """지금 넘어야 하는 칸. 아는 값이 하나도 없으면 None.
+
+    기준은 **가장 덜 쓴 계정**이다. 활성 기준으로 잡으면 앞선 쪽만 계속 올라가 둘이
+    번갈아 밟기가 성립하지 않는다 (`policy.rung_for`). 화면이 정책과 다른 숫자를 말하면
+    사용자는 화면 쪽을 믿으므로, 계산을 흉내내지 않고 그 함수를 그대로 부른다.
+    """
+    known = [r.percent for r in rows if r.percent is not None]
+    if not known:
+        return None
+    return policy.rung_for(settings.ladder, min(known))
+
+
+def cooldown_left(settings: config.Settings) -> int | None:
+    """쿨다운 잔여 초. 안 걸려 있으면 None.
+
+    "왜 안 바뀌는가" 는 이 화면에서 가장 자주 나오는 질문인데, 지금까지 답할 자리가
+    없었다. 쿨다운은 그 답 중 유일하게 **시간이 지나면 저절로 풀리는** 것이라, 남은
+    시간을 보여 주는 것만으로 기다릴지 손으로 옮길지가 갈린다.
+    """
+    try:
+        age = time.time() - paths.rotate_stamp_path(settings).stat().st_mtime
+    except OSError:
+        return None
+    left = settings.cooldown - age
+    return int(left) if left > 0 else None
 
 
 # ── 그리기 ───────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class Style:
+    """한 줄에 입힐 표시 속성. curses 를 모른다.
+
+    조각 단위가 아니라 **줄 단위**인 것이 의도다. 조각으로 가면 `render_lines` 가
+    문자열을 돌려주지 못하게 되어 기존 화면 테스트가 전부 깨진다. 줄 단위로도 이 화면이
+    말해야 하는 것(어느 계정이 관문을 넘었나, 어느 값이 낡았나)은 다 표현된다.
+    """
+
+    tone: str = "plain"
+    """plain | dim | ok | warn | danger. 이름은 **의미**이지 색이 아니다 — 실제 색은
+    `_paint` 한 곳에서 정하고, 색이 없는 터미널에서는 통째로 무시된다."""
+
+    bold: bool = False
+
+
+_PLAIN = Style()
+_DIM = Style("dim")
+
+BAR_COLS = 24
+"""사용량 바의 칸 수. 0~100% 를 이만큼에 눌러 담는다.
+
+24 는 4% 가 한 칸이라 사다리(50·70·85·95)가 서로 다른 칸에 떨어진다. 더 좁히면 85 와
+95 가 같은 칸으로 뭉쳐 관문 표시가 뜻을 잃는다.
+"""
+
+_EMAIL_MIN = 20
+"""이메일 칸의 하한. 이보다 좁아지면 바를 포기한다.
+
+`account.name@gmail.com` 류에서 20 칸이면 로컬 파트가 온전히 남아 계정이 구별된다.
+더 줄이면 `account.…` 이 되어 확인하려던 것을 확인하지 못한다.
+"""
+
+# 바가 있는 줄의 고정 소비: 커서·활성 표시(3) + 라벨(14) + 공백 + 공백 + 사용량(6) +
+# 공백 + 바 + 공백 + 리셋(20). 이메일은 남는 자리를 받는다.
+_RESET_COLS = 20
+
+
+def _fixed_cols(*, with_bar: bool, with_reset: bool) -> int:
+    """이메일을 뺀 고정 소비 폭. 커서·활성 표시(3) + 라벨(14) + 공백들 + 사용량(6)."""
+    return (
+        3
+        + 14
+        + 1
+        + 1
+        + 6
+        + (1 + _RESET_COLS if with_reset else 0)
+        + (BAR_COLS + 1 if with_bar else 0)
+    )
+
+
+_BAR_MIN_WIDTH = _fixed_cols(with_bar=True, with_reset=True) + _EMAIL_MIN
+"""바를 그리기 시작하는 터미널 폭. 이보다 좁으면 바와 축이 통째로 빠진다.
+
+좁은 화면에서 바를 억지로 넣으면 이메일이나 리셋 시각이 잘려 나간다. 둘 다 바보다
+먼저 필요한 정보다 — 어느 계정인지, 언제 풀리는지. 그래서 이 값은 손으로 고른 숫자가
+아니라 **다른 칸을 다 지키고 남는 자리**에서 나온다.
+"""
+
+
+def _layout(width: int | None) -> tuple[bool, bool, int]:
+    """폭에 따라 무엇을 보여줄지 정한다. `(바, 리셋 시각, 이메일 칸)`.
+
+    버리는 순서가 곧 우선순위다 — **바 → 리셋 시각 → 이메일 폭**. 바는 있으면 좋은
+    것이고, 리셋 시각은 이메일보다 나중에 필요하며, 어느 계정인지는 끝까지 남아야 한다.
+
+    넘치는 줄을 그리기 단계의 클립에 맡기면 안 된다. 그러면 마지막 열이 반쯤 잘린 채
+    남아 화면이 고장 난 것처럼 보인다 — 열을 통째로 빼는 편이 정직하다.
+    """
+    if width is None:
+        return True, True, 30
+    for with_bar, with_reset in ((True, True), (False, True), (False, False)):
+        room = width - _fixed_cols(with_bar=with_bar, with_reset=with_reset)
+        if room >= _EMAIL_MIN:
+            return with_bar, with_reset, min(30, room)
+    # 여기까지 오면 이메일도 온전히 못 담는다. 남는 자리를 그대로 준다(0 이면 열이 사라진다).
+    room = width - _fixed_cols(with_bar=False, with_reset=False)
+    return False, False, max(0, room)
+
+
+def _bar_cell(pct: float) -> int:
+    """사용량이 몇 번째 칸에 떨어지나. 축과 바가 **같은 함수**를 써야 눈금이 어긋나지 않는다."""
+    return min(max(round(pct * BAR_COLS / 100), 0), BAR_COLS)
+
+
+def usage_bar(percent: int | None, rung: int | None) -> str:
+    """사용량 바. 현재 관문 **하나만** 눈금으로 찍는다.
+
+    사다리 네 칸을 전부 각 행에 찍으면 `░┆░░┃░░┆░░┆` 처럼 잡음이 된다. 행마다 다른 것은
+    사용량뿐이고 관문은 모든 행에 같으므로, 전체 눈금은 아래 공용 축에 한 번만 그린다.
+    여기 남기는 하나는 **지금 넘어야 하는 칸**이라 행마다 읽을 값이 있다.
+    """
+    if percent is None:
+        return " " * BAR_COLS
+    filled = _bar_cell(percent)
+    tick = _bar_cell(rung) if rung is not None else None
+    # 눈금이 넘어섰는지는 셀 인덱스가 아니라 **정책 술어**로 정한다. 정책은
+    # `active_pct >= rung` 에서 전환하는데, 셀로 판정하면 정확히 관문 위(70% · 70)에서
+    # `filled == tick` 이라 "아직 안 넘음" 으로 그려져 화면이 정책과 다른 말을 한다.
+    crossed = rung is not None and percent >= rung
+    out = []
+    for i in range(BAR_COLS):
+        if i == tick:
+            out.append("╪" if crossed else "┆")
+        else:
+            out.append("█" if i < filled else "░")
+    return "".join(out)
+
+
+def ladder_axis(ladder: Sequence[int], rung: int | None) -> tuple[str, str]:
+    """바 아래에 한 번만 그리는 공용 눈금과 숫자. `(축, 숫자줄)`.
+
+    현재 관문은 `┻` 로 갈라 둔다. 네 칸이 다 같아 보이면 "지금 어디를 넘어야 하나" 가
+    다시 안 보인다 — 그게 이 축을 그리는 이유의 절반이다.
+    """
+    axis = [" "] * BAR_COLS
+    labels = [" "] * BAR_COLS
+    for step in ladder:
+        i = min(_bar_cell(step), BAR_COLS - 1)
+        axis[i] = "┻" if step == rung else "┴"
+        text = str(step)
+        start = max(i - 1, 0)
+        for k, ch in enumerate(text):
+            if start + k < BAR_COLS:
+                labels[start + k] = ch
+    return "".join(axis), "".join(labels)
+
+
+def _row_tone(row: Row, view: View) -> str:
+    """행의 색. 임의 구간이 아니라 **사다리**에 묶는다.
+
+    50/80/90 같은 관습적 구간을 쓰면 색이 이 도구의 판단과 무관한 말을 하게 된다. 여기서
+    색이 뜻해야 하는 것은 하나다 — 이 계정이 지금 전환 대상인가.
+    """
+    if row.percent is None:
+        return "dim"
+    ladder = view.settings.ladder
+    if ladder and row.percent >= ladder[-1]:
+        # 사다리 끝. 더 올라갈 칸이 없다는 뜻이라 다른 계정도 대개 같은 처지다.
+        return "danger"
+    gate = view.current_rung if view.current_rung is not None else (ladder[0] if ladder else None)
+    if gate is not None and row.percent >= gate:
+        return "warn"
+    return "ok"
+
+
+def _headline(view: View, show_ladder: bool) -> str:
+    """머리말. 사다리 전체보다 **지금 넘어야 하는 칸**이 행동을 정한다.
+
+    `show_ladder` 는 바가 빠졌을 때다. 그때는 축도 없으므로 사다리 전체를 여기 적지
+    않으면 화면 어디에도 남지 않는다.
+    """
+    s = view.settings
+    parts = []
+    if show_ladder:
+        parts.append(f"사다리 {','.join(map(str, s.ladder))}")
+    elif view.current_rung is not None:
+        parts.append(f"현재 관문 {view.current_rung}%")
+    else:
+        parts.append(f"사다리 {','.join(map(str, s.ladder))}")
+    parts.append(f"마진 {s.margin}%p")
+    if view.cooldown_left is not None:
+        parts.append(f"쿨다운 {_duration(view.cooldown_left)} 남음")
+    return "codex-swap    " + " · ".join(parts)
+
+
+def _duration(seconds: int) -> str:
+    """사람이 읽는 길이. 초 단위로 흐르는 숫자는 화면에서 잡음이다."""
+    if seconds >= 3600:
+        return f"{seconds // 3600}시간 {seconds % 3600 // 60}분"
+    if seconds >= 60:
+        return f"{seconds // 60}분"
+    return f"{seconds}초"
+
+
 def render_lines(view: View, *, height: int | None = None, width: int | None = None) -> list[str]:
-    """화면 내용. 순수 함수라 터미널 없이 테스트한다."""
+    """화면 내용. 순수 함수라 터미널 없이 테스트한다.
+
+    `render_screen` 의 얇은 껍질이다 — 두 함수를 따로 만들면 줄 수가 어긋날 수 있다.
+    """
+    return [text for text, _ in render_screen(view, height=height, width=width)]
+
+
+def render_screen(
+    view: View, *, height: int | None = None, width: int | None = None
+) -> list[tuple[str, Style]]:
+    """화면 내용과 줄별 속성. 순수 함수다 — 파일도 터미널도 만지지 않는다."""
     if view.mode == "policy":
-        return _render_policy(view, height=height, width=width)
+        return [(line, _PLAIN) for line in _render_policy(view, height=height, width=width)]
 
     s = view.settings
-    head = [f"codex-swap    사다리 {','.join(map(str, s.ladder))} · 마진 {s.margin}%p", ""]
+    # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
+    # 바보다 먼저 필요한 정보다.
+    with_bar, with_reset, email_cols = _layout(width)
+    head = [(_headline(view, show_ladder=not with_bar), _PLAIN), ("", _PLAIN)]
 
     # 꼬리말은 **버릴 수 있는 순서**로 쌓는다. 화면이 짧으면 앞쪽부터 버리고, 메시지는
     # 마지막까지 남긴다 — 실패를 알리는 유일한 줄이라 그것을 잃으면 사용자는 아무것도
@@ -262,32 +505,52 @@ def render_lines(view: View, *, height: int | None = None, width: int | None = N
         droppable.insert(0, "  ~ 는 캐시가 낡았다는 표시다 (r 로 새로 읽는다)")
     # 활성 계정이 어느 슬롯과도 안 맞으면 전환이 지금 자격증명을 버린다. 조용히 두면
     # 사용자는 enter 한 번으로 그것을 잃는다.
-    keep = []
+    keep: list[tuple[str, Style]] = []
     if view.rows and not view.active_registered:
         who = view.active_email or "알 수 없는 계정"
-        keep.append(f"  주의: 활성({who})이 슬롯에 없다. 전환하면 이 자격증명은 보관되지 않는다")
+        keep.append(
+            (
+                f"  주의: 활성({who})이 슬롯에 없다. 전환하면 이 자격증명은 보관되지 않는다",
+                Style("warn"),
+            )
+        )
     if view.message:
-        keep.append(f"  {view.message}")
+        keep.append((f"  {view.message}", _PLAIN))
 
     if not view.rows:
         # 빈 화면에서도 메시지가 보여야 한다 — 등록 실패가 여기서 나온다. 다만 조작법은
         # 이 화면에 실제로 있는 키만 적는다.
-        empty = ["  등록된 계정이 없다.", "", "  a  지금 로그인된 계정을 슬롯에 등록   q  종료"]
+        empty = [
+            ("  등록된 계정이 없다.", _PLAIN),
+            ("", _PLAIN),
+            ("  a  지금 로그인된 계정을 슬롯에 등록   q  종료", _DIM),
+        ]
         if view.message:
-            empty += ["", f"  {view.message}"]
+            empty += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
         return head + empty
 
-    header = [*head, f"   {_cell('LABEL', 14)} {_cell('EMAIL', 30)} {_cell('USED', 6)} RESET"]
+    columns = f"   {_cell('LABEL', 14)} {_cell('EMAIL', email_cols)} {_cell('USED', 6)}"
+    if with_bar:
+        columns += f" {_cell('', BAR_COLS)}"
+    if with_reset:
+        columns += " RESET"
+    header = [*head, (columns.rstrip() if not with_reset else columns, _DIM)]
 
     # ── 뷰포트 ──
     # 목록이 화면보다 길면 조작법이 먼저 밀려난다 — 계정 20 개 · 24 행에서 실제로 그랬다.
     # 머리말과 지켜야 할 꼬리말 자리를 먼저 떼고, 남는 만큼만 목록에 준다.
     rows = list(view.rows)
     start = 0
-    tail_keep = ["", *keep] if keep else []
+    axis_lines: list[tuple[str, Style]] = []
+    if with_bar and any(r.percent is not None for r in view.rows):
+        axis, labels = ladder_axis(s.ladder, view.current_rung)
+        pad = f"   {' ' * 14} {' ' * email_cols} {' ' * 6} "
+        axis_lines = [(f"{pad}{axis}", _DIM), (f"{pad}{labels}   ┻ = 현재 관문", _DIM)]
+
+    tail_keep = [("", _PLAIN), *keep] if keep else []
 
     if height is None:
-        tail = ["", *droppable[::-1], *keep]
+        tail = [("", _PLAIN), *[(x, _DIM) for x in droppable[::-1]], *keep]
     else:
         # 최소 구성: 머리말 + 커서 행 1 + 지켜야 할 꼬리말. 남는 자리에 버릴 수 있는
         # 줄을 중요한 것(조작법)부터 채워 넣는다.
@@ -295,10 +558,10 @@ def render_lines(view: View, *, height: int | None = None, width: int | None = N
         shown = []
         for line in reversed(droppable):  # 조작법 → 자동전환 순
             if len(shown) + 1 <= max(room - 1, 0):  # 빈 줄 하나 몫을 남긴다
-                shown.append(line)
-        tail = (["", *shown] if shown else []) + tail_keep
+                shown.append((line, _DIM))
+        tail = ([("", _PLAIN), *shown] if shown else []) + tail_keep
 
-        budget = height - len(header) - len(tail)
+        budget = height - len(header) - len(tail) - len(axis_lines)
         # 스크롤 표시가 붙을 수 있으므로 두 줄을 미리 뗀다.
         if len(rows) > budget:
             budget = max(budget - 2, 1)
@@ -308,18 +571,24 @@ def render_lines(view: View, *, height: int | None = None, width: int | None = N
     hidden_above = start
     hidden_below = len(view.rows) - (start + len(rows))
 
-    body = []
+    body: list[tuple[str, Style]] = []
     if hidden_above:
-        body.append(f"   ^ {hidden_above}개 더")
+        body.append((f"   ^ {hidden_above}개 더", _DIM))
     for i, row in enumerate(rows, start=start):
         cursor = ">" if i == view.cursor else " "
         mark = "*" if row.active else " "
-        body.append(
-            f" {cursor}{mark}{_cell(row.label, 14)} {_cell(row.email, 30)} "
-            f"{_cell(row.used, 6)} {row.reset}"
+        line = (
+            f" {cursor}{mark}{_cell(row.label, 14, ellipsis=True)} "
+            f"{_cell(row.email, email_cols, ellipsis=True)} {_cell(row.used, 6)}"
         )
+        if with_bar:
+            line += f" {usage_bar(row.percent, view.current_rung)}"
+        if with_reset:
+            line += f" {_cell(row.reset, _RESET_COLS, ellipsis=True)}".rstrip()
+        body.append((line, Style(_row_tone(row, view), bold=row.active)))
     if hidden_below:
-        body.append(f"   v {hidden_below}개 더")
+        body.append((f"   v {hidden_below}개 더", _DIM))
+    body += axis_lines
 
     # 최종 클램프. 아주 짧은 화면에서는 스크롤 표시까지 합한 바닥(머리말 3 + 표시 2 +
     # 행 1 + 메시지 2 = 8)이 화면보다 클 수 있다. 그때는 **본문**을 자른다 — 꼬리말을
@@ -330,7 +599,7 @@ def render_lines(view: View, *, height: int | None = None, width: int | None = N
             keep_n = max(len(body) - over, 1)
             # 커서가 있는 줄을 남긴다. 표시줄이 먼저 밀려나는 것이 자연스럽다.
             cursor_at = next(
-                (i for i, ln in enumerate(body) if ln.startswith(" >")), len(body) // 2
+                (i for i, (ln, _) in enumerate(body) if ln.startswith(" >")), len(body) // 2
             )
             lo = min(max(0, cursor_at - keep_n // 2), max(0, len(body) - keep_n))
             body = body[lo : lo + keep_n]
@@ -340,7 +609,7 @@ def render_lines(view: View, *, height: int | None = None, width: int | None = N
         while len(header) + len(body) + len(tail) > height and len(header) > 1:
             header = header[1:]
         # 마지막 한 줄은 꼬리말의 빈 줄에서 뺀다.
-        if len(header) + len(body) + len(tail) > height and tail and tail[0] == "":
+        if len(header) + len(body) + len(tail) > height and tail and tail[0][0] == "":
             tail = tail[1:]
 
     return header + body + tail
@@ -607,18 +876,57 @@ def save_policy(view: View) -> View:
 # ── curses 루프 ──────────────────────────────────────────────────────────────
 
 
-def _paint(stdscr, view: View) -> None:  # pragma: no cover - 터미널 필요
+_TONE_COLORS = {"ok": 1, "warn": 2, "danger": 3}
+"""tone → color pair 번호. 0 은 curses 가 예약한 기본 쌍이라 1 부터 쓴다."""
+
+
+def _init_colors() -> bool:  # pragma: no cover - 터미널 필요
+    """색을 쓸 수 있으면 쌍을 등록하고 True.
+
+    `use_default_colors` 로 배경을 -1 로 둔다. 검정으로 칠하면 밝은 테마 터미널에서
+    글자만 남기고 배경이 뒤집혀 읽기 어려워진다.
+    """
+    if not curses.has_colors():
+        return False
+    with contextlib.suppress(curses.error):
+        curses.start_color()
+        with contextlib.suppress(curses.error):
+            curses.use_default_colors()
+        curses.init_pair(_TONE_COLORS["ok"], curses.COLOR_GREEN, -1)
+        curses.init_pair(_TONE_COLORS["warn"], curses.COLOR_YELLOW, -1)
+        curses.init_pair(_TONE_COLORS["danger"], curses.COLOR_RED, -1)
+        return True
+    return False
+
+
+def _attr_of(style: Style, colored: bool) -> int:  # pragma: no cover - curses 상수
+    """`Style` → curses 속성. 색이 없으면 굵기·흐림만 남는다.
+
+    색을 못 쓰는 터미널에서도 화면이 **똑같이 읽혀야** 한다. 그래서 색은 덧칠이지
+    유일한 신호가 아니다 — 활성은 `*`, 낡은 값은 `~`, 관문은 `┻` 로 이미 구별된다.
+    """
+    attr = curses.A_BOLD if style.bold else 0
+    if style.tone == "dim":
+        return attr | curses.A_DIM
+    if colored and style.tone in _TONE_COLORS:
+        return attr | curses.color_pair(_TONE_COLORS[style.tone])
+    return attr
+
+
+def _paint(stdscr, view: View, colored: bool = False) -> None:  # pragma: no cover - 터미널 필요
     stdscr.erase()
     height, width = stdscr.getmaxyx()
     if height < 2 or width < 2:
         stdscr.refresh()
         return
     # 루프는 마지막 행 마지막 칸에 쓰면 curses 가 에러를 내므로 한 줄을 비워 둔다.
-    for i, line in enumerate(render_lines(view, height=height - 1, width=width - 1)):
+    for i, (line, style) in enumerate(render_screen(view, height=height - 1, width=width - 1)):
         if i >= height - 1:
             break
         with contextlib.suppress(curses.error):
-            stdscr.addnstr(i, 0, _clip(line, width - 1), max(width - 1, 0))
+            stdscr.addnstr(
+                i, 0, _clip(line, width - 1), max(width - 1, 0), _attr_of(style, colored)
+            )
     stdscr.refresh()
 
 
@@ -743,6 +1051,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     # 기본 ESCDELAY 는 1 초라 esc 를 누르면 화면이 멈춘 것처럼 보인다.
     if hasattr(curses, "set_escdelay"):
         curses.set_escdelay(25)
+    colored = _init_colors()
 
     # 조회가 도는 동안에도 키를 읽어야 하므로 getch 를 논블로킹으로 만든다. 이 값이
     # 곧 조회 결과가 화면에 반영되는 지연이고, 사람이 못 느끼는 범위에서 가장 크게 잡는다.
@@ -768,7 +1077,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             view = build_view(settings, select=here, message=done, carry=_carry(view))
             # 조회 중에 전환·등록이 있었으면 새 슬롯이 비어 있을 수 있다.
             kick(auto_probe_targets(view, attempted))
-        _paint(stdscr, probing_note(view, prober.labels))
+        _paint(stdscr, probing_note(view, prober.labels), colored)
         started = time.monotonic()
         key = stdscr.getch()
 

@@ -534,3 +534,211 @@ def test_refresh_message_reports_a_missing_codex_instead_of_raising(env, monkeyp
 
     monkeypatch.setattr(tui, "resolve_codex_bin", missing)
     assert "codex 를 찾지 못했다" in tui._refresh_message(env, ("master",))
+
+
+# ── 사용량 바와 사다리 축 ────────────────────────────────────────────────────
+
+
+def test_render_lines_is_exactly_the_text_of_render_screen(env) -> None:
+    """둘을 따로 만들면 줄 수가 어긋난다. 껍질이라는 계약을 못박는다."""
+    view = tui.build_view(env)
+    assert tui.render_lines(view, width=120) == [t for t, _ in tui.render_screen(view, width=120)]
+
+
+def test_every_ladder_rung_lands_in_its_own_bar_cell(env) -> None:
+    """바를 좁히면 85 와 95 가 같은 칸으로 뭉쳐 관문 표시가 뜻을 잃는다."""
+    cells = {rung: tui._bar_cell(rung) for rung in env.ladder}
+    assert len(set(cells.values())) == len(env.ladder), cells
+
+
+@pytest.mark.parametrize(
+    ("percent", "filled"), [(0, 0), (50, 12), (70, 17), (100, tui.BAR_COLS), (96, 23)]
+)
+def test_the_bar_fills_proportionally(percent: int, filled: int) -> None:
+    bar = tui.usage_bar(percent, None)
+    assert len(bar) == tui.BAR_COLS
+    assert bar.count("█") == filled
+
+
+def test_an_unknown_usage_draws_no_bar() -> None:
+    """모르는 값을 0% 로 그리면 '가장 덜 쓴 계정' 으로 보인다 — 정반대의 오해다."""
+    assert tui.usage_bar(None, 70) == " " * tui.BAR_COLS
+
+
+def test_the_bar_marks_only_the_current_rung() -> None:
+    """관문 넷을 다 찍으면 `░┆░░┃░░┆░░┆` 처럼 잡음이 된다. 전체는 아래 축이 맡는다."""
+    bar = tui.usage_bar(30, 70)
+    assert bar.count("┆") == 1 and "╪" not in bar
+    # 채워진 자리를 지나면 눈금이 채움 위에 얹힌다 — 칸을 잃지 않는다.
+    passed = tui.usage_bar(90, 70)
+    assert passed.count("╪") == 1 and "┆" not in passed
+    assert len(passed) == tui.BAR_COLS
+
+
+def test_the_axis_tick_sits_in_the_same_cell_as_the_bar_tick(env) -> None:
+    """어긋나면 사용자가 관문을 실제와 다른 위치로 읽는다."""
+    for rung in env.ladder:
+        bar = tui.usage_bar(rung, rung)
+        axis, _ = tui.ladder_axis(env.ladder, rung)
+        assert bar.index("╪") == axis.index("┻"), rung
+
+
+def test_the_axis_separates_the_current_rung_from_the_rest(env) -> None:
+    axis, labels = tui.ladder_axis(env.ladder, 70)
+    assert axis.count("┻") == 1 and axis.count("┴") == len(env.ladder) - 1
+    assert "50" in labels and "70" in labels and "95" in labels
+
+
+@pytest.mark.parametrize(
+    ("percent", "rung", "tone"),
+    [
+        (10, 70, "ok"),
+        (49, 70, "ok"),
+        (70, 70, "warn"),
+        (94, 70, "warn"),
+        (95, 70, "danger"),  # 사다리 끝 — 더 올라갈 칸이 없다
+        (None, 70, "dim"),
+    ],
+)
+def test_the_row_colour_follows_the_ladder_not_arbitrary_bands(
+    env, percent: int | None, rung: int, tone: str
+) -> None:
+    """50/80/90 같은 관습 구간을 쓰면 색이 이 도구의 판단과 무관한 말을 한다."""
+    row = tui.Row("a", "a@x", "-", "-", False, percent=percent)
+    view = tui.View(rows=(row,), cursor=0, settings=env, current_rung=rung)
+    assert tui._row_tone(row, view) == tone
+
+
+def test_the_active_row_is_bold_and_the_chrome_is_dim(env) -> None:
+    rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    styles = dict(tui.render_screen(view, width=120))
+    body = next(st for text, st in tui.render_screen(view, width=120) if text.startswith(" >*"))
+    assert body.bold is True
+    assert any(st.tone == "dim" for st in styles.values())
+
+
+# ── 폭 적응 ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("width", [60, 80, 90, 91, 100, 120, 200])
+def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
+    """한 줄이라도 넘치면 그리기 단계가 잘라내 열이 어긋난다."""
+    rows = tuple(
+        tui.Row(
+            f"label{i}",
+            f"someone.long{i}@example.com",
+            "~100%",
+            "09-13 02:00 (6일 뒤)",
+            i == 0,
+            percent=100,
+        )
+        for i in range(3)
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=95)
+    for text, _ in tui.render_screen(view, width=width):
+        assert tui._width(text) <= width, (width, text)
+
+
+def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
+    """축이 빠지면 사다리가 화면 어디에도 안 남는다. 그때는 머리말이 대신 든다."""
+    rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+
+    wide = tui.render_lines(view, width=tui._BAR_MIN_WIDTH)
+    narrow = tui.render_lines(view, width=tui._BAR_MIN_WIDTH - 1)
+    assert any("█" in line for line in wide) and any("┻" in line for line in wide)
+    assert not any("█" in line for line in narrow)
+    assert "현재 관문 70%" in wide[0]
+    assert "사다리 50,70,85,95" in narrow[0]
+
+
+def test_a_truncated_email_says_that_it_is_truncated(env) -> None:
+    """`account.name@gmail.co` 가 실제 주소인지 잘린 것인지 구별되어야 한다."""
+    rows = (tui.Row("a", "a-very-long-address@example.com", "70%", "-", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    body = next(line for line in tui.render_lines(view, width=tui._BAR_MIN_WIDTH) if "…" in line)
+    assert "…" in body
+
+
+# ── 머리말이 "왜 안 바뀌는가" 에 답한다 ──────────────────────────────────────
+
+
+def test_the_headline_shows_the_gate_that_actually_blocks(env) -> None:
+    rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=85, cooldown_left=735)
+    head = tui.render_lines(view, width=120)[0]
+    assert "현재 관문 85%" in head
+    assert "쿨다운 12분 남음" in head
+
+
+def test_the_headline_omits_a_cooldown_that_is_not_running(env) -> None:
+    rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=85)
+    assert "쿨다운" not in tui.render_lines(view, width=120)[0]
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [(45, "45초"), (60, "1분"), (735, "12분"), (3600, "1시간 0분"), (5430, "1시간 30분")],
+)
+def test_durations_are_read_by_people_not_stopwatches(seconds: int, text: str) -> None:
+    assert tui._duration(seconds) == text
+
+
+def test_the_current_rung_is_measured_from_the_lightest_account(env) -> None:
+    """활성 기준으로 잡으면 앞선 쪽만 계속 올라가 번갈아 밟기가 성립하지 않는다."""
+    rows = [
+        tui.Row("heavy", "h@x", "90%", "-", True, percent=90),
+        tui.Row("light", "l@x", "40%", "-", False, percent=40),
+    ]
+    assert tui.current_rung(env, rows) == 50  # 가장 덜 쓴 40 바로 위 칸
+    assert tui.current_rung(env, []) is None
+    assert tui.current_rung(env, [tui.Row("x", "x@x", "?", "-", False, known=False)]) is None
+
+
+def test_cooldown_left_counts_down_and_then_disappears(env, monkeypatch) -> None:
+    from codex_swap.core import paths
+
+    stamp = paths.rotate_stamp_path(env)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.touch()
+    os.utime(stamp, (1_000_000, 1_000_000))
+    monkeypatch.setattr(tui.time, "time", lambda: 1_000_000 + 100)
+    assert tui.cooldown_left(env) == env.cooldown - 100
+    monkeypatch.setattr(tui.time, "time", lambda: 1_000_000 + env.cooldown + 1)
+    assert tui.cooldown_left(env) is None
+
+
+def test_cooldown_left_is_none_without_a_stamp(env) -> None:
+    assert tui.cooldown_left(env) is None
+
+
+@pytest.mark.parametrize(("percent", "glyph"), [(69, "┆"), (70, "╪"), (71, "╪")])
+def test_the_tick_crosses_exactly_where_the_policy_switches(percent: int, glyph: str) -> None:
+    """정책은 `active_pct >= rung` 에서 전환한다. 화면이 다른 말을 하면 안 된다.
+
+    셀 인덱스로 판정하면 정확히 관문 위(70% · 관문 70)에서 `filled == tick` 이라
+    "아직 안 넘음" 으로 그려진다 — 정작 그 순간이 전환이 일어나는 지점이다.
+    """
+    assert glyph in tui.usage_bar(percent, 70)
+
+
+@pytest.mark.parametrize(
+    ("width", "bar", "reset"),
+    [(200, True, True), (91, True, True), (90, False, True), (66, False, True), (65, False, False)],
+)
+def test_columns_are_dropped_in_priority_order(env, width: int, bar: bool, reset: bool) -> None:
+    """버리는 순서가 우선순위다 — 바 → 리셋 시각 → 이메일 폭. 계정이 누구인지가 끝까지 남는다."""
+    with_bar, with_reset, email_cols = tui._layout(width)
+    assert (with_bar, with_reset) == (bar, reset)
+    assert email_cols > 0
+
+
+def test_a_very_narrow_screen_drops_columns_instead_of_half_clipping_them(env) -> None:
+    """넘치는 줄을 그리기 단계의 클립에 맡기면 마지막 열이 반쯤 잘려 고장 나 보인다."""
+    rows = (tui.Row("a", "someone@example.com", "70%", "09-13 02:00 (6일 뒤)", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    body = next(line for line in tui.render_lines(view, width=64) if line.startswith(" >"))
+    assert "09-13" not in body, "리셋 열이 남아 넘쳤다"
+    assert "someone" in body, "계정을 알아볼 수 없게 잘렸다"
