@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -206,9 +207,21 @@ def _install(src: Path, dst: Path, *, keep_mtime: bool) -> None:
     """
     tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
     try:
-        # copy2 는 mtime 까지 가져오고, copy 는 내용과 권한 비트만 가져온다.
+        # copy2 는 mtime 까지 가져오고, copy 는 내용과 권한 비트만 가져온다. 둘 다 권한은
+        # 옮기며, 어느 쪽이든 아래 chmod 가 0600 을 확정한다 (계약 8).
         (shutil.copy2 if keep_mtime else shutil.copy)(src, tmp)
         os.chmod(tmp, 0o600)
+        if not keep_mtime:
+            # **초 단위로 올림한다.** 훅은 `stat %Y` 와 `date +%s` 로 **정수 초**를 견준다
+            # (`broker 시작 < auth mtime`). 그래서 같은 초 안에서 broker 가 먼저 뜨고
+            # 전환이 뒤따르면 — broker 1000.1, 전환 1000.9 — 정수로는 1000 < 1000 이라
+            # 거짓이 되어 그 broker 를 놓친다.
+            #
+            # 올림하면 1001 이 되어 잡힌다. 대가는 그 1 초 안에 **뒤에** 뜬 broker 를
+            # 불필요하게 죽일 수 있다는 것인데, 그 비용은 재시작 한 번이고 놓치는 비용은
+            # 옛 계정으로 계속 요청하는 것이다. 기울기가 명확하다.
+            stamp = float(math.ceil(time.time()))
+            os.utime(tmp, (stamp, stamp))
         os.replace(tmp, dst)
     except OSError:
         with contextlib.suppress(OSError):
@@ -243,8 +256,13 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     계약 12("mtime 을 보존한다")는 이 발견으로 폐기됐다 — 그 계약은 bash 충실성만 보고
     보존이 **옳은지**를 묻지 않은 것이었다.
 
-    (A) sync-back 은 계속 보존한다. 슬롯 사본의 mtime 은 아무도 읽지 않고, 그 값이
-    "이 계정의 자격증명이 마지막으로 갱신된 시각" 이라는 뜻은 유지하는 편이 자연스럽다.
+    (A) sync-back 은 계속 보존한다. 저장소 전체를 훑어 슬롯 mtime 을 **판정에 쓰는 코드가
+    없음**을 확인했다 — 시각을 읽는 곳은 락 디렉토리·`.last-check`·`.last-rotate`·job 로그
+    뿐이다. 그러니 여기서 새로 찍을 이유가 없고, 보존이 더 적은 변경이다.
+
+    다만 그 값을 "이 계정의 자격증명이 마지막으로 갱신된 시각" 이라고 부르면 부정확하다.
+    (B)가 활성 자리에 활성화 시각을 찍고 다음 (A)가 그것을 그대로 복사해 오므로, 토큰
+    바이트가 그대로여도 슬롯에는 **마지막 활성화 시각**이 남는다.
     """
     if not slot_is_admissible(settings, target):
         raise StoreError(f"쓸 수 없는 라벨: {target!r}")

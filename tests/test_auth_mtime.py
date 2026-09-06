@@ -98,6 +98,30 @@ def test_a_broker_started_after_the_switch_is_not_stale(env) -> None:
     assert not (broker_started < auth_mtime), "새 broker 를 낡은 것으로 잡았다"
 
 
+def test_the_hook_comparison_is_integer_seconds(env) -> None:
+    """훅은 float 이 아니라 **정수 초**를 견준다.
+
+    `stat %Y` 와 `date +%s` 는 둘 다 초를 자른다. 그래서 같은 초 안에서 broker 가 먼저
+    뜨고 전환이 뒤따르면 — broker 1000.1, 전환 1000.9 — 정수로는 `1000 < 1000` 이라
+    거짓이 되어 그 broker 를 놓친다. float 로 비교하는 테스트는 이 구멍을 못 본다.
+
+    올림 덕에 auth mtime 이 다음 초로 넘어가 잡힌다.
+    """
+    _write_auth(store.active_auth(env), "a@example.com")
+    _write_auth(store.slot_auth(env, "a"), "a@example.com")
+    _write_auth(store.slot_auth(env, "b"), "b@example.com")
+
+    broker_started = time.time()  # 전환과 같은 초에 뜬 broker
+    with store.switch_lock(env):
+        store.switch(env, "b", "test")
+    auth_mtime = store.active_auth(env).stat().st_mtime
+
+    assert int(broker_started) < int(auth_mtime), (
+        "훅의 정수 비교에서 같은 초의 선행 broker 를 놓친다 "
+        f"(broker={int(broker_started)}, auth={int(auth_mtime)})"
+    )
+
+
 def test_the_departing_slot_keeps_its_mtime(env) -> None:
     """sync-back 은 보존한다.
 
