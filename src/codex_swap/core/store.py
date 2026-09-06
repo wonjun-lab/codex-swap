@@ -199,15 +199,15 @@ def switch_lock(settings: Settings):
 # ── 전환 ─────────────────────────────────────────────────────────────────────
 
 
-def _install(src: Path, dst: Path) -> None:
+def _install(src: Path, dst: Path, *, keep_mtime: bool) -> None:
     """같은 파일시스템 안의 temp + rename. 반쪽 쓰인 auth.json 이 생기지 않는다.
 
-    `copy2` 로 mtime 을 보존한다. Claude 훅이 낡은 broker 를 판정할 때 이 파일의 mtime 을
-    쓰므로, 새 바이트를 쓰면(`copy`·`write_bytes`) 훅의 판정이 바뀐다 (계약 12 · §5.3).
+    `keep_mtime` 이 이 함수의 전부다. 설명은 `switch` 에 있다.
     """
     tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
     try:
-        shutil.copy2(src, tmp)
+        # copy2 는 mtime 까지 가져오고, copy 는 내용과 권한 비트만 가져온다.
+        (shutil.copy2 if keep_mtime else shutil.copy)(src, tmp)
         os.chmod(tmp, 0o600)
         os.replace(tmp, dst)
     except OSError:
@@ -223,6 +223,28 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     install 이 실패해도 떠나려던 슬롯은 이미 갱신돼 있다. 이건 결함이 아니라 올바른
     동작이다 — 그 바이트가 그 계정의 **최신 토큰**이고, prepare/commit 으로 감싸 롤백하면
     오히려 그것을 잃는다. 두 효과는 독립적으로 커밋된다 (설계문 §7.5).
+
+    ── mtime 을 두 효과가 다르게 다룬다 ──
+
+    활성 자리(B)의 mtime 은 **"활성 자격증명이 마지막으로 바뀐 시각"** 을 뜻해야 한다.
+    Claude 훅이 낡은 broker 를 그 값으로 판정하기 때문이다 —
+    `broker 시작 < auth.json mtime` 이면 그 broker 는 옛 토큰을 들고 있는 것이므로 죽인다.
+
+    bash 는 `cp -p` 로 원본 mtime 을 가져왔고 우리도 `copy2` 로 그대로 옮겼다. 그런데
+    원본은 **슬롯에 보관된 며칠 전 사본**이다. 그래서 방금 전환했는데도 mtime 이 과거로
+    찍히고, 위 조건이 **항상 거짓**이 되어 훅이 낡은 broker 를 하나도 죽이지 못한다.
+
+    실측(2026-09-06, 이 기기): 원장에 그날 다섯 번의 전환이 남아 있는데
+    `~/.codex/auth.json` mtime 은 이틀 전(09-04 06:34)이었고, 떠 있던 broker 넷은 전부
+    그보다 **뒤에** 시작해 하나도 낡은 것으로 잡히지 않았다. 훅 주석(hook:79-80)은 이
+    비교가 "옛 토큰을 든 broker 를 같은 실행에서 내린다" 고 적고 있지만 작동한 적이 없다.
+
+    그래서 (B)는 mtime 을 새로 찍는다. bash 와 갈리는 의도된 divergence 이고, 설계문의
+    계약 12("mtime 을 보존한다")는 이 발견으로 폐기됐다 — 그 계약은 bash 충실성만 보고
+    보존이 **옳은지**를 묻지 않은 것이었다.
+
+    (A) sync-back 은 계속 보존한다. 슬롯 사본의 mtime 은 아무도 읽지 않고, 그 값이
+    "이 계정의 자격증명이 마지막으로 갱신된 시각" 이라는 뜻은 유지하는 편이 자연스럽다.
     """
     if not slot_is_admissible(settings, target):
         raise StoreError(f"쓸 수 없는 라벨: {target!r}")
@@ -237,10 +259,10 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     # 토큰이 슬롯 사본에는 없어서, 이걸 빼먹으면 돌아올 때 만료된 토큰을 집는다.
     if active is not None and live.is_file():
         with contextlib.suppress(OSError):
-            _install(live, slot_auth(settings, active))
+            _install(live, slot_auth(settings, active), keep_mtime=True)
 
-    # 효과 (B) — 대상 자격증명을 활성 자리에 건다.
-    _install(target_auth, live)
+    # 효과 (B) — 대상 자격증명을 활성 자리에 건다. mtime 은 **지금**으로 찍는다.
+    _install(target_auth, live, keep_mtime=False)
 
     log.append(settings, from_label=active, to_label=target, reason=reason)
     with contextlib.suppress(OSError):
