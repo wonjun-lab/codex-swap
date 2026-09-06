@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -199,16 +200,28 @@ def switch_lock(settings: Settings):
 # ── 전환 ─────────────────────────────────────────────────────────────────────
 
 
-def _install(src: Path, dst: Path) -> None:
+def _install(src: Path, dst: Path, *, keep_mtime: bool) -> None:
     """같은 파일시스템 안의 temp + rename. 반쪽 쓰인 auth.json 이 생기지 않는다.
 
-    `copy2` 로 mtime 을 보존한다. Claude 훅이 낡은 broker 를 판정할 때 이 파일의 mtime 을
-    쓰므로, 새 바이트를 쓰면(`copy`·`write_bytes`) 훅의 판정이 바뀐다 (계약 12 · §5.3).
+    `keep_mtime` 이 이 함수의 전부다. 설명은 `switch` 에 있다.
     """
     tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
     try:
-        shutil.copy2(src, tmp)
+        # copy2 는 mtime 까지 가져오고, copy 는 내용과 권한 비트만 가져온다. 둘 다 권한은
+        # 옮기며, 어느 쪽이든 아래 chmod 가 0600 을 확정한다 (계약 8).
+        (shutil.copy2 if keep_mtime else shutil.copy)(src, tmp)
         os.chmod(tmp, 0o600)
+        if not keep_mtime:
+            # **초 단위로 올림한다.** 훅은 `stat %Y` 와 `date +%s` 로 **정수 초**를 견준다
+            # (`broker 시작 < auth mtime`). 그래서 같은 초 안에서 broker 가 먼저 뜨고
+            # 전환이 뒤따르면 — broker 1000.1, 전환 1000.9 — 정수로는 1000 < 1000 이라
+            # 거짓이 되어 그 broker 를 놓친다.
+            #
+            # 올림하면 1001 이 되어 잡힌다. 대가는 그 1 초 안에 **뒤에** 뜬 broker 를
+            # 불필요하게 죽일 수 있다는 것인데, 그 비용은 재시작 한 번이고 놓치는 비용은
+            # 옛 계정으로 계속 요청하는 것이다. 기울기가 명확하다.
+            stamp = float(math.ceil(time.time()))
+            os.utime(tmp, (stamp, stamp))
         os.replace(tmp, dst)
     except OSError:
         with contextlib.suppress(OSError):
@@ -223,6 +236,33 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     install 이 실패해도 떠나려던 슬롯은 이미 갱신돼 있다. 이건 결함이 아니라 올바른
     동작이다 — 그 바이트가 그 계정의 **최신 토큰**이고, prepare/commit 으로 감싸 롤백하면
     오히려 그것을 잃는다. 두 효과는 독립적으로 커밋된다 (설계문 §7.5).
+
+    ── mtime 을 두 효과가 다르게 다룬다 ──
+
+    활성 자리(B)의 mtime 은 **"활성 자격증명이 마지막으로 바뀐 시각"** 을 뜻해야 한다.
+    Claude 훅이 낡은 broker 를 그 값으로 판정하기 때문이다 —
+    `broker 시작 < auth.json mtime` 이면 그 broker 는 옛 토큰을 들고 있는 것이므로 죽인다.
+
+    bash 는 `cp -p` 로 원본 mtime 을 가져왔고 우리도 `copy2` 로 그대로 옮겼다. 그런데
+    원본은 **슬롯에 보관된 며칠 전 사본**이다. 그래서 방금 전환했는데도 mtime 이 과거로
+    찍히고, 위 조건이 **항상 거짓**이 되어 훅이 낡은 broker 를 하나도 죽이지 못한다.
+
+    실측(2026-09-06, 이 기기): 원장에 그날 다섯 번의 전환이 남아 있는데
+    `~/.codex/auth.json` mtime 은 이틀 전(09-04 06:34)이었고, 떠 있던 broker 넷은 전부
+    그보다 **뒤에** 시작해 하나도 낡은 것으로 잡히지 않았다. 훅 주석(hook:79-80)은 이
+    비교가 "옛 토큰을 든 broker 를 같은 실행에서 내린다" 고 적고 있지만 작동한 적이 없다.
+
+    그래서 (B)는 mtime 을 새로 찍는다. bash 와 갈리는 의도된 divergence 이고, 설계문의
+    계약 12("mtime 을 보존한다")는 이 발견으로 폐기됐다 — 그 계약은 bash 충실성만 보고
+    보존이 **옳은지**를 묻지 않은 것이었다.
+
+    (A) sync-back 은 계속 보존한다. 저장소 전체를 훑어 슬롯 mtime 을 **판정에 쓰는 코드가
+    없음**을 확인했다 — 시각을 읽는 곳은 락 디렉토리·`.last-check`·`.last-rotate`·job 로그
+    뿐이다. 그러니 여기서 새로 찍을 이유가 없고, 보존이 더 적은 변경이다.
+
+    다만 그 값을 "이 계정의 자격증명이 마지막으로 갱신된 시각" 이라고 부르면 부정확하다.
+    (B)가 활성 자리에 활성화 시각을 찍고 다음 (A)가 그것을 그대로 복사해 오므로, 토큰
+    바이트가 그대로여도 슬롯에는 **마지막 활성화 시각**이 남는다.
     """
     if not slot_is_admissible(settings, target):
         raise StoreError(f"쓸 수 없는 라벨: {target!r}")
@@ -237,10 +277,10 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     # 토큰이 슬롯 사본에는 없어서, 이걸 빼먹으면 돌아올 때 만료된 토큰을 집는다.
     if active is not None and live.is_file():
         with contextlib.suppress(OSError):
-            _install(live, slot_auth(settings, active))
+            _install(live, slot_auth(settings, active), keep_mtime=True)
 
-    # 효과 (B) — 대상 자격증명을 활성 자리에 건다.
-    _install(target_auth, live)
+    # 효과 (B) — 대상 자격증명을 활성 자리에 건다. mtime 은 **지금**으로 찍는다.
+    _install(target_auth, live, keep_mtime=False)
 
     log.append(settings, from_label=active, to_label=target, reason=reason)
     with contextlib.suppress(OSError):
