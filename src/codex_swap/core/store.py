@@ -155,12 +155,14 @@ STALE_LOCK_SECONDS = 1800
 
 @contextlib.contextmanager
 def switch_lock(settings: Settings):
-    """`mkdir` 락. 병행 기간에는 bash 와 **같은 프로토콜**이어야 한다.
+    """`mkdir` 락.
 
-    `fcntl` 로 바꾸면 bash 가 무시하고, owner 파일을 넣으면 bash 의 `rmdir` 기반 stale
-    회수가 영영 실패한다. 그래서 설계문 §10 이 이 교체를 범위 밖에 둔다.
+    병행 기간에는 bash 와 **같은 프로토콜**이어야 했다 — `fcntl` 로 바꾸면 bash 가
+    무시하고, owner 파일을 넣으면 bash 의 `rmdir` 기반 stale 회수가 영영 실패한다.
+    그 제약은 bash 와 함께 사라졌지만 교체하려면 배포된 기기에 남은 락과의 전이를
+    설계해야 한다 (`paths.lock_path`).
 
-    bash 와 갈리는 곳이 둘 있고 둘 다 의도적이다.
+    아래 둘은 bash 와 갈리던 곳이고 둘 다 의도적이었다.
 
     D1 — bash 의 `trap … RETURN` 은 함수 스코프가 아니라서 호출자가 반환할 때 **다시**
     발화한다. 두 번째 발화는 그 사이 다른 프로세스가 잡은 락을 지운다. 여기서는

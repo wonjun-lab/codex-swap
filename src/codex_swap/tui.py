@@ -21,6 +21,7 @@ import contextlib
 import curses
 import io
 import unicodedata
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 
 from codex_swap.core import cache, config, identity, probe, store
@@ -37,6 +38,14 @@ class Row:
     used: str
     reset: str
     active: bool
+
+    known: bool = True
+    """사용량을 하나라도 알고 있나. False 면 `used` 가 `?` 이고 자동 조회 대상이다.
+
+    `stale` 과 다르다 — 낡은 값은 **알고 있는** 값이다."""
+
+    stale: bool = False
+    """TTL 이 지난 값을 보여 주는 중인가. `used` 앞에 `~` 가 붙는다."""
 
 
 @dataclass(frozen=True)
@@ -131,11 +140,18 @@ def build_view(
     select: str | None = None,
     message: str = "",
     saved_settings: config.Settings | None = None,
+    carry: Mapping[str, Row] | None = None,
 ) -> View:
     """디스크에서 현재 상태를 읽어 화면 상태를 만든다. 프로브는 돌리지 않는다.
 
     `select` 를 주면 커서를 그 라벨에 맞춘다. 커서가 위치 인덱스뿐이면 목록이 바뀔 때
     엉뚱한 계정을 가리키게 되고, 그 상태에서 enter 를 누르면 의도하지 않은 전환이 된다.
+
+    `carry` 는 **직전 화면의 행**이다. 디스크에서 값을 못 얻었을 때 마지막으로 알던
+    숫자를 이어받는다. 이것이 필요한 이유는 `store.switch` 가 전환 직후 캐시를 파일째
+    지우기 때문이다 — 그건 정책 쪽의 옳은 동작이지만, 화면까지 같이 비면 방금 전환한
+    사용자가 두 계정 모두 `?` 인 표를 보게 된다. 사용량은 전환한다고 달라지지 않으므로
+    직전 값을 그대로 보여 주는 것이 맞다.
     """
     from codex_swap.cli import _reset_text
 
@@ -154,14 +170,45 @@ def build_view(
 
     rows = []
     for label in labels:
-        cached = cache.read(settings, label)
+        email = identity.email_of(store.slot_auth(settings, label)) or "?"
+        # 셋을 순서대로 시도한다. 신선한 캐시 → 낡은 캐시(낡았다고 표시) → 직전 화면.
+        # 물음표는 **정말로 한 번도 값을 얻지 못한 슬롯**에만 남고, 그건 `_loop` 이
+        # 자동 조회로 채운다.
+        entry = cache.read(settings, label)
+        stale = False
+        if entry is None:
+            aged = cache.read_stale(settings, label)
+            if aged is not None:
+                entry, stale = aged[0], True
+        if entry is not None and "usedPercent" in entry:
+            used = f"{'~' if stale else ''}{entry['usedPercent']}%"
+            reset = _reset_text(entry.get("resetsAt"))
+            known = True
+        # 이어받기는 **같은 계정일 때만**이다. 라벨은 슬롯 이름일 뿐이라 지웠다가 다른
+        # 계정으로 다시 등록할 수 있고, 그러면 새 이메일 옆에 옛 계정의 사용량이 붙는다.
+        # `~` 는 값이 낡았다는 뜻이지 **다른 사람 것**이라는 뜻이 아니라, 그 화면은
+        # 낡은 것보다 나쁘다 — 틀린 것을 맞다고 말한다.
+        elif (
+            carry is not None
+            and (prev := carry.get(label)) is not None
+            and prev.known
+            and prev.email == email
+        ):
+            # 캐시가 사라진 자리. 전환 직후가 이 경로다.
+            used, reset, known, stale = prev.used, prev.reset, True, True
+            if not used.startswith("~"):
+                used = f"~{used}"
+        else:
+            used, reset, known = "?", "-", False
         rows.append(
             Row(
                 label=label,
-                email=identity.email_of(store.slot_auth(settings, label)) or "?",
-                used=f"{cached['usedPercent']}%" if cached and "usedPercent" in cached else "?",
-                reset=_reset_text(cached.get("resetsAt")) if cached else "-",
+                email=email,
+                used=used,
+                reset=reset,
                 active=label == active,
+                known=known,
+                stale=stale,
             )
         )
 
@@ -199,6 +246,10 @@ def render_lines(view: View, *, height: int | None = None, width: int | None = N
         "  자동 전환: 꺼짐   (o 로 켜기)" if view.auto_off else "  자동 전환: 켜짐   (o 로 끄기)",
         _help_line(ACCOUNT_KEYS_FULL, ACCOUNT_KEYS_SHORT, width),
     ]
+    # `~` 는 낡은 값이라는 표시다. 범례가 없으면 사용자는 그 기호를 오류로 읽는다.
+    # 낡은 행이 하나도 없으면 넣지 않는다 — 늘 떠 있는 안내는 곧 안 읽힌다.
+    if any(r.stale for r in view.rows):
+        droppable.insert(0, "  ~ 는 캐시가 낡았다는 표시다 (r 로 새로 읽는다)")
     # 활성 계정이 어느 슬롯과도 안 맞으면 전환이 지금 자격증명을 버린다. 조용히 두면
     # 사용자는 enter 한 번으로 그것을 잃는다.
     keep = []
@@ -315,6 +366,16 @@ def _render_policy(view: View, *, height: int | None = None, width: int | None =
 # ── 동작 ─────────────────────────────────────────────────────────────────────
 
 
+def _carry(view: View) -> dict[str, Row]:
+    """직전 화면의 행. 디스크에서 값을 못 얻은 자리를 이것으로 메운다.
+
+    상태를 바꾼 뒤 화면을 다시 만드는 모든 경로가 이걸 넘겨야 한다. 한 곳이라도 빠지면
+    그 동작만 표를 물음표로 되돌려, 사용자에게는 특정 키를 누르면 사용량이 사라지는
+    것으로 보인다.
+    """
+    return {r.label: r for r in view.rows}
+
+
 def do_switch(view: View) -> View:
     """선택한 계정으로 전환한다.
 
@@ -329,8 +390,14 @@ def do_switch(view: View) -> View:
     except OSError as exc:
         return replace(view, message=f"상태를 읽지 못했다: {exc}")
     if target.label == current:
+        # 아무것도 하지 않은 분기인데도 `carry` 가 필요하다. 전환이 캐시를 비운 직후
+        # 같은 행에서 enter 를 한 번 더 누르는 것이 흔한 조작인데, 여기서 이어받지
+        # 않으면 화면이 방금 지켜 낸 숫자를 도로 물음표로 되돌린다.
         return build_view(
-            view.settings, select=target.label, message=f"{target.label} 은 이미 활성이다"
+            view.settings,
+            select=target.label,
+            message=f"{target.label} 은 이미 활성이다",
+            carry=_carry(view),
         )
     try:
         with store.switch_lock(view.settings):
@@ -340,12 +407,17 @@ def do_switch(view: View) -> View:
             view.settings,
             select=target.label,
             message="다른 전환이 진행 중이다. 잠시 뒤 다시 눌러라",
+            carry=_carry(view),
         )
     except (store.LockUnusable, store.StoreError) as exc:
-        return build_view(view.settings, select=target.label, message=str(exc))
+        return build_view(view.settings, select=target.label, message=str(exc), carry=_carry(view))
     except Exception as exc:
-        return build_view(view.settings, select=target.label, message=f"전환 실패: {exc}")
-    return build_view(view.settings, select=target.label, message=f"전환했다: {target.label}")
+        return build_view(
+            view.settings, select=target.label, message=f"전환 실패: {exc}", carry=_carry(view)
+        )
+    return build_view(
+        view.settings, select=target.label, message=f"전환했다: {target.label}", carry=_carry(view)
+    )
 
 
 def do_adopt(view: View, label: str | None) -> View:
@@ -379,11 +451,46 @@ def do_adopt(view: View, label: str | None) -> View:
             cli.cmd_adopt(view.settings, label)
     except Exception as exc:
         return replace(view, message=f"등록 실패: {exc}")
-    return build_view(view.settings, select=label, message=f"등록했다: {label}")
+    return build_view(view.settings, select=label, message=f"등록했다: {label}", carry=_carry(view))
 
 
-def do_refresh(view: View) -> View:
-    """모든 슬롯을 프로브해 캐시를 채운다. 네트워크를 타므로 명시적 키에만 건다."""
+def _probe_into_cache(s: config.Settings, label: str, active: str | None, codex_bin: str) -> bool:
+    """한 슬롯을 프로브해 캐시에 얹는다. 성공이면 True.
+
+    활성 라벨만 홈이 다르다 — 자격증명이 실제로 `~/.codex` 에 있으므로 슬롯 경로로
+    프로브하면 보관본(대개 더 낡은 토큰)을 읽는다.
+    """
+    home = s.default_home if label == active else store.slot_dir(s, label)
+    try:
+        result = probe.probe(codex_bin, str(home))
+    except Exception:
+        return False
+    if result.outcome is not ProbeOutcome.OK or result.usage is None:
+        return False
+    u = result.usage
+    cache.write(
+        s,
+        label,
+        {
+            "email": u.email,
+            "planType": u.plan_type,
+            "usedPercent": u.used_percent,
+            "primaryPercent": u.primary_percent,
+            "secondaryPercent": u.secondary_percent,
+            "resetsAt": u.resets_at,
+            "reached": u.reached,
+        },
+    )
+    return True
+
+
+def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
+    """슬롯을 프로브해 캐시를 채운다. 네트워크를 타므로 아무 데서나 부르지 않는다.
+
+    `labels` 를 주면 그것만 조회한다. 화면을 열 때 **값을 하나도 모르는 슬롯만** 채우는
+    자동 조회가 이 경로를 쓴다 — 전체 조회는 슬롯당 최대 20 초라 열 때마다 물릴 비용이
+    아니지만, 물음표만 채우는 것은 대개 한 번뿐이고 그마저 없으면 화면이 빈다.
+    """
     s = view.settings
     try:
         codex_bin = str(resolve_codex_bin())
@@ -391,38 +498,34 @@ def do_refresh(view: View) -> View:
         return replace(view, message=f"codex 를 찾지 못했다: {exc}")
     try:
         active = store.active_label(s)
-        labels = store.labels(s)
+        targets = labels if labels is not None else tuple(store.labels(s))
     except OSError as exc:
         return replace(view, message=f"슬롯을 읽지 못했다: {exc}")
 
-    failed = []
-    for label in labels:
-        home = s.default_home if label == active else store.slot_dir(s, label)
-        try:
-            result = probe.probe(codex_bin, str(home))
-        except Exception:
-            failed.append(label)
-            continue
-        if result.outcome is ProbeOutcome.OK and result.usage is not None:
-            u = result.usage
-            cache.write(
-                s,
-                label,
-                {
-                    "email": u.email,
-                    "planType": u.plan_type,
-                    "usedPercent": u.used_percent,
-                    "primaryPercent": u.primary_percent,
-                    "secondaryPercent": u.secondary_percent,
-                    "resetsAt": u.resets_at,
-                    "reached": u.reached,
-                },
-            )
-        else:
-            failed.append(label)
-    msg = "사용량을 새로 읽었다" if not failed else f"조회 실패: {', '.join(failed)}"
+    failed = [lb for lb in targets if not _probe_into_cache(s, lb, active, codex_bin)]
+    if not failed:
+        msg = "사용량을 새로 읽었다"
+    elif labels is not None:
+        # 자동 조회의 실패는 사용자가 시킨 일이 아니다. 무엇이 비어 있는지만 알린다.
+        msg = f"사용량을 읽지 못했다: {', '.join(failed)} (r 로 다시 시도)"
+    else:
+        msg = f"조회 실패: {', '.join(failed)}"
     select = view.rows[view.cursor].label if view.rows else None
-    return build_view(s, select=select, message=msg)
+    return build_view(s, select=select, message=msg, carry=_carry(view))
+
+
+def auto_probe_targets(view: View, attempted: Collection[str] = ()) -> tuple[str, ...]:
+    """자동으로 조회할 슬롯. 값을 하나도 모르고, **이번 세션에서 아직 안 시도한** 것.
+
+    `attempted` 가 없으면 프로브가 계속 실패하는 슬롯 하나가 화면을 인질로 잡는다.
+    실패해도 `known` 은 여전히 False 라, 화면을 열 때마다·enter 를 누를 때마다 그 슬롯을
+    다시 조회한다. 그 동안 키 입력은 처리되지 않으므로 `q` 로 나가지도 못한다.
+
+    한 번 시도했으면 그것으로 족하다. 다시 읽는 것은 `r` 이 있고, 그건 사용자가 시킨
+    일이라 기다림도 그의 선택이다.
+    """
+    seen = set(attempted)
+    return tuple(r.label for r in view.rows if not r.known and r.label not in seen)
 
 
 def do_toggle_auto(view: View) -> View:
@@ -439,7 +542,7 @@ def do_toggle_auto(view: View) -> View:
             msg = "자동 전환을 껐다"
     except OSError as exc:
         return replace(view, message=f"스위치를 바꾸지 못했다: {exc}")
-    return build_view(view.settings, select=select, message=msg)
+    return build_view(view.settings, select=select, message=msg, carry=_carry(view))
 
 
 def adjust_policy(view: View, delta: int) -> View:
@@ -529,6 +632,37 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     return raw.decode("utf-8", "replace").strip() or None
 
 
+def _fill_unknown(stdscr, view: View, attempted: set[str]) -> View:  # pragma: no cover - 터미널
+    """물음표로 남은 슬롯만 조회해 채운다.
+
+    사용량이 비는 것은 토큰 문제가 아니라 대개 캐시 사정이다 — TTL(기본 300 초)이
+    지났거나, 방금 전환하면서 캐시가 통째로 지워졌거나, 활성이 사다리 첫 칸 아래라
+    rotate 가 후보를 아예 조회하지 않았거나. 그런데 화면에는 `?` 하나로만 보여서
+    사용자는 계정이 끊긴 줄 안다. 낡은 값은 `~` 를 붙여 그대로 보여 주고, 값 자체가
+    없는 자리만 여기서 실제로 읽는다.
+
+    전체 조회(`r`)와 달리 **아는 값은 건드리지 않는다.** 그래서 평상시 화면 열기는
+    네트워크를 타지 않는다.
+
+    `attempted` 는 호출 사이에 살아남는 집합이다. 판정 자체는 `auto_probe_targets` 에
+    있고 여기서는 화면과 입력만 다룬다 — 그래야 재시도 억제가 터미널 없이 검증된다.
+    """
+    missing = auto_probe_targets(view, attempted)
+    if not missing:
+        return view
+    attempted.update(missing)
+    # 프로브는 **요청당** 20 초다. 한 슬롯이 initialize · account/read ·
+    # rateLimits/read 세 번을 차례로 기다리므로 최악은 슬롯당 1 분에 가깝고, 그 동안
+    # 이 루프는 키를 읽지 않는다. 그래서 먼저 무엇을 기다리는지 그려 둔다 — 그러지
+    # 않으면 화면이 굳은 채 아무 표시가 없다.
+    _paint(stdscr, replace(view, message=f"사용량 조회 중… ({', '.join(missing)})"))
+    filled = do_refresh(view, missing)
+    # 기다리는 동안 눌린 키는 버린다. 남겨 두면 끝난 뒤 한꺼번에 재생되는데, 답답해서
+    # 연타한 enter 가 의도치 않은 전환이 되고 `o` 는 자동 전환을 조용히 끈다.
+    curses.flushinp()
+    return filled
+
+
 def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터미널 필요
     # 커서 숨기기는 terminfo 에 `civis` 가 없는 터미널에서 실패한다. 화면을 못 여는
     # 이유로는 사소하므로 삼킨다.
@@ -538,7 +672,10 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     if hasattr(curses, "set_escdelay"):
         curses.set_escdelay(25)
 
-    view = build_view(settings)
+    # 자동 조회를 이미 시도한 라벨. 실패한 슬롯이 매 조작마다 화면을 붙잡지 않도록
+    # 세션 동안 유지한다. `r` 은 이것과 무관하게 전부 다시 읽는다.
+    attempted: set[str] = set()
+    view = _fill_unknown(stdscr, build_view(settings), attempted)
     errs = 0
     while True:
         _paint(stdscr, view)
@@ -561,7 +698,12 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
 
         if view.mode == "policy":
             if key == 27:  # esc — 편집을 버린다
-                view = build_view(config.load(), cursor=view.cursor, message="저장하지 않고 나왔다")
+                view = build_view(
+                    config.load(),
+                    cursor=view.cursor,
+                    message="저장하지 않고 나왔다",
+                    carry=_carry(view),
+                )
             elif key == curses.KEY_UP:
                 view = replace(view, policy_cursor=max(0, view.policy_cursor - 1), message="")
             elif key == curses.KEY_DOWN:
@@ -581,18 +723,27 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
         if key == curses.KEY_UP:
             # 커서를 움직일 때마다 디스크를 다시 읽는다. 배경에서 rotate 가 돌면 `*` 가
             # 낡는데, 이 화면의 존재 이유가 바로 그 회전이다.
-            view = build_view(settings, cursor=max(0, view.cursor - 1))
+            view = build_view(settings, cursor=max(0, view.cursor - 1), carry=_carry(view))
         elif key == curses.KEY_DOWN:
-            view = build_view(settings, cursor=min(max(len(view.rows) - 1, 0), view.cursor + 1))
+            view = build_view(
+                settings,
+                cursor=min(max(len(view.rows) - 1, 0), view.cursor + 1),
+                carry=_carry(view),
+            )
         elif key in (curses.KEY_ENTER, 10, 13):
-            view = do_switch(view)
+            # 전환은 캐시를 파일째 비운다. `carry` 가 직전 숫자를 이어받지만 그것도
+            # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 여기서 채운다.
+            view = _fill_unknown(stdscr, do_switch(view), attempted)
             curses.flushinp()
         elif key in (ord("r"), ord("R")):
-            # 프로브는 슬롯당 최대 20 초다. 먼저 그려 두지 않으면 화면이 굳은 채로
-            # 아무 표시가 없고, 그동안 눌린 키는 끝난 뒤 한꺼번에 재생된다 — `o` 가
-            # 섞여 있으면 자동 전환이 조용히 꺼진다.
+            # 프로브 타임아웃은 **요청당** 20 초라 한 슬롯이 최악에는 1 분에 가깝다.
+            # 먼저 그려 두지 않으면 화면이 굳은 채로 아무 표시가 없고, 그동안 눌린 키는
+            # 끝난 뒤 한꺼번에 재생된다 — `o` 가 섞여 있으면 자동 전환이 조용히 꺼진다.
             _paint(stdscr, replace(view, message="사용량 조회 중…"))
             view = do_refresh(view)
+            # 사용자가 명시적으로 시켰다. 자동 조회의 억제도 함께 푼다 — 일시적인
+            # 네트워크 장애로 억제된 슬롯이 영영 물음표로 남으면 안 된다.
+            attempted.clear()
             curses.flushinp()
         elif key in (ord("o"), ord("O")):
             view = do_toggle_auto(view)
