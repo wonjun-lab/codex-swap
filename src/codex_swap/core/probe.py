@@ -144,7 +144,14 @@ def accepts_pct(value: object) -> int | None:
     if isinstance(value, float):
         return int(value) if value.is_integer() and value >= 0 else None
     if isinstance(value, str):
-        return int(value) if value.isdigit() else None
+        # `isdigit()` 하나로는 안 된다. bash 의 관문은 `^[0-9]+$` 라 ASCII 전용인데
+        # `str.isdigit()` 은 유니코드 숫자를 전부 참으로 본다 — FULLWIDTH DIGIT
+        # (U+FF10~U+FF19) 로 쓴 "95" 는 95 로 **통과해 버리고**, SUPERSCRIPT TWO
+        # (U+00B2) 는 참인데 `int()` 가 ValueError 를 던진다. 그 예외는 `ProbeError`
+        # 도 `OSError` 도 아니라 `probe()` 의 두 except 를 그냥 지나쳐 호출자까지
+        # 올라간다. rotate 는 매 codex 호출에 실리고 그 경로의 stderr 는 사용자
+        # 터미널로 흐르므로(계약 2), 트레이스백 한 장이 그대로 화면에 실린다.
+        return int(value) if value.isascii() and value.isdigit() else None
     return None
 
 
@@ -451,10 +458,11 @@ def _reached(value: object) -> bool:
     는 이것을 false 로, `is not None` 은 `reached: false` 를 참으로 뒤집는다 — 둘 다
     틀린다.
 
-    빈 문자열만은 jq 렌더링도 비어서 bash 가 접지만, 서버가 주는 값은 null 아니면
-    `"primary"` 류 문자열이라 실물에 없는 구석이다.
+    빈 문자열도 jq 렌더링이 비어서 bash 가 접는다. 서버가 주는 값은 null 아니면
+    `"primary"` 류 문자열이라 실물에 없는 구석이지만, 술어를 반만 옮기면 다음 사람이
+    이 docstring 을 믿고 잘못된 결론을 낸다. 세 값을 다 접는다.
     """
-    return value is not None and value is not False
+    return value is not None and value is not False and value != ""
 
 
 def _as_epoch(value: object) -> int | None:
