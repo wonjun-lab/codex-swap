@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import shutil
 import subprocess
 import sys
@@ -35,11 +36,37 @@ def _opt(v: object) -> str:
     return "-" if v is None else str(v)
 
 
+def _reset_text(resets_at: object, *, now: float | None = None) -> str:
+    """사용량이 되돌아오는 시각. epoch 을 사람이 읽을 형태로 바꾼다.
+
+    raw epoch 을 그대로 보여주면 "언제 풀리나" 를 계산기 없이 알 수 없다. 남은 시간을
+    함께 적는 이유는 그것이 실제로 알고 싶은 값이기 때문이다 — 오늘 안에 풀리는지,
+    며칠 기다려야 하는지.
+
+    쿠폰으로 사용량을 리셋하면 이 값이 앞으로 당겨진다. 그래서 이 표시가 곧 "쿠폰이
+    먹었나" 를 확인하는 자리이기도 하다.
+    """
+    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
+        return "-"
+    when = datetime.datetime.fromtimestamp(resets_at)
+    current = datetime.datetime.now() if now is None else datetime.datetime.fromtimestamp(now)
+    secs = int((when - current).total_seconds())
+    if secs < 0:
+        rel = "지남"
+    elif secs < 3600:
+        rel = f"{secs // 60}분 뒤"
+    elif secs < 86400:
+        rel = f"{secs // 3600}시간 뒤"
+    else:
+        rel = f"{secs // 86400}일 뒤"
+    return f"{when:%m-%d %H:%M} ({rel})"
+
+
 def _usage_line(u: Usage) -> str:
     return (
         f"사용량: {u.used_percent}% "
         f"(primary {_opt(u.primary_percent)}%, secondary {_opt(u.secondary_percent)}%) "
-        f"· plan {_opt(u.plan_type)} · reset {_opt(u.resets_at)}"
+        f"· plan {_opt(u.plan_type)} · 리셋 {_reset_text(u.resets_at)}"
     )
 
 
@@ -137,12 +164,16 @@ def cmd_list(settings: config.Settings) -> int:
         print("등록된 계정이 없다. 먼저: codex-swap adopt <label>")
         return 0
     active = store.active_label(settings)
-    print(f"{'':<3} {'LABEL':<14} {'EMAIL':<34} USED")
+    print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} RESET")
     for label in labels:
         email = identity.email_of(store.slot_auth(settings, label)) or "?"
         cached = cache.read(settings, label)
         used = f"{cached['usedPercent']}%" if cached and "usedPercent" in cached else "?"
-        print(f"{'*' if label == active else ' ':<3} {label:<14} {email:<34} {used}")
+        # 캐시가 비면 리셋 시각도 모른다. 프로브를 돌리지 않는 것은 의도다 — `list` 는
+        # 네트워크를 타지 않는 조회여야 매 호출이 싸다. 신선한 값이 필요하면 `status --fresh`.
+        reset = _reset_text(cached.get("resetsAt")) if cached else "-"
+        mark = "*" if label == active else " "
+        print(f"{mark:<3} {label:<14} {email:<30} {used:<6} {reset}")
     print()
     ladder = ",".join(str(x) for x in settings.ladder)
     print(
