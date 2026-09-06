@@ -165,16 +165,34 @@ def cmd_list(settings: config.Settings) -> int:
         return 0
     active = store.active_label(settings)
     print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} RESET")
+    stale_seen: list[str] = []
     for label in labels:
         email = identity.email_of(store.slot_auth(settings, label)) or "?"
+        # 프로브를 돌리지 않는 것은 의도다 — `list` 는 네트워크를 타지 않는 조회여야
+        # 매 호출이 싸다. 신선한 값이 필요하면 `status --fresh`.
+        #
+        # 다만 TTL 이 지났다고 물음표를 찍지는 않는다. 그건 "읽지 못했다" 가 아니라
+        # "5 분 지났다" 이고, 사람은 그 둘을 구별할 방법이 없어 토큰이 끊긴 줄 안다.
+        # 낡은 값은 `~` 를 붙여 그대로 보여 준다 — 디스크만 읽으므로 비용은 그대로다.
         cached = cache.read(settings, label)
-        used = f"{cached['usedPercent']}%" if cached and "usedPercent" in cached else "?"
-        # 캐시가 비면 리셋 시각도 모른다. 프로브를 돌리지 않는 것은 의도다 — `list` 는
-        # 네트워크를 타지 않는 조회여야 매 호출이 싸다. 신선한 값이 필요하면 `status --fresh`.
-        reset = _reset_text(cached.get("resetsAt")) if cached else "-"
+        stale = False
+        if cached is None:
+            aged = cache.read_stale(settings, label)
+            if aged is not None:
+                cached, stale = aged[0], True
+        if cached is not None and "usedPercent" in cached:
+            used = f"{'~' if stale else ''}{cached['usedPercent']}%"
+            reset = _reset_text(cached.get("resetsAt"))
+            if stale:
+                stale_seen.append(label)
+        else:
+            used, reset = "?", "-"
         mark = "*" if label == active else " "
         print(f"{mark:<3} {label:<14} {email:<30} {used:<6} {reset}")
     print()
+    # 낡은 행이 있을 때만 범례를 낸다. 늘 떠 있는 안내는 곧 안 읽힌다.
+    if stale_seen:
+        print("~ 는 캐시가 낡았다는 표시다. 새로 읽으려면: codex-swap status --fresh")
     ladder = ",".join(str(x) for x in settings.ladder)
     print(
         f"사다리 {ladder} · 마진 {settings.margin}%p · "

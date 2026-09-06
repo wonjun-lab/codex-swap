@@ -186,3 +186,54 @@ def test_clean_keeps_auth_and_removes_the_rest(env, capsys) -> None:
     assert cli.main(["clean"]) == 0
     assert store.slot_auth(env, "b").is_file()
     assert not (slot / "sqlite.db").exists() and not (slot / "sub").exists()
+
+
+# ── list 의 사용량 표시 ──────────────────────────────────────────────────────
+#
+# `?` 하나가 "TTL 이 지났다" 와 "읽지 못했다" 를 겹쳐 쓰고 있었다. 사람은 그 둘을 구별할
+# 방법이 없어 토큰이 끊긴 줄 안다. `list` 가 프로브를 돌리지 않는 것은 그대로 두되(매
+# 호출이 싸야 한다), 디스크에 있는 값은 낡았더라도 보여 준다.
+
+
+def _cache_usage(s, label: str, pct: int, *, age: int = 0) -> None:
+    import time
+
+    from codex_swap.core import cache
+
+    cache.write(s, label, {"usedPercent": pct, "resetsAt": None}, now=int(time.time()) - age)
+
+
+def test_list_shows_a_fresh_number_plainly(env, capsys) -> None:
+    _cache_usage(env, "a", 38)
+    cli.main(["list"])
+    out = capsys.readouterr().out
+    assert "38%" in out and "~38%" not in out
+    assert "캐시가 낡았다" not in out
+
+
+def test_list_still_shows_an_expired_number_marked_stale(env, capsys) -> None:
+    """TTL 이 지났다고 물음표를 찍으면 안 된다. 그건 '읽지 못했다' 가 아니다."""
+    _cache_usage(env, "a", 38, age=env.cache_ttl + 10)
+    cli.main(["list"])
+    out = capsys.readouterr().out
+    assert "~38%" in out
+    assert "캐시가 낡았다" in out, "범례가 없으면 `~` 를 오류로 읽는다"
+
+
+def test_list_keeps_the_question_mark_for_a_slot_never_read(env, capsys) -> None:
+    """한 번도 못 읽은 슬롯은 정직하게 물음표다. 지어내지 않는다."""
+    cli.main(["list"])
+    out = capsys.readouterr().out
+    assert "?" in out and "%" not in out.split("사다리")[0]
+    assert "캐시가 낡았다" not in out
+
+
+def test_list_does_not_probe(env, capsys, monkeypatch) -> None:
+    """`list` 는 네트워크를 타지 않는 조회여야 매 호출이 싸다."""
+
+    def forbidden(*a, **k):
+        raise AssertionError("list 가 프로브를 돌렸다")
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", forbidden)
+    _cache_usage(env, "a", 38, age=env.cache_ttl + 10)
+    assert cli.main(["list"]) == 0
