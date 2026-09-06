@@ -6,6 +6,7 @@ bash 의 파라미터 확장 의미를 한 곳에서 재현한다. 흩어 두면
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -43,9 +44,37 @@ def _raw(name: str) -> str | None:
     return None if v is None or v == "" else v
 
 
-def _int_env(name: str, default: int) -> int:
+CONFIG_NAME = "config.json"
+
+
+def _file_config(accounts_dir: Path) -> dict[str, object]:
+    """`<accounts_dir>/config.json` — TUI 가 정책을 저장하는 곳.
+
+    사다리·마진은 원래 환경변수뿐이었다. 그래서 TUI 에서 바꿔도 남길 자리가 없었다.
+    우선순위는 **환경변수 > 파일 > 기본값** 이다 — 환경변수를 이기게 두면 한 번의
+    `CODEX_ROTATE_LADDER=…` 실험이 저장된 설정에 막혀 조용히 무시된다.
+
+    bash 는 이 파일을 모른다. 병행 기간에는 두 구현의 설정이 갈릴 수 있으므로, 차등
+    테스트는 설정을 환경변수로 명시해 이 축을 비껴간다.
+
+    깨진 파일은 무시한다. rotate 는 매 codex 호출에 실리므로 여기서 죽으면 안 된다.
+    """
+    path = accounts_dir / CONFIG_NAME
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _int_of(name: str, file_cfg: dict[str, object], default: int) -> int:
     v = _raw(name)
     if v is None:
+        from_file = file_cfg.get(_file_key(name))
+        if isinstance(from_file, bool):
+            return default
+        if isinstance(from_file, int):
+            return from_file
         return default
     s = v.strip()
     # bash 는 `(( ))` 안에서 음수도 받는다. 여기서도 받아 두어야 MARGIN=-5 같은 값에서
@@ -53,6 +82,11 @@ def _int_env(name: str, default: int) -> int:
     if not (s.lstrip("-").isdigit() and s.lstrip("-") != ""):
         raise ConfigError(f"{name}={v!r} is not an integer")
     return int(s)
+
+
+def _file_key(env_name: str) -> str:
+    """`CODEX_ROTATE_MARGIN` → `margin`. 파일 안에서는 접두사가 잡음이다."""
+    return env_name.removeprefix("CODEX_ROTATE_").removeprefix("CODEX_").lower()
 
 
 def _flag_env(name: str) -> bool:
@@ -64,13 +98,35 @@ def _flag_env(name: str) -> bool:
     return _raw(name) is not None
 
 
-def _ladder_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+def _ladder_of(name: str, file_cfg: dict[str, object], default: tuple[int, ...]) -> tuple[int, ...]:
     """`50,70,85,95` 형태. bash 는 숫자가 아닌 칸을 조용히 건너뛴다."""
     v = _raw(name)
     if v is None:
+        from_file = file_cfg.get(_file_key(name))
+        if isinstance(from_file, list):
+            rungs = tuple(
+                x for x in from_file if isinstance(x, int) and not isinstance(x, bool) and x >= 0
+            )
+            return rungs if rungs else default
         return default
-    rungs = tuple(int(p) for p in (x.strip() for x in v.split(",")) if p.isdigit())
-    return rungs
+    return tuple(int(p) for p in (x.strip() for x in v.split(",")) if p.isdigit())
+
+
+def save_policy(accounts_dir: Path, **values: object) -> Path:
+    """정책을 파일에 병합해 저장한다. TUI 가 쓰는 유일한 쓰기 경로다.
+
+    통째로 덮지 않고 병합하는 이유는, 이 파일이 나중에 다른 키를 갖게 되더라도 정책
+    화면이 그것들을 지우지 않게 하기 위해서다.
+    """
+    accounts_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = accounts_dir / CONFIG_NAME
+    current = _file_config(accounts_dir)
+    current.update(values)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(current, indent=2, ensure_ascii=False) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return path
 
 
 @dataclass(frozen=True)
@@ -118,16 +174,18 @@ def load(environ: dict[str, str] | None = None) -> Settings:
         _raw("CODEX_ROTATE_STATE_ROOT") or home / ".claude/plugins/data/codex-openai-codex/state"
     )
 
+    file_cfg = _file_config(accounts_dir)
+
     return Settings(
         default_home=default_home,
         accounts_dir=accounts_dir,
         rotate_state_root=state_root,
-        ladder=_ladder_env("CODEX_ROTATE_LADDER", DEFAULT_LADDER),
-        margin=_int_env("CODEX_ROTATE_MARGIN", DEFAULT_MARGIN),
-        cache_ttl=_int_env("CODEX_ROTATE_CACHE_TTL", DEFAULT_CACHE_TTL),
-        check_interval=_int_env("CODEX_ROTATE_CHECK_INTERVAL", DEFAULT_CHECK_INTERVAL),
-        cooldown=_int_env("CODEX_ROTATE_COOLDOWN", DEFAULT_COOLDOWN),
-        busy_window=_int_env("CODEX_ROTATE_BUSY_WINDOW", DEFAULT_BUSY_WINDOW),
+        ladder=_ladder_of("CODEX_ROTATE_LADDER", file_cfg, DEFAULT_LADDER),
+        margin=_int_of("CODEX_ROTATE_MARGIN", file_cfg, DEFAULT_MARGIN),
+        cache_ttl=_int_of("CODEX_ROTATE_CACHE_TTL", file_cfg, DEFAULT_CACHE_TTL),
+        check_interval=_int_of("CODEX_ROTATE_CHECK_INTERVAL", file_cfg, DEFAULT_CHECK_INTERVAL),
+        cooldown=_int_of("CODEX_ROTATE_COOLDOWN", file_cfg, DEFAULT_COOLDOWN),
+        busy_window=_int_of("CODEX_ROTATE_BUSY_WINDOW", file_cfg, DEFAULT_BUSY_WINDOW),
         skip=_flag_env("CODEX_ROTATE_SKIP"),
         off_switch=home / ".claude/.codex-rotate-off",
     )
