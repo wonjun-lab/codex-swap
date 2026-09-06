@@ -20,8 +20,11 @@ from __future__ import annotations
 import contextlib
 import curses
 import io
+import queue
+import threading
+import time
 import unicodedata
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from codex_swap.core import cache, config, identity, probe, store
@@ -89,6 +92,13 @@ ACCOUNT_KEYS_FULL = "  ^v 이동   enter 전환   r 사용량   a 등록   p 정
 ACCOUNT_KEYS_SHORT = "  ^v  enter 전환  r  a  p  o  q"
 POLICY_KEYS_FULL = "  ^v 이동   <> 값 조정   s 저장   esc 취소   q 종료"
 POLICY_KEYS_SHORT = "  ^v  <>  s 저장  esc  q"
+
+_TICK_MS = 120
+"""`getch` 타임아웃(ms). 배경 조회 결과가 화면에 반영되는 지연이기도 하다.
+
+짧게 잡을수록 반응이 좋아 보이지만 그만큼 자주 깨어나 다시 그린다. 120 ms 는 사람이
+멈춤으로 느끼지 않으면서(대략 100 ms 이하가 즉각으로 읽힌다) 초당 8 회 정도만 도는 값이다.
+"""
 
 
 # ── 폭 ───────────────────────────────────────────────────────────────────────
@@ -632,35 +642,97 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     return raw.decode("utf-8", "replace").strip() or None
 
 
-def _fill_unknown(stdscr, view: View, attempted: set[str]) -> View:  # pragma: no cover - 터미널
-    """물음표로 남은 슬롯만 조회해 채운다.
+class _Prober:
+    """사용량 조회를 별도 스레드에서 돌린다.
 
-    사용량이 비는 것은 토큰 문제가 아니라 대개 캐시 사정이다 — TTL(기본 300 초)이
-    지났거나, 방금 전환하면서 캐시가 통째로 지워졌거나, 활성이 사다리 첫 칸 아래라
-    rotate 가 후보를 아예 조회하지 않았거나. 그런데 화면에는 `?` 하나로만 보여서
-    사용자는 계정이 끊긴 줄 안다. 낡은 값은 `~` 를 붙여 그대로 보여 주고, 값 자체가
-    없는 자리만 여기서 실제로 읽는다.
+    이 클래스가 존재하는 이유는 순전히 **입력 응답성** 때문이다. 동기로 돌렸더니 화면을
+    여는 데 5.3 초가 걸렸고(실측, 슬롯 2 개), 그 동안 curses 가 키를 읽지 않아 `q` 조차
+    먹지 않았다. 게다가 끝난 뒤 `flushinp()` 가 그 사이 눌린 키를 버려서, 사용자는 두 번
+    눌러야 나갈 수 있었다. 프로브 타임아웃이 **요청당** 20 초라 최악은 슬롯당 1 분에
+    가까우므로 그냥 두면 안 되는 종류의 멈춤이다.
 
-    전체 조회(`r`)와 달리 **아는 값은 건드리지 않는다.** 그래서 평상시 화면 열기는
-    네트워크를 타지 않는다.
-
-    `attempted` 는 호출 사이에 살아남는 집합이다. 판정 자체는 `auto_probe_targets` 에
-    있고 여기서는 화면과 입력만 다룬다 — 그래야 재시도 억제가 터미널 없이 검증된다.
+    **curses 를 만지지 않는다.** 스레드는 디스크와 네트워크만 다루고(프로브 → 캐시 쓰기)
+    결과는 문자열 하나로 큐에 넘긴다. 화면을 다시 만드는 것은 주 스레드가 디스크에서
+    한다 — 그래야 조회 중에 일어난 전환·등록이 결과에 덮이지 않는다.
     """
-    missing = auto_probe_targets(view, attempted)
-    if not missing:
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[str] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._labels: tuple[str, ...] = ()
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """지금 조회 중인 라벨. 비어 있으면 노는 중이다."""
+        return self._labels
+
+    def start(self, settings: config.Settings, labels: Sequence[str]) -> bool:
+        """조회를 시작한다. 이미 돌고 있거나 대상이 없으면 False.
+
+        겹쳐 띄우지 않는 것은 같은 슬롯을 두 번 읽지 않기 위해서다. 놓친 대상은 다음
+        틱에 `auto_probe_targets` 가 다시 집어 준다.
+        """
+        if self._thread is not None or not labels:
+            return False
+        self._labels = tuple(labels)
+        self._thread = threading.Thread(
+            target=self._run, args=(settings, self._labels), daemon=True
+        )
+        self._thread.start()
+        return True
+
+    def take(self) -> str | None:
+        """끝났으면 결과 메시지를, 아직이면 None.
+
+        큐를 먼저 보고 스레드를 정리한다. 반대로 하면 스레드가 막 끝났는데 결과를 한 틱
+        늦게 집는다.
+        """
+        try:
+            message = self._queue.get_nowait()
+        except queue.Empty:
+            return None
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        self._labels = ()
+        return message
+
+    def _run(self, settings: config.Settings, labels: tuple[str, ...]) -> None:
+        # 이 스레드에서 나가는 예외는 아무도 못 본다. 무엇이 됐든 메시지 하나는 반드시
+        # 큐에 넣어야 `take` 가 영영 None 을 돌려주고 화면이 "조회 중" 에 굳는 일이 없다.
+        try:
+            self._queue.put(_refresh_message(settings, labels))
+        # 넓게 잡는다. 이 스레드에서 나가는 예외는 아무도 못 보고, 큐가 비면 `take` 가
+        # 영영 None 을 돌려줘 화면이 "조회 중" 에 굳는다.
+        except BaseException as exc:
+            self._queue.put(f"사용량 조회가 실패했다: {exc}")
+
+
+def _refresh_message(settings: config.Settings, labels: tuple[str, ...]) -> str:
+    """`labels` 를 프로브해 캐시에 얹고, 화면에 띄울 한 줄을 만든다. curses 를 모른다."""
+    try:
+        codex_bin = str(resolve_codex_bin())
+    except Exception as exc:
+        return f"codex 를 찾지 못했다: {exc}"
+    try:
+        active = store.active_label(settings)
+    except OSError as exc:
+        return f"슬롯을 읽지 못했다: {exc}"
+    failed = [lb for lb in labels if not _probe_into_cache(settings, lb, active, codex_bin)]
+    if not failed:
+        return "사용량을 새로 읽었다"
+    return f"사용량을 읽지 못했다: {', '.join(failed)} (r 로 다시 시도)"
+
+
+def probing_note(view: View, labels: Sequence[str]) -> View:
+    """조회 중이라는 것을 메시지 줄에 얹는다. 화면이 멈춘 것처럼 보이지 않게 한다.
+
+    기존 메시지를 지우지 않는다 — 실패 통지 위에 덮으면 사용자가 그것을 못 본다.
+    """
+    if not labels:
         return view
-    attempted.update(missing)
-    # 프로브는 **요청당** 20 초다. 한 슬롯이 initialize · account/read ·
-    # rateLimits/read 세 번을 차례로 기다리므로 최악은 슬롯당 1 분에 가깝고, 그 동안
-    # 이 루프는 키를 읽지 않는다. 그래서 먼저 무엇을 기다리는지 그려 둔다 — 그러지
-    # 않으면 화면이 굳은 채 아무 표시가 없다.
-    _paint(stdscr, replace(view, message=f"사용량 조회 중… ({', '.join(missing)})"))
-    filled = do_refresh(view, missing)
-    # 기다리는 동안 눌린 키는 버린다. 남겨 두면 끝난 뒤 한꺼번에 재생되는데, 답답해서
-    # 연타한 enter 가 의도치 않은 전환이 되고 `o` 는 자동 전환을 조용히 끈다.
-    curses.flushinp()
-    return filled
+    note = f"사용량 조회 중… ({', '.join(labels)})"
+    return replace(view, message=f"{view.message}   {note}" if view.message else note)
 
 
 def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터미널 필요
@@ -672,20 +744,42 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     if hasattr(curses, "set_escdelay"):
         curses.set_escdelay(25)
 
+    # 조회가 도는 동안에도 키를 읽어야 하므로 getch 를 논블로킹으로 만든다. 이 값이
+    # 곧 조회 결과가 화면에 반영되는 지연이고, 사람이 못 느끼는 범위에서 가장 크게 잡는다.
+    stdscr.timeout(_TICK_MS)
+
     # 자동 조회를 이미 시도한 라벨. 실패한 슬롯이 매 조작마다 화면을 붙잡지 않도록
     # 세션 동안 유지한다. `r` 은 이것과 무관하게 전부 다시 읽는다.
     attempted: set[str] = set()
-    view = _fill_unknown(stdscr, build_view(settings), attempted)
+    prober = _Prober()
+    view = build_view(settings)
+
+    def kick(labels: Sequence[str]) -> None:
+        """조회를 띄운다. 실패해도 화면은 그대로 돌아간다."""
+        if prober.start(settings, labels):
+            attempted.update(labels)
+
+    kick(auto_probe_targets(view, attempted))
     errs = 0
     while True:
-        _paint(stdscr, view)
+        done = prober.take()
+        if done is not None:
+            here = view.rows[view.cursor].label if view.rows else None
+            view = build_view(settings, select=here, message=done, carry=_carry(view))
+            # 조회 중에 전환·등록이 있었으면 새 슬롯이 비어 있을 수 있다.
+            kick(auto_probe_targets(view, attempted))
+        _paint(stdscr, probing_note(view, prober.labels))
+        started = time.monotonic()
         key = stdscr.getch()
 
-        # tty 가 영구히 죽으면 getch 가 -1 을 즉시 반복 반환해 CPU 를 태운다.
         if key == -1:
-            errs += 1
-            if errs > 50:
-                return
+            # 타임아웃이 걸려 있으므로 -1 은 평상시의 "그 동안 입력이 없었다" 다. 죽은
+            # tty 는 기다리지 않고 **즉시** -1 을 돌려주는 것으로 갈린다 — 그것만 센다.
+            # 시간을 안 보고 세면 가만히 있는 사용자가 쫓겨난다.
+            if time.monotonic() - started < _TICK_MS / 2000:
+                errs += 1
+                if errs > 50:
+                    return
             continue
         errs = 0
 
@@ -732,19 +826,16 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             )
         elif key in (curses.KEY_ENTER, 10, 13):
             # 전환은 캐시를 파일째 비운다. `carry` 가 직전 숫자를 이어받지만 그것도
-            # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 여기서 채운다.
-            view = _fill_unknown(stdscr, do_switch(view), attempted)
+            # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 배경에서 채운다.
+            view = do_switch(view)
+            kick(auto_probe_targets(view, attempted))
             curses.flushinp()
         elif key in (ord("r"), ord("R")):
-            # 프로브 타임아웃은 **요청당** 20 초라 한 슬롯이 최악에는 1 분에 가깝다.
-            # 먼저 그려 두지 않으면 화면이 굳은 채로 아무 표시가 없고, 그동안 눌린 키는
-            # 끝난 뒤 한꺼번에 재생된다 — `o` 가 섞여 있으면 자동 전환이 조용히 꺼진다.
-            _paint(stdscr, replace(view, message="사용량 조회 중…"))
-            view = do_refresh(view)
-            # 사용자가 명시적으로 시켰다. 자동 조회의 억제도 함께 푼다 — 일시적인
+            # 사용자가 명시적으로 시켰으므로 자동 조회의 억제를 푼다 — 일시적인
             # 네트워크 장애로 억제된 슬롯이 영영 물음표로 남으면 안 된다.
             attempted.clear()
-            curses.flushinp()
+            if not prober.start(settings, [r.label for r in view.rows]):
+                view = replace(view, message="이미 조회 중이다")
         elif key in (ord("o"), ord("O")):
             view = do_toggle_auto(view)
             curses.flushinp()

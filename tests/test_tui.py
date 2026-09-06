@@ -10,6 +10,8 @@ import base64
 import json
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -450,3 +452,85 @@ def test_the_stale_marker_is_explained_only_when_something_is_stale(env) -> None
     _cache_usage(env, "master", 38, age=env.cache_ttl + 10)
     body = text(tui.build_view(env))
     assert "~38%" in body and "~ 는 캐시가 낡았다는 표시다" in body
+
+
+# ── 배경 조회 ────────────────────────────────────────────────────────────────
+#
+# 동기로 돌렸더니 화면을 여는 데 5.3 초가 걸렸고(실측, 슬롯 2 개) 그 동안 `q` 조차 먹지
+# 않았다. 끝난 뒤 `flushinp()` 가 그 사이 눌린 키까지 버려서 두 번 눌러야 나갈 수 있었다.
+# 프로브 타임아웃이 **요청당** 20 초라 최악은 슬롯당 1 분에 가깝다.
+
+
+def test_the_prober_hands_back_a_message_and_then_goes_idle(env, monkeypatch) -> None:
+    monkeypatch.setattr(tui, "_refresh_message", lambda s, labels: f"읽었다: {','.join(labels)}")
+    prober = tui._Prober()
+    assert prober.labels == ()
+    assert prober.start(env, ["master", "shared"]) is True
+    for _ in range(200):  # 스레드가 끝날 때까지
+        message = prober.take()
+        if message is not None:
+            break
+        time.sleep(0.01)
+    assert message == "읽었다: master,shared"
+    # 끝났으면 다시 놀아야 한다. 안 그러면 다음 조회가 영영 안 뜬다.
+    assert prober.labels == ()
+    assert prober.take() is None
+    assert prober.start(env, ["master"]) is True
+
+
+def test_the_prober_does_not_stack_two_runs(env, monkeypatch) -> None:
+    """같은 슬롯을 두 번 읽지 않는다. 놓친 대상은 다음 틱에 다시 집힌다."""
+    release = threading.Event()
+    monkeypatch.setattr(tui, "_refresh_message", lambda s, labels: release.wait(5) and "done")
+    prober = tui._Prober()
+    assert prober.start(env, ["master"]) is True
+    assert prober.start(env, ["shared"]) is False
+    assert prober.labels == ("master",)
+    release.set()
+
+
+def test_the_prober_never_leaves_the_screen_stuck_on_probing(env, monkeypatch) -> None:
+    """스레드에서 나가는 예외는 아무도 못 본다. 큐가 비면 화면이 '조회 중' 에 굳는다."""
+
+    def boom(settings, labels):
+        raise RuntimeError("터졌다")
+
+    monkeypatch.setattr(tui, "_refresh_message", boom)
+    prober = tui._Prober()
+    prober.start(env, ["master"])
+    for _ in range(200):
+        message = prober.take()
+        if message is not None:
+            break
+        time.sleep(0.01)
+    assert message is not None and "터졌다" in message
+    assert prober.labels == ()
+
+
+def test_nothing_to_probe_is_not_a_run(env) -> None:
+    assert tui._Prober().start(env, []) is False
+
+
+def test_the_probing_note_does_not_bury_an_existing_message(env) -> None:
+    """실패 통지 위에 '조회 중' 을 덮으면 사용자가 그것을 못 본다."""
+    view = tui.build_view(env, message="전환 실패: 무언가")
+    noted = tui.probing_note(view, ("master",))
+    assert "전환 실패: 무언가" in noted.message and "master" in noted.message
+    assert tui.probing_note(view, ()) is view
+
+
+def test_refresh_message_names_what_it_could_not_read(env, monkeypatch) -> None:
+    monkeypatch.setattr(tui, "resolve_codex_bin", lambda: "/bin/true")
+    monkeypatch.setattr(tui.probe, "probe", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    msg = tui._refresh_message(env, ("master", "shared"))
+    assert "master" in msg and "shared" in msg and "r 로 다시 시도" in msg
+
+
+def test_refresh_message_reports_a_missing_codex_instead_of_raising(env, monkeypatch) -> None:
+    """이 함수는 스레드 안에서 돈다. 예외를 올리면 화면이 아무 말도 못 듣는다."""
+
+    def missing():
+        raise RuntimeError("없다")
+
+    monkeypatch.setattr(tui, "resolve_codex_bin", missing)
+    assert "codex 를 찾지 못했다" in tui._refresh_message(env, ("master",))
