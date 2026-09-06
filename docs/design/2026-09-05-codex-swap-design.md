@@ -257,15 +257,52 @@ resolved_dir = ~/.nvm/.../lib/node_modules/@openai/codex/bin           node 없�
 주의: `initialize` 응답의 `error` 유무는 검사하지 않는다. id 만 맞으면 다음으로 간다.
 타임아웃은 전역 20 초가 아니라 **요청당** 20 초다.
 
-인증 실패(exit 3) 판정은 자식의 exit code 나 stderr 가 아니라 **JSON-RPC 오류 메시지**에
-대한 정규식이다. 자식 stderr 는 버려진다.
+인증 실패(exit 3) 판정은 자식의 exit code 나 stderr 가 아니라 **응답 본문**만 본다. 자식
+stderr 는 버려진다. Python 이 stderr 의 `401` 이나 exit 127 을 인증 실패로 분류하면,
+네트워크 실패로 접어야 할 자리에서 계정을 갈아끼운다.
+
+### 6.3.1 판정은 두 갈래다 — 문구 하나로는 새는 축이 있다 (2026-09-06)
+
+bash 와 초기 Python 판은 **JSON-RPC 오류 메시지에 대한 정규식 하나**가 전부였다.
 
 ```
 /\b401\b|token_revoked|token_expired|invalid_grant|unauthorized|sign in again|logged out/i
 ```
 
-Python 이 stderr 의 `401` 이나 exit 127 을 인증 실패로 분류하면, bash 가 1 을 돌려줄
-상황에서 Python 만 계정을 갈아끼운다.
+이 정규식이 미인증 상태를 놓친다(이슈 #9). 실제 응답을 격리 `CODEX_HOME` 으로 캡처해
+표면을 전수 조사한 결과가 아래다 — codex-cli 0.153.4, 픽스처는 `tests/fixtures/probe/`.
+
+| 상태 | `account/read` 의 `result.account` | `rateLimits` 결과 |
+| --- | --- | --- |
+| 정상 | `{type, email, planType}` | `usedPercent: 36` |
+| 토큰 폐기 | `{type, email, planType}` | 401 `Could not parse your authentication token. Please try signing in again.` |
+| `access_token` 빈 문자열 | `{type, email, planType}` | 401 `{"detail":"Unauthorized"}` |
+| `id_token` 만료 | `{type, email, planType}` | 401 (본문이 text/plain JSON) |
+| 미인증 (`refresh_token` 없음) | **`null`** | -32600 `codex account authentication required to read rate limits` |
+| `auth_mode=apikey` | **`{"type":"apiKey"}`** | -32600 `chatgpt authentication required to read rate limits` |
+
+여기서 세 가지가 갈라진다.
+
+**하나. `requiresOpenaiAuth` 는 판정에 쓸 수 없다.** 이슈 #9 는 "`account` 가 null 이거나
+`requiresOpenaiAuth` 가 참이면 인증 실패" 를 1 안으로 적었는데, 이 필드는 **36% 를 정상
+보고하는 계정을 포함해 여섯 표면 전부에서 참**이다. "이 배포는 OpenAI 인증을 요구한다" 는
+서버 구성값이지 이 계정이 인증에 실패했다는 뜻이 아니다. 그대로 구현했으면 모든 계정이
+매번 AuthFailed 로 분류되어 살아 있는 계정을 끝없이 갈아끼우고 `Ok` 경로에는 영영 닿지
+못했을 것이다.
+
+**둘. 구조 판정만으로도 새는 축이 있다.** `auth_mode=apikey` 는 `account` 가 non-null
+이라 `account is null` 검사를 통과해 버린다. 반대로 문구 판정만 두면 서버가 문장을 바꾸는
+순간 다시 #9 가 재발한다. 그래서 둘 다 둔다 — 겹치지 않고, 각자 상대가 놓치는 축을 잡는다.
+
+**셋. 구조 판정은 승격만 한다.** `account` 가 비었다는 사실은 **한도 읽기가 이미 실패한
+뒤에만** 얹는다. 앞에 두면 account 가 없어도 한도는 읽히는 조합에서 멀쩡한 사용량을 버리고
+전환하게 된다. 그리고 `account/read` 는 로컬 `auth.json` 파싱에서 나오므로 네트워크가
+죽어도 계정이 있으면 채워진다 — "account 없음 + 한도 실패" 가 네트워크 실패와 갈리는
+근거가 그것이다.
+
+곁가지로 정규식의 죽은 항목 하나를 고쳤다. 실물 문구가 `Please try **signing** in again.`
+이라 `sign in again` 리터럴이 깨져 매치하지 않았고, 같은 메시지의 `401` 하나가 우연히
+살려 주는 단일 실패점이었다 → `sign(?:ing)? in again`.
 
 ### 6.4 JSON 값의 수용 범위
 
@@ -424,6 +461,12 @@ Error(reason)           우리 잘못
 | D3 | `status` 는 활성이 어느 슬롯에도 없으면 가짜 라벨 `__active__` 를 그대로 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌린다 | `label: str \| None` 로 시그니처를 나누고, `None` 이면 home 을 `~/.codex` 로 | 자격증명은 실제로 거기 있다. 파생 경로가 결함이다 |
 | D4 | 슬롯 안 `auth.json` 이 바깥을 가리키는 심링크면 통과 (§6.6) | realpath 봉쇄 | #75·#76 이 닫은 구멍과 같은 종류다 |
 | D5 | `codex_account_cache_write` 는 루트를 만들 때 `chmod 700` 을 하지 않는다 (`ensure_root` 만 한다). rotate 가 먼저 돌면 루트가 umask 모드로 생긴다 | `paths.ensure_root()` 하나를 모든 생성 경로가 지나게 한다 | 자격증명 디렉토리가 0755 로 생길 수 있다 |
+| D6 | 미인증·apikey 응답을 인증 실패로 못 읽고 exit 1 로 접는다 (§6.3.1) | 구조 판정 + 넓힌 문구로 exit 3 | 전환이 가장 절실한 순간에 스위처가 손을 놓는다 |
+
+D6 는 **차등 테스트가 잡아 주지 못하는 종류**다. 그 하니스는 정책 엔진에 `ProbeResult` 를
+직접 만들어 넣으므로 프로브의 분류 경계를 지나지 않고, 게다가 bash 도 똑같이 틀렸으므로
+이 축은 "일치" 로 나온다 — 둘 다 틀린 것이다. 그래서 이관 회귀가 아니라 **양쪽의 공통
+결함**이고, 실물 응답을 캡처한 픽스처(`tests/fixtures/probe/`)가 유일한 방어선이다.
 
 반대로 **옮겨야 하는** 것도 하나 못박아 둔다. 전환 실패는 롤백되지 않는다 — sync-back 이
 install 보다 먼저 돌고 되돌려지지 않으므로, install 이 실패해도 떠나려던 슬롯은 **이미

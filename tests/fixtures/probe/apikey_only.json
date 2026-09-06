@@ -1,0 +1,10 @@
+{
+  "_source": "실제 codex-cli 0.153.4 app-server 응답 캡처 (2026-09-06). 이메일·계정 ID·설치 ID·경로만 치환했고 나머지는 서버가 보낸 그대로다.",
+  "_case": "auth_mode=apikey — account 는 non-null({type:apiKey}) 인데 rateLimits 는 'chatgpt authentication required to read rate limits'",
+  "messages": [
+    "{\"id\":1,\"result\":{\"userAgent\":\"codex-account-rotate/0.153.4 (Ubuntu 22.4.0; x86_64) unknown (codex-account-rotate; 1.0.0)\",\"codexHome\":\"<CODEX_HOME>\",\"platformFamily\":\"unix\",\"platformOs\":\"linux\"}}",
+    "{\"method\":\"remoteControl/status/changed\",\"params\":{\"status\":\"disabled\",\"serverName\":\"<HOST>\",\"installationId\":\"00000000-0000-4000-8000-000000000000\",\"environmentId\":null},\"emittedAtMs\":1788699667629}",
+    "{\"id\":2,\"result\":{\"account\":{\"type\":\"apiKey\"},\"requiresOpenaiAuth\":true}}",
+    "{\"error\":{\"code\":-32600,\"message\":\"chatgpt authentication required to read rate limits\"},\"id\":3}"
+  ]
+}
