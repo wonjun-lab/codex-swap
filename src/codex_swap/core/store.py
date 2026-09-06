@@ -29,7 +29,10 @@ from codex_swap.core.config import Settings
 #
 # 하이픈으로 시작하는 이름도 막는다. 경로가 앞에 붙으므로 옵션으로 오인될 일은 없지만,
 # 사용자가 손으로 다루는 값이라 셸에서 옵션처럼 보이는 형태를 애초에 만들지 않는다.
-LABEL_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+# `$` 가 아니라 `\Z` 다. Python 의 `$` 는 문자열 끝뿐 아니라 **마지막 개행 앞**에서도
+# 일치해서 `"valid\n"` 이 통과했다. 라벨은 그대로 디렉토리 이름이 되므로, 개행이 든
+# 슬롯이 만들어지고 목록 한 줄이 둘로 갈린다 — bash 판에서 이미 한 번 물린 결함이다.
+LABEL_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9._-]*\Z")
 MAX_LABEL_LEN = 64
 
 

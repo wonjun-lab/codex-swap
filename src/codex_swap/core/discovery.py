@@ -203,9 +203,13 @@ def find_upstream(env: Mapping[str, str] | None = None) -> Path:
         # 정규화해 보정이 항상 성립하게 만든다 — 이 값은 그대로 Popen 에 넘어간다.
         return Path(os.path.abspath(found))
 
-    for candidate in (*_standalone_candidates(env), *_nvm_candidates(env)):
-        if is_usable_binary(candidate):
-            return candidate
+    # 티어를 **게으르게** 잇는다. 튜플로 펼치면 standalone 이 이길 때도 nvm 쪽이 먼저
+    # 평가되어, 쓰지도 않을 `~/.nvm/versions/node/*/bin/codex` glob 이 매번 돈다.
+    # discovery 는 훅과 터미널 호출마다 실리는 경로라 그 한 번이 그냥 낭비다.
+    for tier in (_standalone_candidates, _nvm_candidates):
+        for candidate in tier(env):
+            if is_usable_binary(candidate):
+                return candidate
 
     raise UpstreamNotFound("codex 바이너리를 찾지 못했다")
 
