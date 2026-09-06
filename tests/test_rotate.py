@@ -253,3 +253,53 @@ def test_a_switch_invalidates_the_cache(env) -> None:
     d = rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)}))
     assert isinstance(d, Switched)
     assert not paths.cache_path(s).exists()
+
+
+@pytest.mark.parametrize(
+    ("window", "age", "expected"),
+    [
+        # 창 안이면 busy. 경계(나이 == 창)는 열려 있다 — 비교가 strict `<` 다.
+        (100, 50, True),
+        (100, 99, True),
+        (100, 100, False),
+        # 여기가 bash 를 걷어내며 좁아진 자리다. 예전에는 `ceil(100/60)*60 = 120` 이라
+        # 나이 110 초가 busy 였다. 지금은 적은 값 그대로 100 초라 not-busy 다.
+        (100, 110, False),
+        # 기본값 180 은 분의 배수라 두 계산이 같다 — 실사용 동작이 바뀌지 않는 이유다.
+        (180, 170, True),
+        (180, 190, False),
+        # 0 이면 가드 자체를 끈다.
+        (0, 0, False),
+    ],
+)
+def test_busy_window_is_seconds_not_rounded_up_to_minutes(
+    env, monkeypatch, tmp_path: Path, window: int, age: int, expected: bool
+) -> None:
+    """busy 창은 **적은 초 그대로**다.
+
+    bash 가 있던 동안에는 그쪽 `find -mmin` 폴백에 맞추려고 `ceil(window/60)*60` 으로
+    올렸다. 그 패리티가 사라졌으므로 60 의 배수가 아닌 값은 이제 적은 대로 동작한다.
+    """
+    monkeypatch.setenv("CODEX_ROTATE_BUSY_WINDOW", str(window))
+    s = settings()
+    assert s.busy_window == window
+    root = s.rotate_state_root
+    root.mkdir(parents=True, exist_ok=True)
+    log = root / "job" / "run.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("")
+    now = 1_000_000.0
+    os.utime(log, (now - age, now - age))
+    assert rotate.busy(s, now) is expected
+
+
+def test_busy_ignores_non_log_files_and_a_missing_root(env) -> None:
+    """`*.log` 만 센다. 루트가 없으면 busy 가 아니라 **판단을 막지 않는다**."""
+    s = settings()
+    assert rotate.busy(s, 1_000_000.0) is False
+    root = s.rotate_state_root
+    root.mkdir(parents=True, exist_ok=True)
+    other = root / "run.jsonl"
+    other.write_text("")
+    os.utime(other, (999_999.0, 999_999.0))
+    assert rotate.busy(s, 1_000_000.0) is False

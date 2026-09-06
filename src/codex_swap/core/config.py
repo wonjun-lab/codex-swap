@@ -7,7 +7,6 @@ bash 의 파라미터 확장 의미를 한 곳에서 재현한다. 흩어 두면
 from __future__ import annotations
 
 import json
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,8 +28,7 @@ class ConfigError(Exception):
     서브셸만 죽고 rotate 는 0 으로 전환까지 한다.
 
     그 동작은 흉내내지 않는다. 여기서 올리고 rotate 의 fail-open 경계에서 "전환 안 함"
-    으로 접는다. 대신 차등 테스트에서 이 축은 제외한다 — bash 쪽 결과가 비교 가능한
-    형태가 아니다.
+    으로 접는다.
     """
 
 
@@ -53,9 +51,6 @@ def _file_config(accounts_dir: Path) -> dict[str, object]:
     사다리·마진은 원래 환경변수뿐이었다. 그래서 TUI 에서 바꿔도 남길 자리가 없었다.
     우선순위는 **환경변수 > 파일 > 기본값** 이다 — 환경변수를 이기게 두면 한 번의
     `CODEX_ROTATE_LADDER=…` 실험이 저장된 설정에 막혀 조용히 무시된다.
-
-    bash 는 이 파일을 모른다. 병행 기간에는 두 구현의 설정이 갈릴 수 있으므로, 차등
-    테스트는 설정을 환경변수로 명시해 이 축을 비껴간다.
 
     깨진 파일은 무시한다. rotate 는 매 codex 호출에 실리므로 여기서 죽으면 안 된다.
     """
@@ -140,20 +135,19 @@ class Settings:
     check_interval: int
     cooldown: int
     busy_window: int
+    """busy 창. **초 단위 그대로** 쓴다.
+
+    bash 가 남아 있던 동안에는 `ceil(window/60)*60` 으로 올려 실효 창을 맞췄다. bash 의
+    `find -mmin` 폴백이 첫 `-newermt` 결과가 비면 무조건 실행되어 실효 창이 언제나 분
+    단위였고, 맞추지 않으면 `window=100`·나이 110 초에서 두 구현의 판단이 갈려 차등
+    테스트가 이 축에서 상시 불일치했기 때문이다. bash 가 없어졌으므로 맞출 대상도 없다.
+
+    기본값 180 은 어느 쪽으로 계산해도 같다. 달라지는 것은 60 의 배수가 아닌 값을
+    명시했을 때뿐이고, 그때는 이제 적은 그대로 동작한다.
+    """
+
     skip: bool
     off_switch: Path
-
-    @property
-    def effective_busy_window(self) -> int:
-        """bash 의 실효 busy 창 (설계문 §2.3.1).
-
-        `-mmin` 폴백은 BSD 전용이 아니다. 첫 `-newermt` 결과가 비면 **무조건** 실행되고
-        GNU find 도 `-mmin` 을 지원하므로, Linux 에서도 실효 창은 언제나 분 단위로
-        올림된 값이다. 초 단위로 좁히면 차등 테스트가 이 축에서 상시 불일치한다.
-
-        bash 를 걷어내는 PR 에서 이 프로퍼티를 지우고 `busy_window` 를 직접 쓴다.
-        """
-        return math.ceil(self.busy_window / 60) * 60 if self.busy_window > 0 else 0
 
 
 def load(environ: dict[str, str] | None = None) -> Settings:

@@ -26,7 +26,9 @@ from codex_swap.core.types import (
 class Snapshot:
     """판단 시점의 세계 전체.
 
-    차등 테스트(설계문 §7.3)가 bash 와 Python 에 넣는 것이 정확히 이 값이다.
+    `decide` 가 파일도 시계도 만지지 않을 수 있는 이유가 이 타입이다 — 판단에 필요한
+    것이 전부 값으로 들어오므로, 사다리·마진·쿨다운·busy 의 전 조합을 부수 효과 없이
+    돌릴 수 있다. 폐기된 bash 차등 하니스가 두 정책 엔진에 먹이던 것도 이 값이었다.
     """
 
     settings: Settings

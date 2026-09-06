@@ -78,7 +78,8 @@ def read(settings: Settings, label: str, *, now: float | None = None) -> dict[st
     entry = doc.get(label) if isinstance(doc, dict) else None
     ts = _seconds(entry.get("ts")) if isinstance(entry, dict) else None
     # bash 의 `date +%s` 는 초를 버린 정수다. 실수 시계로 비교하면 TTL 경계의 1 초 안에서
-    # 우리만 먼저 만료시킨다 — 잃는 것은 히트 하나지만 차등 테스트에는 잡음이 된다.
+    # 우리만 먼저 만료시킨다 — 잃는 것은 히트 하나뿐이라 크지 않지만, 정수로 두면
+    # 캐시 나이가 재현 가능한 값이 되어 테스트가 경계를 정확히 집을 수 있다.
     at = int(time.time() if now is None else now)
 
     # 히트 조건은 이 셋의 연언 **하나**다. bash 는 jq 추출 → 정규식 → 산술 비교의 3 단

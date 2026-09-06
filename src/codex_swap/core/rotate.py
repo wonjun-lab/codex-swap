@@ -70,11 +70,11 @@ def busy(settings: Settings, now: float) -> bool:
 
     브로커를 새 토큰으로 다시 띄우는 과정에서 진행 중인 턴이 401 로 끊기기 때문이다.
 
-    창은 `effective_busy_window` 를 쓴다 — bash 의 `-mmin` 폴백이 BSD 전용이 아니라
-    무조건 실행되므로 실효 창이 언제나 분 단위로 올림돼 있다 (설계문 §2.3.1).
+    창은 설정값 **그대로**다. bash 가 있던 동안에는 그쪽 `find -mmin` 폴백에 맞추려고
+    분 단위로 올렸는데, 맞출 대상이 없어졌다 (`config.Settings.busy_window`).
     """
     root = settings.rotate_state_root
-    window = settings.effective_busy_window
+    window = settings.busy_window
     if window <= 0 or not root.is_dir():
         return False
     try:
