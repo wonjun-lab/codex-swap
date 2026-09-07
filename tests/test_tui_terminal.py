@@ -209,6 +209,44 @@ def test_the_bar_is_never_drawn_bold(session: Session) -> None:
     assert "1" not in screen.attrs_of("shared"), "비활성 라벨까지 강조했다"
 
 
+def test_the_reset_time_is_not_cut_off(tmp_path: Path) -> None:
+    """이 열을 보는 이유는 "언제 풀리나" 하나다. 그 답의 끝이 잘리면 자리만 차지한다.
+
+    `_RESET_COLS` 가 20 이던 동안 `09-07 21:00 (3시간 뒤)`(22 칸)가 **언제나**
+    `(3시간 …` 으로 끝났다. 리셋은 대개 하루 안에 오므로 그게 가장 흔한 형태다.
+    폭이 넉넉한 화면에서까지 그랬다는 것이 이 회귀의 핵심이라, 넓게 띄워 확인한다.
+    """
+    s = Session(tmp_path / "home")
+    s.slot("master", "a@example.com")
+    s.activate("a@example.com")
+    s.cache("master", 58, resets_in=3 * 3600 + 60)
+
+    screen = s.run([b"q"], cols=120)
+    row = screen.row("master")
+    assert "시간 뒤)" in row, row
+    assert "…" not in row, f"리셋 시각이 잘렸다: {row}"
+
+
+def test_the_cursor_glyph_is_coloured(session: Session) -> None:
+    """enter 는 **커서 행**의 자격증명을 바꾼다. 그 표시가 안 보이면 확신할 수 없다."""
+    screen = session.run([b"q"])
+    assert "36" in screen.attrs_of(">"), "커서 표시에 색이 없다"
+
+
+def test_auto_switching_being_off_is_not_whispered(tmp_path: Path) -> None:
+    """꺼져 있는 것은 "왜 안 바뀌지" 의 첫 번째 원인이다. dim 으로 두면 안 읽힌다."""
+    s = Session(tmp_path / "home")
+    s.slot("master", "a@example.com")
+    s.activate("a@example.com")
+    s.cache("master", 58)
+    (s.home / ".claude").mkdir(parents=True, exist_ok=True)
+    (s.home / ".claude/.codex-rotate-off").touch()
+
+    screen = s.run([b"q"])
+    assert "자동 전환: 꺼짐" in screen.text, screen.text
+    assert "33" in screen.attrs_of("자동 전환: 꺼짐"), "꺼짐이 켜짐과 같은 밝기다"
+
+
 def test_only_the_key_glyphs_are_coloured(session: Session) -> None:
     """설명까지 강조하면 눈이 어디를 눌러야 하는지 못 찾고 줄 전체를 읽게 된다."""
     screen = session.run([b"q"])

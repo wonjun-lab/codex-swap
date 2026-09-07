@@ -160,6 +160,10 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - _width(text))
 
 
+def _rpad(text: str, width: int) -> str:
+    return " " * max(0, width - _width(text)) + text
+
+
 def _clip(text: str, cols: int) -> str:
     """표시 폭 기준으로 자른다. 문자 수로 자르면 한글 줄이 화면 밖으로 넘친다."""
     if cols <= 0:
@@ -174,16 +178,22 @@ def _clip(text: str, cols: int) -> str:
     return "".join(out)
 
 
-def _cell(text: str, cols: int, *, ellipsis: bool = False) -> str:
+def _cell(text: str, cols: int, *, ellipsis: bool = False, right: bool = False) -> str:
     """잘라내고 채운다. 긴 라벨·이메일이 열을 밀어내지 못하게 한다.
 
     `ellipsis` 는 잘렸다는 것을 보이게 한다. 표시가 없으면 `account.name@gmail.co` 가
     실제 주소인지 잘린 것인지 구별되지 않는다 — 계정을 확인하려고 보는 칸에서 그건
     쓸모가 없다.
+
+    `right` 는 **숫자 열**에 쓴다. 왼쪽으로 붙이면 자릿수가 다른 값끼리 `%` 가 세로로
+    어긋나 세로 비교가 안 된다 — `58%` 와 `~70%` 가 나란히 서면 낡음 표시 한 글자
+    때문에 두 숫자가 서로 다른 칸에서 시작한다. 표에서 위아래로 읽는 것은 이 열뿐이라
+    그 어긋남의 대가가 크다.
     """
+    pad = _rpad if right else _pad
     if not ellipsis or _width(text) <= cols or cols < 2:
-        return _pad(_clip(text, cols), cols)
-    return _pad(_clip(text, cols - 1) + "…", cols)
+        return pad(_clip(text, cols), cols)
+    return pad(_clip(text, cols - 1) + "…", cols)
 
 
 def _help_line(*variants: str, width: int | None) -> str:
@@ -426,6 +436,7 @@ def keys_line(
 
 BAR_FILL = "█"
 BAR_EMPTY = "▒"
+BAR_UNKNOWN = "─"
 BAR_TICK = "┆"
 BAR_TICK_PASSED = "╪"
 AXIS_TICK = "┴"
@@ -468,7 +479,18 @@ _EMAIL_MIN = 20
 _CREDIT_COLS = 4
 """리셋 쿠폰 열의 폭. `쿠폰` 머리말이 4 칸(한글 두 자)이고 값은 한 자리다."""
 
-_RESET_COLS = 20
+_RESET_COLS = 23
+"""리셋 시각 열의 폭. `_reset_text` 가 만드는 **가장 긴 문자열**에서 나온 값이다.
+
+20 이던 동안 `09-07 21:00 (3시간 뒤)`(22 칸)가 **언제나** 잘렸다 — 리셋은 대개 하루
+안에 오므로 `N시간 뒤` 가 가장 흔한 형태인데, 하필 그것이 화면에서 `(3시간 …` 으로
+끝났다. 이 열을 보는 이유가 "언제 풀리나" 하나라서, 그 답의 마지막 글자가 잘리면
+열이 자리만 차지하고 뜻을 잃는다.
+
+한계는 `%m-%d %H:%M (…)` 서식에서 도출된다: 시각 11 칸 + 괄호 안이 최대
+`23시간 뒤`(10 칸) + 괄호·공백 2 칸 = 23. 분은 `59분 뒤`(9), 일은 `99일 뒤`(9) 라
+시간 쪽이 상한이다. 그보다 긴 값(수백 일)은 `ellipsis` 가 계속 받아 준다.
+"""
 
 
 def _overhead(*, with_bar: bool, with_reset: bool) -> int:
@@ -559,7 +581,16 @@ def usage_bar(percent: int | None, rung: int | None) -> str:
     여기 남기는 하나는 **지금 넘어야 하는 칸**이라 행마다 읽을 값이 있다.
     """
     if percent is None:
-        return " " * BAR_COLS
+        # 공백으로 두면 안 된다. 두 가지가 걸린다.
+        #
+        # 하나는 폭이다. 공백은 EAW `Na` 인데 나머지 바 글자는 전부 `A` 라, Ambiguous 를
+        # 두 칸으로 그리는 터미널에서 이 행만 바 자리가 24 칸이고 다른 행은 48 칸이
+        # 된다 — 뒤따르는 쿠폰·리셋 열이 이 행에서만 24 칸 왼쪽으로 어긋난다. 이 파일이
+        # 바로 위에 적어 둔 불변식을 정작 미지 행이 깨고 있었다.
+        #
+        # 다른 하나는 읽힘이다. 24 칸짜리 구멍은 "모른다" 가 아니라 표가 고장 난 것으로
+        # 보인다. 채움도 빔도 아닌 세 번째 글자를 주면 그 자리가 비어 있는 이유가 보인다.
+        return BAR_UNKNOWN * BAR_COLS
     filled = _bar_cell(percent)
     tick = _tick_cell(rung) if rung is not None else None
     # 눈금이 넘어섰는지는 셀 인덱스가 아니라 **정책 술어**로 정한다. 정책은
@@ -692,8 +723,14 @@ def render_screen(
     # 마지막까지 남긴다 — 실패를 알리는 유일한 줄이라 그것을 잃으면 사용자는 아무것도
     # 안 일어난 줄 안다.
     keys_text, keys_spans = keys_line(ACCOUNT_KEYS, width=width)
+    # 꺼져 있을 때만 색을 준다. 자동 전환이 꺼진 것은 "왜 안 바뀌지" 의 첫 번째 원인인데,
+    # 켜짐과 같은 dim 으로 두면 그 줄이 배경으로 읽혀 끝까지 눈에 안 들어온다. 반대로
+    # 켜짐까지 강조하면 평상시 화면에서 가장 시끄러운 줄이 된다 — 정상은 조용해야 한다.
     droppable: list[tuple[str, Style]] = [
-        (_help_line(*(AUTO_OFF_LINES if view.auto_off else AUTO_ON_LINES), width=width), _DIM),
+        (
+            _help_line(*(AUTO_OFF_LINES if view.auto_off else AUTO_ON_LINES), width=width),
+            Style("warn") if view.auto_off else _DIM,
+        ),
         (keys_text, Style("dim", spans=keys_spans)),
     ]
     # `~` 는 낡은 값이라는 표시다. 범례가 없으면 사용자는 그 기호를 오류로 읽는다.
@@ -728,12 +765,12 @@ def render_screen(
 
     columns = (
         f"   {_cell('LABEL', label_cols)}{_GUTTER}"
-        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', 6)}"
+        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', 6, right=True)}"
     )
     if with_bar:
         columns += f"{_GUTTER}{_cell('', BAR_COLS)}"
     if with_reset:
-        columns += f"{_GUTTER}{_cell('쿠폰', _CREDIT_COLS)}{_GUTTER}RESET"
+        columns += f"{_GUTTER}{_cell('쿠폰', _CREDIT_COLS, right=True)}{_GUTTER}RESET"
     header = [*head, (columns.rstrip() if not with_reset else columns, _DIM)]
 
     # ── 뷰포트 ──
@@ -746,6 +783,9 @@ def render_screen(
         axis, labels = ladder_axis(s.ladder, view.current_rung)
         pad = f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * 6}{_GUTTER}"
         axis_lines = [
+            # 축은 목록에 속한 행이 아니라 **바 전체에 딸린 눈금**이다. 빈 줄 없이 붙이면
+            # 마지막 계정의 한 줄처럼 읽혀서, 그 계정에만 해당하는 표시로 오해된다.
+            ("", _PLAIN),
             (f"{pad}{axis}", _DIM),
             (f"{pad}{labels}{_GUTTER}{AXIS_TICK_CURRENT} = 현재 관문", _DIM),
         ]
@@ -782,22 +822,32 @@ def render_screen(
         mark = "*" if row.active else " "
         line = (
             f" {cursor}{mark}{_cell(row.label, label_cols, ellipsis=True)}{_GUTTER}"
-            f"{_cell(row.email, email_cols, ellipsis=True)}{_GUTTER}{_cell(row.used, 6)}"
+            f"{_cell(row.email, email_cols, ellipsis=True)}{_GUTTER}"
+            f"{_cell(row.used, 6, right=True)}"
         )
         if with_bar:
             line += f"{_GUTTER}{usage_bar(row.percent, view.current_rung)}"
         if with_reset:
             credits = "-" if row.credits is None else str(row.credits)
             line += (
-                f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
+                f"{_GUTTER}{_cell(credits, _CREDIT_COLS, right=True)}"
                 f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
             ).rstrip()
         # **행 전체에 bold 를 걸지 않는다.** 이 터미널에서 bold 글자는 더 굵고 넓게
         # 그려져서, 같은 문자열인 바가 활성 행에서만 길어 보인다 — 실제로 두 행의
         # 문자열·폭·열 위치가 전부 같은데도 "아래 바가 더 짧다" 로 읽혔다.
-        # 강조는 라벨 구간에만 얹는다. 거기는 글자라 굵어져도 뜻이 왜곡되지 않는다.
-        spans = ((1, 3 + _width(row.label), Style(bold=True)),) if row.active else ()
-        body.append((line, Style(_row_tone(row, view), spans=spans)))
+        # 강조는 글자 구간에만 얹는다. 거기는 굵어져도 뜻이 왜곡되지 않는다.
+        tone = _row_tone(row, view)
+        spans = []
+        # 커서는 `>` 한 글자에만 색을 준다. 이 표시가 눈에 안 띄면 enter 가 **어느 행**을
+        # 전환하는지 확신할 수 없다 — 자격증명을 바꾸는 키라 그 불확실함의 대가가 크다.
+        if i == view.cursor:
+            spans.append((1, 2, _KEY_STYLE))
+        # 활성 행은 `*` 와 라벨을 굵게. 행의 색은 유지한다 — 여기서 tone 을 떨어뜨리면
+        # 하필 소진된(danger) 계정이 활성일 때 그 경고색이 라벨에서만 사라진다.
+        if row.active:
+            spans.append((2, 3 + len(row.label), Style(tone, bold=True)))
+        body.append((line, Style(tone, spans=tuple(spans))))
     if hidden_below:
         body.append((f"   v {hidden_below}개 더", _DIM))
     body += axis_lines

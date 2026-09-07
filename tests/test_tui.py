@@ -563,7 +563,21 @@ def test_the_bar_fills_proportionally(percent: int, filled: int) -> None:
 
 def test_an_unknown_usage_draws_no_bar() -> None:
     """모르는 값을 0% 로 그리면 '가장 덜 쓴 계정' 으로 보인다 — 정반대의 오해다."""
-    assert tui.usage_bar(None, 70) == " " * tui.BAR_COLS
+    bar = tui.usage_bar(None, 70)
+    assert tui.BAR_FILL not in bar and tui.BAR_EMPTY not in bar
+    assert bar == tui.BAR_UNKNOWN * tui.BAR_COLS
+
+
+def test_an_unknown_bar_keeps_the_width_class_of_every_other_bar() -> None:
+    """공백으로 두면 이 행만 뒤쪽 열이 통째로 어긋난다.
+
+    공백은 EAW `Na`, 바 글자는 전부 `A` 다. Ambiguous 를 두 칸으로 그리는 터미널에서
+    바 자리가 이 행만 24 칸이고 다른 행은 48 칸이 되어, 뒤따르는 쿠폰·리셋 열이 24 칸
+    왼쪽으로 밀린다. 모듈이 바로 그 불변식을 문서로 적어 두었는데 미지 행만 빠져 있었다.
+    """
+    known = {unicodedata.east_asian_width(ch) for ch in tui.usage_bar(50, 70)}
+    unknown = {unicodedata.east_asian_width(ch) for ch in tui.usage_bar(None, 70)}
+    assert len(unknown) == 1 and unknown == known, (unknown, known)
 
 
 def test_the_bar_marks_only_the_current_rung() -> None:
@@ -639,7 +653,42 @@ def test_the_active_row_bolds_only_its_label_never_the_bar(env) -> None:
     text = next(t for t, _ in screen if t.startswith(" >*"))
     bar_at = text.index(tui.BAR_FILL)
     assert all(end <= bar_at for _, end, _ in active.spans), (active.spans, bar_at)
-    assert text[active.spans[0][0] : active.spans[0][1]].strip() == ">*master"
+    covered = "".join(text[start:end] for start, end, _ in active.spans)
+    assert covered.strip() == ">*master", covered
+
+
+def test_the_active_label_keeps_the_row_colour(env) -> None:
+    """소진된 계정이 활성일 때 하필 라벨에서만 경고색이 빠지면 안 된다.
+
+    구간 덧칠은 그 자리를 **다시 그린다.** 구간의 tone 을 비워 두면 행의 색이 거기서만
+    기본색으로 되돌아간다 — 눈이 가장 먼저 가는 라벨이 그 행에서 유일하게 색이 없는
+    글자가 된다.
+    """
+    rows = (tui.Row("master", "a@x", "99%", "-", True, percent=99),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=95)
+    style = next(st for text, st in tui.render_screen(view, width=140) if text.startswith(" >*"))
+    assert style.tone == "danger"
+    label_span = next(sp for sp in style.spans if sp[2].bold and sp[2].tone != "accent")
+    assert label_span[2].tone == "danger", style.spans
+
+
+def test_the_cursor_glyph_is_the_only_thing_accented_on_a_row(env) -> None:
+    """enter 는 **커서 행**의 자격증명을 바꾼다. 그 표시가 안 보이면 확신할 수 없다."""
+    rows = (
+        tui.Row("master", "a@x", "70%", "-", True, percent=70),
+        tui.Row("shared", "b@x", "40%", "-", False, percent=40),
+    )
+    view = tui.View(rows=rows, cursor=1, settings=env, current_rung=70)
+    screen = tui.render_screen(view, width=140)
+
+    text, style = next((t, s) for t, s in screen if "shared" in t)
+    accents = [sp for sp in style.spans if sp[2].tone == "accent"]
+    assert len(accents) == 1, style.spans
+    assert text[accents[0][0] : accents[0][1]] == ">"
+
+    # 커서가 없는 행에는 강조가 붙지 않는다 — 붙으면 커서가 둘로 보인다.
+    other = next(s for t, s in screen if "master" in t)
+    assert not any(sp[2].tone == "accent" for sp in other.spans), other.spans
 
 
 def test_the_chrome_is_dim(env) -> None:
@@ -955,6 +1004,23 @@ def test_the_last_gate_number_still_fits(env) -> None:
         assert str(step) in labels, (step, labels)
 
 
+def test_the_axis_is_set_apart_from_the_last_account(env) -> None:
+    """축은 목록의 행이 아니라 **바 전체에 딸린 눈금**이다.
+
+    빈 줄 없이 붙이면 마지막 계정의 한 줄처럼 읽혀서, 그 계정에만 해당하는 표시로
+    오해된다 — 실제로는 모든 행에 같이 걸리는 축이다.
+    """
+    rows = (
+        tui.Row("a", "a@x", "58%", "-", True, percent=58),
+        tui.Row("b", "b@x", "70%", "-", False, percent=70),
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    lines = tui.render_lines(view, width=140)
+    axis_at = next(i for i, ln in enumerate(lines) if tui.AXIS_TICK_CURRENT in ln)
+    assert lines[axis_at - 1].strip() == "", lines[axis_at - 2 : axis_at + 1]
+    assert "b@x" in lines[axis_at - 2], "빈 줄이 목록 안쪽으로 들어갔다"
+
+
 # ── 칼럼 간격 ───────────────────────────────────────────────────────────────
 
 
@@ -965,7 +1031,26 @@ def test_columns_are_separated_by_the_same_gutter(env) -> None:
     body = next(line for line in tui.render_lines(view, width=140) if line.startswith(" >"))
     bar = tui.usage_bar(70, 70)
     assert f"{tui._GUTTER}{bar}{tui._GUTTER}" in body, body
-    assert f"70%{' ' * 3}{tui._GUTTER}" in body, "사용량 열과 다음 열 사이 간격이 다르다"
+    # 사용량은 오른쪽으로 붙으므로 값 바로 뒤가 곧 간격이다. 왼쪽으로 붙이던 때는 짧은
+    # 값 뒤의 죽은 공백이 간격에 더해져 이 열만 다섯 칸 떨어져 보였다.
+    assert f"70%{tui._GUTTER}{bar}" in body, "사용량 열과 다음 열 사이 간격이 다르다"
+
+
+def test_numbers_line_up_on_their_last_digit(env) -> None:
+    """`58%` 와 `~70%` 를 왼쪽으로 붙이면 낡음 표시 한 글자가 두 숫자를 어긋내 놓는다.
+
+    표에서 위아래로 읽는 열은 사용량 하나뿐이라, 그 어긋남의 대가가 가장 크다.
+    """
+    rows = (
+        tui.Row("a", "a@x", "58%", "-", True, percent=58),
+        tui.Row("b", "b@x", "~70%", "-", False, percent=70, stale=True),
+        tui.Row("c", "c@x", "?", "-", False, known=False),
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    lines = [ln for ln in tui.render_lines(view, width=140) if ln.startswith((" >", "  "))]
+    body = [ln for ln in lines if any(ln.lstrip(" >*").startswith(x) for x in "abc")]
+    assert len(body) == 3, body
+    assert body[0].index("58%") + 3 == body[1].index("~70%") + 4 == body[2].index("?") + 1
 
 
 # ── 리셋 쿠폰 ───────────────────────────────────────────────────────────────

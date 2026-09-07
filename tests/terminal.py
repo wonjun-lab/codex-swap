@@ -278,13 +278,24 @@ class Session:
         path.write_text(json.dumps({"tokens": {"id_token": f"h.{claims.decode().rstrip('=')}.s"}}))
         os.chmod(path, 0o600)
 
-    def cache(self, label: str, percent: int, *, credits: int | None = None) -> None:
-        """사용량을 미리 심는다. 이걸 안 하면 화면이 열자마자 프로브를 돌린다."""
+    def cache(
+        self,
+        label: str,
+        percent: int,
+        *,
+        credits: int | None = None,
+        resets_in: float | None = None,
+    ) -> None:
+        """사용량을 미리 심는다. 이걸 안 하면 화면이 열자마자 프로브를 돌린다.
+
+        `resets_in` 은 지금부터 몇 초 뒤에 풀리는지다. 절대 epoch 을 받으면 테스트가
+        "몇 시간 뒤" 라는 **표시**를 고정하지 못한다 — 그 문구가 열 폭에 걸리는 자리다.
+        """
         path = self.accounts / ".usage-cache.json"
         doc = json.loads(path.read_text()) if path.exists() else {}
         doc[label] = {
             "usedPercent": percent,
-            "resetsAt": None,
+            "resetsAt": None if resets_in is None else int(time.time() + resets_in),
             "resetCredits": credits,
             "ts": int(time.time()),
         }
