@@ -6,7 +6,7 @@ bash `codex_account_switch` 의 마지막 append 한 줄을 옮긴 것이다. �
 
 레코드는 탭으로 나뉜 세 칸이며 줄 하나가 전환 하나다.
 
-    2026-09-05T11:28:33+09:00\tmaster -> shared\treached (95% -> 40%)
+    2026-09-05T11:28:33+09:00\twork -> personal\treached (95% -> 40%)
 """
 
 from __future__ import annotations

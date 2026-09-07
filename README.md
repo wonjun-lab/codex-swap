@@ -43,7 +43,7 @@ uv tool install git+https://github.com/wonjun-lab/codex-swap.git
 
 ```bash
 codex() {
-  command codex-swap rotate >/dev/null 2>&1
+  command codex-swap rotate >/dev/null   # stderr 는 버리지 않는다 — 아래 참조
   command codex "$@"
 }
 ```
@@ -52,7 +52,10 @@ codex() {
 아무것도 쓰지 않고, 전환이 실제로 일어났을 때만 stderr 에 한 줄 쓴다. 설정이 깨져도
 조용히 무동작으로 끝난다(fail-open) — 스위처 때문에 codex 가 안 뜨는 일은 없어야 한다.
 
-자동 전환 끄기: `touch ~/.claude/.codex-rotate-off` (파일이 있으면 `rotate` 가 무동작한다)
+자동 전환 끄기: `mkdir -p ~/.claude && touch ~/.claude/.codex-rotate-off`
+파일이 있으면 `rotate` 가 무동작한다. 경로가 `~/.claude` 아래인 것은 선행 구현이 그
+디렉토리를 상태 자리로 쓰던 흔적이다 — 이미 이 이름으로 스위치를 둔 설치가 있어 옮기지
+않았다. `CODEX_ROTATE_SKIP=1` 을 환경변수로 주는 방법도 같은 효과다.
 
 ## 정책
 
@@ -62,7 +65,26 @@ codex() {
 (기본 900s)을 둔다.
 
 TUI 의 `p` 화면에서 고치거나 환경변수로 덮을 수 있다. 저장 위치는
-`~/.codex/accounts/config.json` 이고, 환경변수가 파일을 이긴다.
+`~/.codex/accounts/config.json` 이고, **환경변수가 파일을 이긴다.**
+
+| 환경변수 | 기본값 | 뜻 |
+| --- | --- | --- |
+| `CODEX_ROTATE_LADDER` | `50,70,85,95` | 전환 관문 |
+| `CODEX_ROTATE_MARGIN` | `5` | 대상이 이만큼(%p) 낮아야 바꾼다 |
+| `CODEX_ROTATE_COOLDOWN` | `900` | 자동 전환 사이 최소 간격(초) |
+| `CODEX_ROTATE_CACHE_TTL` | `300` | 사용량 캐시 수명(초) |
+| `CODEX_ROTATE_CHECK_INTERVAL` | `60` | 판단 자체를 묶는 스로틀(초) |
+| `CODEX_ROTATE_BUSY_WINDOW` | `180` | 아래 참조 |
+| `CODEX_ROTATE_SKIP` | — | 값이 있으면 `rotate` 가 무동작 |
+| `CODEX_ROTATE_STATE_ROOT` | (아래) | busy 판정이 볼 로그 디렉토리 |
+| `CODEX_ACCOUNTS_DIR` | `~/.codex/accounts` | 슬롯 저장소 |
+| `CODEX_ACCOUNT_DEFAULT_HOME` | `~/.codex` | 활성 계정의 홈 |
+| `CODEX_ACCOUNT_BIN` · `CODEX_REAL_BIN` | — | codex 바이너리를 직접 지정(탐색 우회) |
+
+**`busy` 관문은 기본적으로 꺼져 있는 것과 같다.** `CODEX_ROTATE_STATE_ROOT` 아래 `*.log`
+의 mtime 이 최근이면 "지금 대화 중" 으로 보고 전환을 미루는 장치인데, 기본값이 특정
+에이전트 런타임의 데이터 경로라 그 디렉토리가 없는 기기에서는 판정이 언제나 거짓이다.
+쓰려면 자기 환경의 로그 디렉토리를 이 변수로 가리켜야 한다.
 
 ## 상태
 

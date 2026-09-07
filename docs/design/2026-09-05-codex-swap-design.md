@@ -187,8 +187,8 @@ rc=1, 중단된 rc=1, rc=0 인데 stderr 에 진단} 으로 갈려 비교 대상
 
 ### 6.1.1 `~/.codex/.env` 가 실제 설정 채널이다
 
-wrapper 가 rotate 를 부르기 전에 `set -a`(자동 export)로 이 파일을 source 한다. 이 기기에
-실제로 존재한다(mode 600). 즉 사다리·마진·SKIP 을 여기서 설정할 수 있다.
+wrapper 가 rotate 를 부르기 전에 `set -a`(자동 export)로 이 파일을 source 하도록 구성한
+설치에서는, 사다리·마진·SKIP 을 여기서 설정할 수 있다.
 
 경로마다 보이는 설정이 다르다.
 
@@ -211,11 +211,11 @@ wrapper 가 rotate 를 부르기 전에 `set -a`(자동 export)로 이 파일을
 
 ### 6.2 프로브의 PATH 보정 (검증됨)
 
-이 기기에서 `codex_find_upstream` 이 돌려주는 경로는 네이티브 바이너리가 아니라
+nvm 설치에서 `codex_find_upstream` 이 돌려주는 경로는 네이티브 바이너리가 아니라
 `#!/usr/bin/env node` 스크립트다.
 
 ```
-$ file -L ~/.nvm/versions/node/v24.14.0/bin/codex
+$ file -L ~/.nvm/versions/node/<version>/bin/codex
 ... a /usr/bin/env node script, ASCII text executable
 
 $ 축소 PATH(/usr/bin:/bin)로 Popen([codex_bin, "app-server"])
@@ -227,7 +227,7 @@ returncode=127   stderr="/usr/bin/env: 'node': No such file or directory"
 `node_modules/@openai/codex/bin` 으로 가고 거기에는 node 가 없다.
 
 ```
-located_dir  = ~/.nvm/versions/node/v24.14.0/bin                       node 있음
+located_dir  = ~/.nvm/versions/node/<version>/bin                      node 있음
 resolved_dir = ~/.nvm/.../lib/node_modules/@openai/codex/bin           node 없음
 ```
 
@@ -367,7 +367,7 @@ bash 판에서 확정한 계약을 그대로 재현한다.
 슬롯 안 auth.json:   realpath 가 루트 밖이면 거부   ← bash 에 아직 없다
 ```
 
-**사용자 인자와 디스크 열거 양쪽에 적용한다.** #75 는 인자만 막았는데, 열거 경로로
+**사용자 인자와 디스크 열거 양쪽에 적용한다.** bash 판은 처음에 인자만 막았는데, 열거 경로로
 심링크 슬롯이 들어와 `use` 는 거부하는 것을 `rotate` 가 골랐다(실측: 루트 밖 자격증명으로
 실제 전환). 개행이 든 디렉토리 이름은 라벨 하나를 둘로 갈랐다.
 
@@ -387,9 +387,10 @@ Python 의 `re` 는 이 문자 클래스를 항상 ASCII 로만 해석한다. �
 **bash 의 `LC_ALL=C` 가지를 영구화**한다. 이미 비-ASCII 라벨로 등록된 슬롯이 있으면
 목록에서 사라지고 자동 전환 후보에서 빠진다 — 자격증명이 조용히 접근 불가가 된다.
 
-**결정: ASCII 전용을 유지하되, 설치 전 preflight 를 제공한다.** `codex-swap doctor` 가
-검증을 통과하지 못하는 기존 슬롯을 읽기 전용으로 보고한다. 현재 이 기기의 라벨은
-`master`·`shared` 라 해당 없다.
+**결정: ASCII 전용을 유지한다.** 설치 전 preflight(`doctor` 류의 읽기 전용 보고)를 함께
+두자는 안이 있었으나 **구현하지 않았다** — 이관 대상 기기의 라벨이 전부 ASCII 라 실제로
+막힌 사례가 없었고, 쓰이지 않는 명령이 표면을 넓히기 때문이다. 비-ASCII 라벨 슬롯을 쓰던
+설치가 나타나면 그때 다시 판단할 문제로 남긴다.
 
 ## 7. bash 와 갈리는 지점
 
@@ -431,7 +432,7 @@ Error(reason)           우리 잘못
 | D1 | `switch` 의 `trap … RETURN` 은 함수 스코프가 아니라 호출자 반환 때 **다시 발화**한다 | try/finally 로 **정확히 한 번** 해제 | 남의 락을 지우는 경로다 |
 | D2 | `.lock` 이 디렉토리가 **아니면**(0바이트 파일·깨진 심링크) stale 판정 자체가 안 돌아 **영구 교착**. 복구 경로가 코드에 없다 | 디렉토리 아님을 3번째 갈래로 잡아 `Error(reason)` 로 보고 | 사람이 손으로 지울 때까지 자동 전환이 죽는다 |
 | D3 | `status` 는 활성이 어느 슬롯에도 없으면 가짜 라벨 `__active__` 를 그대로 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌린다 | `label: str \| None` 로 시그니처를 나누고, `None` 이면 home 을 `~/.codex` 로 | 자격증명은 실제로 거기 있다. 파생 경로가 결함이다 |
-| D4 | 슬롯 안 `auth.json` 이 바깥을 가리키는 심링크면 통과 (§6.6) | realpath 봉쇄 | #75·#76 이 닫은 구멍과 같은 종류다 |
+| D4 | 슬롯 안 `auth.json` 이 바깥을 가리키는 심링크면 통과 (§6.6) | realpath 봉쇄 | bash 판이 두 번에 걸쳐 닫은 구멍과 같은 종류다 |
 | D5 | `codex_account_cache_write` 는 루트를 만들 때 `chmod 700` 을 하지 않는다 (`ensure_root` 만 한다). rotate 가 먼저 돌면 루트가 umask 모드로 생긴다 | `paths.ensure_root()` 하나를 모든 생성 경로가 지나게 한다 | 자격증명 디렉토리가 0755 로 생길 수 있다 |
 | D6 | 미인증·apikey 응답을 인증 실패로 못 읽고 exit 1 로 접는다 (§6.3.1) | 구조 판정 + 넓힌 문구로 exit 3 | 전환이 가장 절실한 순간에 스위처가 손을 놓는다 |
 
@@ -480,7 +481,7 @@ wrapper 의 제외 목록은 spec 이 기술하는 **모든** 게이트보다 �
 ## 10. 범위 밖
 
 - Textual TUI (v2)
-- cswap 의 편의 기능 — disable/enable, run-as, 디렉토리 매핑, alias, 슬롯 번호
+- 비슷한 스위처들이 갖는 편의 기능 — disable/enable, run-as, 디렉토리 매핑, alias, 슬롯 번호
 - 락 프로토콜 교체 — 병행 기간에는 bash 와 **같은** mkdir 락을 써야 해서 범위 밖이었다.
   그 제약은 bash 와 함께 풀렸지만 교체가 공짜는 아니다: 배포된 기기에 이 프로토콜의
   락이 남아 있을 수 있고, 바꾸면 옛 락을 든 프로세스와 새 프로세스가 서로를 못 본다.
