@@ -117,7 +117,18 @@ def _flag_env(name: str) -> bool:
 
 
 def _ladder_of(name: str, file_cfg: dict[str, object], default: tuple[int, ...]) -> tuple[int, ...]:
-    """환경변수 또는 파일에서 사다리를 읽는다. 문자열 파싱은 `parse_ladder` 가 한다."""
+    """환경변수 또는 파일에서 사다리를 읽는다. 문자열 파싱은 `parse_ladder` 가 한다.
+
+    **어느 경로든 다 걸러지면 기본값으로 접는다.** 파일 경로만 그렇게 하던 동안,
+    `CODEX_ROTATE_LADDER=50;70` 같은 오타 하나가 빈 사다리를 만들어 임계 기반 전환을
+    영구히 멈췄다 — `policy.decide` 가 `ladder is empty` 로 아무것도 하지 않는다.
+    조용한 정지라 사용자는 도구가 도는 줄 안다. `parse_ladder` 의 docstring 이 이미
+    "호출부가 기본값으로 접는다" 고 약속하고 있었다.
+
+    `CODEX_ROTATE_MARGIN=abc` 가 `ConfigError` 로 죽는 것과 갈리는 이유는, 스칼라는
+    물러설 기본값을 고를 수 없지만 사다리는 있기 때문이다. 일부만 걸러진 경우
+    (`50,oops,90`)는 사용자의 뜻이 남은 것이므로 덮지 않는다.
+    """
     v = _raw(name)
     if v is None:
         from_file = file_cfg.get(_file_key(name))
@@ -127,7 +138,7 @@ def _ladder_of(name: str, file_cfg: dict[str, object], default: tuple[int, ...])
             )
             return rungs if rungs else default
         return default
-    return parse_ladder(v)
+    return parse_ladder(v) or default
 
 
 def save_policy(accounts_dir: Path, **values: object) -> Path:

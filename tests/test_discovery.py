@@ -227,3 +227,34 @@ def test_bare_name_does_not_inject_cwd(env: dict[str, str]) -> None:
 
 def test_parent_supplies_missing_path(tmp_path: Path) -> None:
     assert discovery.env_with_bin_dir(tmp_path / "codex", {}) == {"PATH": str(tmp_path)}
+
+
+# ── `~/.local/bin` 은 배제 대상이 아니라 마지막 후보다 ──────────────────────
+#
+# 그 디렉토리를 PATH 에서 통째로 빼는 것은 wrapper 재귀를 막으려는 장치였다. 그런데
+# 재귀를 실제로 막는 것은 `is_wrapper()`(shebang 과 marker 의 곱)이고, 디렉토리 배제는 그
+# 정밀한 검사가 **도달하기 전에** 후보를 없앤다. 그 결과 codex 를 거기에 평범하게
+# 설치한 사용자(npm 전역 prefix · pipx · 수동 설치)는 도구를 아예 쓸 수 없었다.
+
+
+def test_a_plain_codex_in_local_bin_is_found(tmp_path: Path, env: dict[str, str]) -> None:
+    """PATH 조회가 그 디렉토리를 빼므로, 마지막 티어에서 직접 본다."""
+    candidate = binary(tmp_path / ".local/bin/codex")
+    env["PATH"] = str(tmp_path / ".local/bin")
+    assert discovery.find_upstream(MappingProxyType(env)) == candidate
+
+
+def test_a_wrapper_in_local_bin_is_still_refused(tmp_path: Path, env: dict[str, str]) -> None:
+    """재귀 방어는 그대로다. 배제 이유였던 그 경우만 정확히 거른다."""
+    binary(tmp_path / ".local/bin/codex", b"#!/bin/sh\n. lib/codex-path.sh\n")
+    env["PATH"] = str(tmp_path / ".local/bin")
+    with pytest.raises(discovery.UpstreamNotFound):
+        discovery.find_upstream(MappingProxyType(env))
+
+
+def test_local_bin_never_outranks_a_real_tier(tmp_path: Path, env: dict[str, str]) -> None:
+    """마지막 티어여야 한다. 앞으로 오면 wrapper 가 놓인 기기에서 우선순위가 뒤집힌다."""
+    binary(tmp_path / ".local/bin/codex")
+    nvm = binary(tmp_path / ".nvm/versions/node/v20/bin/codex")
+    env["PATH"] = str(tmp_path / ".local/bin")
+    assert discovery.find_upstream(MappingProxyType(env)) == nvm

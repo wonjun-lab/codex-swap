@@ -1,5 +1,6 @@
 """락 소유권과 라벨 경계가 무너지면 다른 슬롯의 자격증명까지 바뀔 수 있다."""
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -201,3 +202,40 @@ def test_unregistered_target_cannot_replace_live_auth(settings: config.Settings)
     with pytest.raises(store.StoreError, match="등록되지 않은 라벨"):
         store.switch(settings, "missing")
     assert live.read_bytes() == b"preserve"
+
+
+def test_the_temp_credential_file_is_never_wider_than_0600(tmp_path, monkeypatch) -> None:
+    """전이 중에도 토큰이 남에게 보이면 안 된다.
+
+    `shutil.copy` 계열은 dst 를 만든 **뒤** 권한을 옮긴다. 그 사이 파일은 umask 모드로
+    존재하고(흔한 개발 기기에서 0664), temp 는 `~/.codex` 안에 생기는데 그 디렉토리는
+    codex 소유라 0775 인 기기가 있다 — 매 전환마다 로컬 타 계정이 OAuth 토큰을 읽을 수
+    있는 창이 열린다. 실측으로 0664 를 잡았다.
+
+    같은 저장소가 이미 옳은 패턴을 갖고 있다: `cache._opener` 가 email 만 담긴 캐시를
+    처음부터 0600 으로 만든다. 정작 토큰 파일에 적용되지 않았다.
+
+    관측은 `os.chmod` 를 가로채서 한다 — 실제 경쟁으로 창을 잡으려면 큰 파일과 스레드가
+    필요하고 그건 재현이 흔들린다. 여기서 보는 것은 "chmod 이 오기 전에 이미 0600 인가" 다.
+    """
+    src = tmp_path / "src.json"
+    src.write_text('{"tokens": {}}')
+    os.chmod(src, 0o600)
+    dst = tmp_path / "dst.json"
+
+    seen: list[str] = []
+    real_chmod = os.chmod
+
+    def spy(path, mode, *a, **k):
+        # chmod 이 불리는 시점의 **현재** 모드를 기록한다. 이미 0600 이면 창이 없다.
+        with contextlib.suppress(OSError):
+            seen.append(oct(os.stat(path).st_mode & 0o777))
+        return real_chmod(path, mode, *a, **k)
+
+    monkeypatch.setattr(os, "chmod", spy)
+    monkeypatch.setattr(os, "umask", lambda mask: 0o022)
+    store._install(src, dst, keep_mtime=False)
+
+    assert seen, "temp 에 chmod 이 걸리지 않았다"
+    assert all(m == "0o600" for m in seen), f"0600 보다 넓은 창이 있었다: {seen}"
+    assert oct(dst.stat().st_mode & 0o777) == "0o600"

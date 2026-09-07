@@ -303,3 +303,30 @@ def test_busy_ignores_non_log_files_and_a_missing_root(env) -> None:
     other.write_text("")
     os.utime(other, (999_999.0, 999_999.0))
     assert rotate.busy(s, 1_000_000.0) is False
+
+
+# ── 사다리 환경변수가 조용히 비는 것 ────────────────────────────────────────
+
+
+@pytest.mark.parametrize("raw", ["high", "50;70", "abc,def", ",,,"])
+def test_an_unparseable_ladder_env_falls_back_instead_of_disabling_rotation(
+    env, monkeypatch, raw: str
+) -> None:
+    """오타 하나가 임계 기반 전환을 **영구 정지**시키고 있었다.
+
+    `parse_ladder` 는 숫자가 아닌 조각을 조용히 버린다. 전부 버려지면 빈 사다리가 되고,
+    `policy.decide` 는 `ladder is empty` 로 아무것도 하지 않는다. 같은 파일의 설정 파일
+    경로는 `rungs if rungs else default` 로 이미 접고 있었고 `parse_ladder` 의 docstring
+    도 "호출부가 기본값으로 접는다" 고 적었는데, 환경변수 경로만 그러지 않았다.
+
+    대조: `CODEX_ROTATE_MARGIN=abc` 는 `ConfigError` 로 크게 죽는다. 스칼라는 물러설
+    기본값을 고를 수 없지만 사다리는 있다 — 그래서 여기서는 죽지 않고 접는다.
+    """
+    monkeypatch.setenv("CODEX_ROTATE_LADDER", raw)
+    assert config.load().ladder == config.DEFAULT_LADDER
+
+
+def test_a_partially_valid_ladder_keeps_what_parsed(env, monkeypatch) -> None:
+    """일부만 걸러지면 그건 사용자의 뜻이 남은 것이다. 기본값으로 덮지 않는다."""
+    monkeypatch.setenv("CODEX_ROTATE_LADDER", "50,oops,90")
+    assert config.load().ladder == (50, 90)

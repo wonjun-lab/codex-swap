@@ -10,6 +10,11 @@
     2. `~/.local/bin` 을 뺀 PATH        wrapper 가 거기 설치되므로 빼야 자기 자신을 안 집는다
     3. standalone 설치 경로             PATH 에 없을 수 있는 공식 설치 위치
     4. nvm 버전 디렉토리, 최신부터      축소 PATH 로 부르는 호출자(훅·systemd)의 마지막 보루
+    5. `~/.local/bin/codex` 직접        2 티어가 뺀 자리를 맨 뒤에서 되살린다 (아래 참조)
+
+5 티어는 2 티어의 배제가 지나쳤던 것을 되돌린다. 그 배제는 wrapper 재귀를 막으려는
+것인데 재귀를 실제로 막는 것은 `is_wrapper()` 이고, 디렉토리를 통째로 빼면 codex 를
+거기에 평범하게 설치한 기기가 아무것도 못 찾는다. 맨 뒤에 두므로 우선순위는 그대로다.
 
 `§6.2` 의 PATH 보정도 여기 함께 둔다. node 의존이 사라진 것은 **우리 코드에서**지
 시스템에서가 아니다 — 탐색 결과가 `#!/usr/bin/env node` 스크립트라 자식에게 node 를
@@ -180,6 +185,22 @@ def _nvm_candidates(env: Mapping[str, str] | None) -> list[Path]:
     return sorted(found, key=lambda p: _version_key(str(p)), reverse=True)
 
 
+def _local_bin_candidates(env: Mapping[str, str] | None) -> list[Path]:
+    """`~/.local/bin/codex`. **마지막** 티어다.
+
+    PATH 조회는 이 디렉토리를 통째로 뺀다(`path_without_local_bin`). 그 배제는 wrapper
+    재귀를 막으려는 장치인데, 재귀를 실제로 막는 것은 `is_wrapper()`(shebang 과 marker 의 곱)
+    이고 디렉토리 배제는 그 정밀한 검사가 **도달하기 전에** 후보를 없앤다. 그 결과 codex
+    를 여기에 평범하게 설치한 기기 — npm 전역 prefix · pipx · 수동 설치 — 에서는 다른
+    티어가 없으면 아무것도 못 찾고 도구가 통째로 죽는다.
+
+    그래서 후보로는 되살리되 **맨 뒤**에 둔다. 위 티어를 이기지 못하므로 wrapper 가 놓인
+    기기의 우선순위는 그대로이고, 실제로 wrapper 면 `is_usable_binary` 가 거른다 — 배제의
+    이유였던 그 경우만 정확히 남는다.
+    """
+    return [_home(env) / ".local/bin/codex"]
+
+
 def find_upstream(env: Mapping[str, str] | None = None) -> Path:
     """upstream codex 실행 파일을 찾는다. 못 찾으면 `UpstreamNotFound`."""
     override = _raw(env, "CODEX_REAL_BIN")
@@ -206,7 +227,7 @@ def find_upstream(env: Mapping[str, str] | None = None) -> Path:
     # 티어를 **게으르게** 잇는다. 튜플로 펼치면 standalone 이 이길 때도 nvm 쪽이 먼저
     # 평가되어, 쓰지도 않을 `~/.nvm/versions/node/*/bin/codex` glob 이 매번 돈다.
     # discovery 는 훅과 터미널 호출마다 실리는 경로라 그 한 번이 그냥 낭비다.
-    for tier in (_standalone_candidates, _nvm_candidates):
+    for tier in (_standalone_candidates, _nvm_candidates, _local_bin_candidates):
         for candidate in tier(env):
             if is_usable_binary(candidate):
                 return candidate
