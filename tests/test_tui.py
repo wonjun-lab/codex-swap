@@ -12,6 +12,7 @@ import os
 import shutil
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -626,7 +627,7 @@ def test_the_active_row_is_bold_and_the_chrome_is_dim(env) -> None:
 # ── 폭 적응 ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("width", [12, 20, 40, 60, 80, 90, 91, 100, 120, 200])
+@pytest.mark.parametrize("width", [None, 20, 40, 60, 80, 90, 95, 100, 120, 200])
 def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
     """표와 크롬은 어느 폭에서도 넘치지 않는다.
 
@@ -646,10 +647,12 @@ def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
         for i in range(3)
     )
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=95)
+    limit = 200 if width is None else width
+    assert limit >= tui.MIN_FIT_WIDTH, "계약이 성립하는 범위 밖을 테스트하고 있다"
     for text, _ in tui.render_screen(view, width=width):
         if text.lstrip().startswith("주의:") or (view.message and view.message in text):
             continue
-        assert tui._width(text) <= width, (width, text)
+        assert tui._width(text) <= limit, (width, text)
 
 
 def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
@@ -737,15 +740,24 @@ def test_the_tick_crosses_exactly_where_the_policy_switches(percent: int, glyph:
     assert glyph in tui.usage_bar(percent, 70)
 
 
-@pytest.mark.parametrize(
-    ("width", "bar", "reset"),
-    [(200, True, True), (91, True, True), (90, False, True), (66, False, True), (65, False, False)],
-)
-def test_columns_are_dropped_in_priority_order(env, width: int, bar: bool, reset: bool) -> None:
-    """버리는 순서가 우선순위다 — 바 → 리셋 시각 → 이메일 폭. 계정이 누구인지가 끝까지 남는다."""
-    with_bar, with_reset, label_cols, email_cols = tui._layout(width)
-    assert (with_bar, with_reset) == (bar, reset)
-    assert label_cols > 0 and email_cols > 0
+def test_columns_are_dropped_in_priority_order(env) -> None:
+    """버리는 순서가 우선순위다 — 바 → 리셋 시각 → 이메일 폭 → 라벨 폭.
+
+    임계는 **상수에서 파생**시킨다. 숫자를 박아 두면 간격 한 칸을 바꿀 때마다 테스트가
+    같이 틀어지고, 그러면 테스트가 규칙이 아니라 그때의 숫자를 지키게 된다.
+    """
+    reset_min = tui._overhead(with_bar=False, with_reset=True) + tui._LABEL_COLS + tui._EMAIL_MIN
+    cases = [
+        (tui._BAR_MIN_WIDTH + 100, True, True),
+        (tui._BAR_MIN_WIDTH, True, True),
+        (tui._BAR_MIN_WIDTH - 1, False, True),
+        (reset_min, False, True),
+        (reset_min - 1, False, False),
+    ]
+    for width, bar, reset in cases:
+        with_bar, with_reset, label_cols, email_cols = tui._layout(width)
+        assert (with_bar, with_reset) == (bar, reset), width
+        assert label_cols > 0 and email_cols > 0, width
 
 
 def test_a_very_narrow_screen_drops_columns_instead_of_half_clipping_them(env) -> None:
@@ -852,3 +864,265 @@ def test_a_provisional_gate_says_so_instead_of_disappearing(env) -> None:
     fresh = (tui.Row("a", "a@x", "40%", "-", True, percent=40),)
     solid = tui.View(rows=fresh, cursor=0, settings=env, current_rung=50)
     assert "현재 관문 50%" in tui.render_lines(solid, width=120)[0]
+
+
+# ── 바 글자의 폭 클래스 (눈으로 안 보이는 불변식) ───────────────────────────
+
+
+@pytest.mark.parametrize("percent", [0, 1, 30, 50, 58, 70, 96, 100])
+def test_a_bar_never_mixes_east_asian_width_classes(percent: int) -> None:
+    """섞이면 **채움 비율에 따라 바의 실제 폭이 달라진다.**
+
+    원래 채움이 `█`(Ambiguous)이고 빈 칸이 `░`(Neutral)였다. Ambiguous 를 두 칸으로 그리는
+    터미널에서는 채움 개수가 곧 두 칸 글자의 개수라, 같은 24 글자 바가 58% 에서 39 칸,
+    70% 에서 42 칸으로 그려졌다 — 사용자 눈에는 "아래 행의 바가 더 짧다" 로 보인다.
+
+    이 파일은 이미 같은 이유로 조작법을 ASCII 로 적어 두었는데(`↑↓` 는 Ambiguous), 바를
+    만들 때 그 교훈을 적용하지 않았다. 눈으로는 확인할 수 없으므로 테스트가 유일한 방어선이다.
+    """
+    for rung in (None, 0, 50, 70, 100):
+        bar = tui.usage_bar(percent, rung)
+        classes = {unicodedata.east_asian_width(ch) for ch in bar}
+        assert len(classes) == 1, (percent, rung, classes, bar)
+
+
+def test_the_axis_shares_that_width_class_too(env) -> None:
+    """축이 바와 다른 클래스면 눈금과 숫자가 터미널에서 어긋난다."""
+    axis, _ = tui.ladder_axis(env.ladder, 70)
+    bar_classes = {unicodedata.east_asian_width(ch) for ch in tui.usage_bar(50, 70)}
+    axis_classes = {unicodedata.east_asian_width(ch) for ch in axis if ch != " "}
+    assert axis_classes == bar_classes, (axis_classes, bar_classes)
+
+
+def test_the_glyph_constants_are_one_class() -> None:
+    glyphs = (
+        tui.BAR_FILL,
+        tui.BAR_EMPTY,
+        tui.BAR_TICK,
+        tui.BAR_TICK_PASSED,
+        tui.AXIS_TICK,
+        tui.AXIS_TICK_CURRENT,
+    )
+    assert len({unicodedata.east_asian_width(g) for g in glyphs}) == 1
+
+
+# ── 관문 숫자 정렬 ──────────────────────────────────────────────────────────
+
+
+def test_the_gate_number_sits_under_its_tick_not_left_of_it(env) -> None:
+    """`i - len//2` 로 두면 두 글자 숫자가 눈금보다 한 칸 왼쪽으로 치우쳐 보인다."""
+    axis, labels = tui.ladder_axis(env.ladder, 70)
+    for step in env.ladder:
+        tick = axis.index(tui.AXIS_TICK_CURRENT) if step == 70 else None
+        cell = tui._tick_cell(step)
+        assert labels[cell] == str(step)[0], (step, cell, labels)
+        if tick is not None:
+            assert tick == cell
+
+
+def test_the_last_gate_number_still_fits(env) -> None:
+    """마지막 칸은 바 끝이라, 숫자 줄을 넓히지 않으면 `85`·`95` 가 `8595` 로 붙는다."""
+    _, labels = tui.ladder_axis(env.ladder, 70)
+    assert "8595" not in labels
+    for step in env.ladder:
+        assert str(step) in labels, (step, labels)
+
+
+# ── 칼럼 간격 ───────────────────────────────────────────────────────────────
+
+
+def test_columns_are_separated_by_the_same_gutter(env) -> None:
+    """한 칸이면 `USED`·바·`RESET` 이 서로 붙어 읽힌다."""
+    rows = (tui.Row("a", "a@x", "70%", "09-13 02:00", True, percent=70, credits=1),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    body = next(line for line in tui.render_lines(view, width=140) if line.startswith(" >"))
+    bar = tui.usage_bar(70, 70)
+    assert f"{tui._GUTTER}{bar}{tui._GUTTER}" in body, body
+    assert f"70%{' ' * 3}{tui._GUTTER}" in body, "사용량 열과 다음 열 사이 간격이 다르다"
+
+
+# ── 리셋 쿠폰 ───────────────────────────────────────────────────────────────
+
+
+def test_the_coupon_count_is_shown_and_carried(env) -> None:
+    """소진된 계정에 쿠폰이 남아 있으면 전환하는 대신 그것을 쓰는 선택지가 있다."""
+    _cache_usage(env, "master", 95)
+    from codex_swap.core import cache
+
+    cache.write(env, "shared", {"usedPercent": 40, "resetsAt": None, "resetCredits": 2})
+    rows = {r.label: r for r in tui.build_view(env).rows}
+    assert rows["shared"].credits == 2
+    assert rows["master"].credits is None  # 이 항목엔 쿠폰 값이 없다
+    body = [line for line in tui.render_lines(tui.build_view(env), width=140)]
+    assert any("  2  " in line for line in body), body
+
+    # 전환으로 캐시가 비어도 직전 값을 이어받는다.
+    before = tui.build_view(env)
+    after = tui.build_view(env, carry={r.label: r for r in before.rows})
+    assert {r.label: r.credits for r in after.rows} == {"master": None, "shared": 2}
+
+
+def test_an_unknown_coupon_count_shows_a_dash_not_a_zero(env) -> None:
+    """0 으로 쓰면 "쿠폰이 없다" 는 없는 사실이 화면에 뜬다."""
+    rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70, credits=None),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    body = next(line for line in tui.render_lines(view, width=140) if line.startswith(" >"))
+    assert f"{tui._GUTTER}-  " in body, body
+
+
+def test_the_bar_is_dropped_before_the_coupon_count(env) -> None:
+    """바는 `%` 숫자의 재표현이지만 쿠폰은 화면 어디에도 없는 정보다."""
+    narrow = tui._BAR_MIN_WIDTH - 1
+    with_bar, with_reset, _, _ = tui._layout(narrow)
+    assert (with_bar, with_reset) == (False, True)
+
+
+# ── 단축키 강조 ─────────────────────────────────────────────────────────────
+
+
+def test_only_the_key_glyphs_are_highlighted() -> None:
+    """설명까지 강조하면 눈이 어디를 눌러야 하는지 못 찾고 줄 전체를 읽게 된다."""
+    text, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
+    assert [text[a:b] for a, b, _ in spans] == [key for key, _ in tui.ACCOUNT_KEYS]
+    assert all(style == tui._KEY_STYLE for _, _, style in spans)
+    # 설명은 구간 밖이다.
+    covered = {i for a, b, _ in spans for i in range(a, b)}
+    for label in ("이동", "전환", "사용량"):
+        at = text.index(label)
+        assert not (covered & set(range(at, at + len(label)))), label
+
+
+def test_the_keys_survive_every_width_even_when_labels_do_not() -> None:
+    """설명은 한 번 익히면 안 보지만 키는 계속 필요하다."""
+    wide, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
+    assert "이동" in wide
+    narrow, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=30)
+    assert "이동" not in narrow, narrow
+    assert [narrow[a:b] for a, b, _ in spans] == [key for key, _ in tui.ACCOUNT_KEYS]
+    tiny, tiny_spans = tui.keys_line(tui.ACCOUNT_KEYS, width=4)
+    assert tiny.strip() == "q" and [tiny[a:b] for a, b, _ in tiny_spans] == ["q"]
+
+
+def test_the_span_offsets_are_character_indices_not_columns(env) -> None:
+    """한글이 섞인 줄에서 둘은 다르다. 칸 계산은 그리는 곳 한 군데에만 있어야 한다."""
+    text, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
+    enter = next((a, b) for a, b, _ in spans if text[a:b] == "enter")
+    assert text[enter[0] : enter[1]] == "enter"
+    # 앞에 한글 설명이 있으므로 문자 인덱스와 칸이 갈린다 — 그게 이 테스트의 요점이다.
+    assert tui._width(text[: enter[0]]) > enter[0]
+
+
+def test_the_account_screen_carries_the_key_spans(env) -> None:
+    rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    keys = next(
+        st for text, st in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
+    )
+    assert keys.spans and keys.tone == "dim"
+
+
+def test_the_policy_screen_carries_them_too(env) -> None:
+    view = tui.replace(tui.build_view(env), mode="policy")
+    keys = next(
+        st for text, st in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
+    )
+    assert keys.spans
+    assert "e 직접 입력" in next(
+        text for text, _ in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
+    )
+
+
+# ── 정책 직접 입력 ──────────────────────────────────────────────────────────
+
+
+def _policy(env, field: str) -> tui.View:
+    idx = next(i for i, (key, *_) in enumerate(tui.POLICY_FIELDS) if key == field)
+    return tui.replace(tui.build_view(env), mode="policy", policy_cursor=idx)
+
+
+def test_a_ladder_can_be_typed_in_directly(env) -> None:
+    """프리셋 순환만으로는 임의의 사다리에 닿을 수 없었다."""
+    after = tui.edit_policy(_policy(env, "ladder"), "33, 66 ,88")
+    assert after.settings.ladder == (33, 66, 88)
+
+
+def test_a_typed_ladder_is_sorted_and_deduplicated(env) -> None:
+    """정책은 앞에서부터 훑어 첫 상회 칸을 관문으로 잡는다(`rung_for`).
+
+    순서가 뒤엉킨 사다리는 오류가 아니라 **조용히 엉뚱한 칸**을 고른다.
+    """
+    after = tui.edit_policy(_policy(env, "ladder"), "88,33,66,33")
+    assert after.settings.ladder == (33, 66, 88)
+
+
+def test_a_typed_value_goes_through_the_same_parser_as_the_env_var(env) -> None:
+    """화면이 자기만의 규칙을 만들면 터미널에서는 되는데 화면에서는 거부된다."""
+    assert tui.edit_policy(_policy(env, "margin"), " 7 ").settings.margin == 7
+    assert config.parse_int(" 7 ") == 7
+
+
+@pytest.mark.parametrize("bad", ["abc", "5.5", "", "   ", "5%"])
+def test_a_bad_value_is_refused_without_changing_anything(env, bad: str) -> None:
+    before = _policy(env, "cooldown")
+    after = tui.edit_policy(before, bad)
+    assert after.settings.cooldown == before.settings.cooldown
+    if bad.strip():
+        assert "정수가 아니다" in after.message
+    else:
+        assert after.message == ""  # 빈 입력은 취소다
+
+
+def test_a_negative_value_is_refused_even_though_the_parser_accepts_it(env) -> None:
+    """`config` 는 bash 패리티로 음수를 받지만 이 값들에는 뜻이 없다.
+
+    저장하면 쿨다운이 영원히 안 걸리는 식으로 조용히 이상해진다.
+    """
+    assert config.parse_int("-5") == -5
+    after = tui.edit_policy(_policy(env, "cooldown"), "-5")
+    assert after.settings.cooldown == env.cooldown
+    assert "0 보다 작을 수 없다" in after.message
+
+
+@pytest.mark.parametrize("bad", ["abc", "a,b", "-1,-2"])
+def test_an_unreadable_ladder_is_refused(env, bad: str) -> None:
+    before = _policy(env, "ladder")
+    after = tui.edit_policy(before, bad)
+    assert after.settings.ladder == before.settings.ladder
+    assert "숫자를 읽지 못했다" in after.message
+
+
+def test_a_typed_ladder_survives_the_preset_ring(env) -> None:
+    """직접 넣은 값이 고리에 없으면 화살표 한 번에 영영 돌아올 수 없다."""
+    typed = tui.edit_policy(_policy(env, "ladder"), "33,66")
+    saved = tui.replace(typed, saved_settings=typed.settings)
+    moved = tui.adjust_policy(saved, +1)
+    assert moved.settings.ladder != (33, 66)
+    back = tui.adjust_policy(moved, -1)
+    assert back.settings.ladder == (33, 66)
+
+
+def test_a_finished_probe_does_not_throw_you_out_of_the_policy_screen(env) -> None:
+    """`build_view` 는 `mode` 를 기본값(계정)으로 되돌리고 미저장 편집을 버린다.
+
+    정책 화면에서 값을 고치는 동안 배경 조회가 끝나면 화면이 통째로 튀어나가고 편집이
+    날아갔다 — 실제로 그래서 `e` 로 넣은 사다리가 반영되지 않았다.
+    """
+    editing = tui.edit_policy(
+        tui.replace(tui.build_view(env), mode="policy", policy_cursor=0), "33,66,88"
+    )
+    after = tui.apply_probe_result(editing, "사용량을 새로 읽었다")
+    assert after.mode == "policy", "정책 화면에서 튀어나갔다"
+    assert after.settings.ladder == (33, 66, 88), "미저장 편집이 날아갔다"
+    assert after.message == "사용량을 새로 읽었다"
+
+
+def test_a_finished_probe_does_refresh_the_account_screen(env) -> None:
+    """계정 화면에서는 반대다 — 디스크에서 새로 읽어야 숫자가 갱신된다."""
+    _cache_usage(env, "master", 38)
+    before = tui.build_view(env)
+    assert next(r for r in before.rows if r.label == "master").used == "38%"
+    _cache_usage(env, "master", 77)
+    after = tui.apply_probe_result(tui.replace(before, cursor=1), "읽었다")
+    assert next(r for r in after.rows if r.label == "master").used == "77%"
+    # 커서는 지킨다. 조회가 끝날 때마다 커서가 튀면 enter 가 엉뚱한 계정을 고른다.
+    assert after.rows[after.cursor].label == before.rows[1].label

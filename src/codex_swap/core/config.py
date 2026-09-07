@@ -62,6 +62,31 @@ def _file_config(accounts_dir: Path) -> dict[str, object]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def parse_int(text: str) -> int:
+    """숫자 노브 하나를 읽는다. 못 읽으면 `ConfigError`.
+
+    환경변수·설정 파일·TUI 직접 입력이 **같은 함수**를 지난다. 화면이 자기만의 규칙을
+    만들면 받아들이는 값이 갈려서, 터미널에서는 되는데 화면에서는 거부되는(또는 그 반대)
+    상황이 생긴다.
+
+    bash 는 `(( ))` 안에서 음수도 받았다. 여기서도 받아 두어야 `MARGIN=-5` 에서 우리만
+    거부하는 일이 없다 — 값의 의미 검사는 여기가 아니라 정책의 몫이다.
+    """
+    stripped = text.strip()
+    if not (stripped.lstrip("-").isdigit() and stripped.lstrip("-") != ""):
+        raise ConfigError(f"정수가 아니다: {text!r}")
+    return int(stripped)
+
+
+def parse_ladder(text: str) -> tuple[int, ...]:
+    """`50,70,85,95` 형식. bash 는 숫자가 아닌 칸을 **조용히 건너뛴다**.
+
+    그 관용을 그대로 옮긴다 — 한 칸이 깨졌다고 사다리를 통째로 거부하면, 자동 전환이
+    매 codex 호출에서 죽는다. 다 걸러져 비면 호출부가 기본값으로 접는다.
+    """
+    return tuple(int(p) for p in (x.strip() for x in text.split(",")) if p.isdigit())
+
+
 def _int_of(name: str, file_cfg: dict[str, object], default: int) -> int:
     v = _raw(name)
     if v is None:
@@ -71,12 +96,10 @@ def _int_of(name: str, file_cfg: dict[str, object], default: int) -> int:
         if isinstance(from_file, int):
             return from_file
         return default
-    s = v.strip()
-    # bash 는 `(( ))` 안에서 음수도 받는다. 여기서도 받아 두어야 MARGIN=-5 같은 값에서
-    # 우리만 거부하는 일이 없다.
-    if not (s.lstrip("-").isdigit() and s.lstrip("-") != ""):
-        raise ConfigError(f"{name}={v!r} is not an integer")
-    return int(s)
+    try:
+        return parse_int(v)
+    except ConfigError as exc:
+        raise ConfigError(f"{name}={v!r} is not an integer") from exc
 
 
 def _file_key(env_name: str) -> str:
@@ -94,7 +117,7 @@ def _flag_env(name: str) -> bool:
 
 
 def _ladder_of(name: str, file_cfg: dict[str, object], default: tuple[int, ...]) -> tuple[int, ...]:
-    """`50,70,85,95` 형태. bash 는 숫자가 아닌 칸을 조용히 건너뛴다."""
+    """환경변수 또는 파일에서 사다리를 읽는다. 문자열 파싱은 `parse_ladder` 가 한다."""
     v = _raw(name)
     if v is None:
         from_file = file_cfg.get(_file_key(name))
@@ -104,7 +127,7 @@ def _ladder_of(name: str, file_cfg: dict[str, object], default: tuple[int, ...])
             )
             return rungs if rungs else default
         return default
-    return tuple(int(p) for p in (x.strip() for x in v.split(",")) if p.isdigit())
+    return parse_ladder(v)
 
 
 def save_policy(accounts_dir: Path, **values: object) -> Path:

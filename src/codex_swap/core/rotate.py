@@ -122,6 +122,7 @@ def _usage_of(
                 "primaryPercent": u.primary_percent,
                 "secondaryPercent": u.secondary_percent,
                 "resetsAt": u.resets_at,
+                "resetCredits": u.reset_credits,
                 "reached": u.reached,
             },
             now=now,
