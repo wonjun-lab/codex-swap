@@ -115,8 +115,19 @@ def test_captured_classification(server: Server, name: str) -> None:
         assert result == ProbeResult.auth_failed()
         return
     assert response(messages, 2)["result"]["requiresOpenaiAuth"] is True
+    # 위치 인자로 두지 않는다. `Usage` 에 필드가 끼어들 때마다 조용히 다른 것을
+    # 단언하게 되고, 이번에 실제로 `reset_credits` 가 그 자리로 들어왔다.
     assert result == ProbeResult.of(
-        Usage(36, "fixture@example.com", "pro", 36, None, 1789232459, False)
+        Usage(
+            used_percent=36,
+            email="fixture@example.com",
+            plan_type="pro",
+            primary_percent=36,
+            secondary_percent=None,
+            resets_at=1789232459,
+            reset_credits=1,
+            reached=False,
+        )
     )
     assert type(result.usage.resets_at) is int
 
@@ -203,7 +214,14 @@ def test_unrelated_ids_noise_and_partial_reads(
     server.configure(messages, fragment=True)
     monkeypatch.setattr(probe, "_READ_CHUNK", 7)
     assert server.run().usage == Usage(
-        36, "fixture@example.com", "pro", 36, None, 1789232459, False
+        used_percent=36,
+        email="fixture@example.com",
+        plan_type="pro",
+        primary_percent=36,
+        secondary_percent=None,
+        resets_at=1789232459,
+        reset_credits=1,
+        reached=False,
     )
 
 
@@ -506,3 +524,43 @@ def test_rpc_auth_errors_are_classified_after_both_reads(server: Server, request
     assert [
         event["message"].get("id") for event in server.events() if event["kind"] == "received"
     ] == [1, None, 2, 3]
+
+
+# ── 리셋 쿠폰 ───────────────────────────────────────────────────────────────
+
+
+def test_the_reset_credit_count_is_read_from_the_top_level(server: Server) -> None:
+    """`rateLimitResetCredits` 는 `rateLimits` 밖, 응답 최상위에 있다.
+
+    소진된 계정에 쿠폰이 남아 있으면 전환하는 대신 그것을 쓰는 선택지가 생긴다. 정책은
+    이 값을 쓰지 않는다 — 쿠폰을 쓰는 것은 사람의 결정이다.
+    """
+    assert server.run().usage.reset_credits == 1
+
+
+def test_a_missing_credit_block_is_unknown_not_zero(server: Server) -> None:
+    """0 으로 접으면 "쿠폰이 없다" 는 없는 사실이 화면에 뜬다."""
+    messages = captured()
+    result = response(messages, 3)["result"]
+    del result["rateLimitResetCredits"]
+    server.configure(replace_response(messages, 3, result=result))
+    assert server.run().usage.reset_credits is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (0, 0),
+        (3, 3),
+        (3.0, 3),
+        (-1, None),
+        (3.5, None),
+        (True, None),  # bool 이 int 하위타입이라 먼저 걸러야 한다
+        ("2", None),
+        (None, None),
+    ],
+)
+def test_the_credit_count_accepts_only_a_non_negative_integer(
+    raw: object, expected: int | None
+) -> None:
+    assert probe._as_count(raw) == expected

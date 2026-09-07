@@ -280,6 +280,10 @@ def _converse(proc: subprocess.Popen[bytes], timeout_s: float) -> Usage:
         primary_percent=primary,
         secondary_percent=secondary,
         resets_at=_as_epoch(_prop(_prop(rate_limits, "primary"), "resetsAt")),
+        # 쿠폰은 `rateLimits` 밖, 응답 최상위에 있다. `bash`/`.mjs` 는 이 값을 읽지
+        # 않았으므로 패리티 대상이 아니고, 없으면 없는 대로 None 이다.
+        reset_credits=_as_count(_prop(_prop(limits.get("result"), "rateLimitResetCredits"),
+                                      "availableCount")),
         reached=_reached(_prop(rate_limits, "rateLimitReachedType")),
     )
 
@@ -463,6 +467,21 @@ def _reached(value: object) -> bool:
     이 docstring 을 믿고 잘못된 결론을 낸다. 세 값을 다 접는다.
     """
     return value is not None and value is not False and value != ""
+
+
+def _as_count(value: object) -> int | None:
+    """음이 아닌 정수만 받는다. 표시 전용이라 느슨하게, 다만 거짓말은 하지 않는다.
+
+    `bool` 을 먼저 거르는 이유는 `accepts_pct` 와 같다 — `True` 가 `1` 로 통과하면
+    "쿠폰 1개" 라는 없는 사실이 화면에 뜬다.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value.is_integer() and value >= 0:
+        return int(value)
+    return None
 
 
 def _as_epoch(value: object) -> int | None:

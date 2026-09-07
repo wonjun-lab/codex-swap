@@ -27,6 +27,16 @@ class Usage:
     primary_percent: float | None = None
     secondary_percent: float | None = None
     resets_at: int | None = None
+
+    reset_credits: int | None = None
+    """남은 사용량 리셋 쿠폰 수. 모르면 None.
+
+    `account/rateLimits/read` 의 `rateLimitResetCredits.availableCount` 다. 정책은 이 값을
+    쓰지 않는다 — 쿠폰을 쓰는 것은 사람의 결정이고, 자동 전환이 대신 판단할 일이 아니다.
+    표시만 한다. 소진된 계정에 쿠폰이 남아 있으면 전환하는 대신 그것을 쓰는 선택지가
+    생기는데, 지금까지는 화면에 그 정보가 없어서 그 선택 자체가 보이지 않았다.
+    """
+
     reached: bool = False
     """소진 여부.
 
