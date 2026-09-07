@@ -422,3 +422,49 @@ def test_dry_run_also_explains_a_non_switch(env, capsys, monkeypatch) -> None:
     monkeypatch.setenv("CODEX_ROTATE_SKIP", "1")
     cli.main(["rotate", "--dry-run"])
     assert "no switch:" in capsys.readouterr().out
+
+
+# ── 처음 쓰는 사람이 실제로 밟는 자리 ───────────────────────────────────────
+#
+# 아래 둘은 격리 환경에 방금 설치한 상태를 재현해서 찾은 것이다. 단위 테스트가 전부
+# 통과하는 동안 둘 다 살아 있었다 — 기존 테스트가 **이미 로그인된** 픽스처에서만
+# 돌기 때문이다. 계정이 하나도 없는 상태가 새 사용자의 첫 화면인데 그 상태를
+# 아무도 보지 않았다.
+
+
+def test_status_does_not_call_a_probe_failure_when_you_are_simply_logged_out(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """로그인 전에는 "조회 실패" 가 아니라 "로그인하라" 여야 한다.
+
+    자격증명이 없으면 프로브는 실패할 수밖에 없다. 그 실패를 그대로 보여 주면 새
+    사용자는 도구가 깨진 줄 안다 — 실제로는 아직 아무것도 안 한 상태다.
+    """
+    home = tmp_path / "home"
+    (home / ".codex/accounts").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_ACCOUNT_DEFAULT_HOME", str(home / ".codex"))
+    monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
+
+    def forbidden(*a, **k):
+        raise AssertionError("로그인도 안 된 상태에서 프로브를 돌렸다")
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", forbidden)
+    assert cli.main(["status"]) == 1
+    out = capsys.readouterr().out
+    assert "조회 실패" not in out, out
+    assert "codex login" in out, out
+
+
+def test_add_reports_an_unrunnable_codex_instead_of_a_traceback(env, capsys, monkeypatch) -> None:
+    """실행 파일이 없으면 `subprocess` 가 `OSError` 를 던진다 — 그게 화면까지 갔다.
+
+    `CODEX_ACCOUNT_BIN` 은 의도적으로 검증하지 않는다(핫패스). 그 대가를 `add` 가
+    raw traceback 으로 치르고 있었다. `main` 의 예외 처리는 `CliError` 계열만 잡는다.
+    """
+    monkeypatch.setenv("CODEX_ACCOUNT_BIN", str(tmp_missing := env.accounts_dir / "no-such-codex"))
+    assert not tmp_missing.exists()
+    assert cli.main(["add", "fresh"]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "codex" in err and str(tmp_missing) in err, err

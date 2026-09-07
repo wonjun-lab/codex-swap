@@ -139,6 +139,8 @@ no switch: active 41% below first rung 50%
 | 출력 | 뜻 | 어떻게 |
 | --- | --- | --- |
 | `active N% below first rung M%` | 아직 한도에 여유가 있다 | 정상. 사다리 첫 칸을 낮추려면 `p` 화면 |
+| `active usage unreadable` | 사용량을 못 읽었다 | 아래 "사용량이 `?` 로 보일 때" |
+| `no candidate answered a probe` | 후보 계정을 하나도 못 읽었다 | 같음 |
 | `only one account registered` | 갈아끼울 상대가 없다 | `codex-swap add <label>` |
 | `active account is not a registered slot` | 지금 계정이 어느 슬롯과도 안 맞는다 | `codex-swap adopt <label>` 로 보관 |
 | `margin (N% + 5 > M%)` | 후보가 충분히 낮지 않다 | 마진을 낮추거나 기다린다 |
