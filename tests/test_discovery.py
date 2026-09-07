@@ -158,7 +158,7 @@ def test_nvm_numeric_order_and_hidden_exclusion(tmp_path: Path, env: dict[str, s
     candidates[1].chmod(0o600)
     assert discovery.find_upstream(env) == candidates[0]
     candidates[0].unlink()
-    with pytest.raises(discovery.UpstreamNotFound, match="찾지 못했다"):
+    with pytest.raises(discovery.UpstreamNotFound, match="could not find the codex binary"):
         discovery.find_upstream(env)
 
 

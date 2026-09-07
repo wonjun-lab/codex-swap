@@ -60,7 +60,7 @@ def slot_dir(settings: Settings, label: str) -> Path:
     조립 함수 자체가 관문이라, 검증을 빠뜨린 호출 경로가 생길 수 없다.
     """
     if not label_syntax_ok(label):
-        raise StoreError(f"쓸 수 없는 라벨: {label!r}")
+        raise StoreError(f"not a usable label: {label!r}")
     return paths.root(settings) / label
 
 
@@ -182,7 +182,7 @@ def switch_lock(settings: Settings):
     except FileExistsError:
         st = os.lstat(lock)
         if not os.path.isdir(lock):
-            raise LockUnusable(f"락 경로가 디렉토리가 아니다: {lock}") from None
+            raise LockUnusable(f"lock path is not a directory: {lock}") from None
         if time.time() - st.st_mtime <= STALE_LOCK_SECONDS:
             raise LockBusy(str(lock)) from None
         # 30분 넘게 남아 있으면 죽은 프로세스의 잔해다.
@@ -193,7 +193,7 @@ def switch_lock(settings: Settings):
         except OSError as exc:
             raise LockBusy(str(lock)) from exc
     except OSError as exc:
-        raise StoreError(f"락을 잡지 못했다: {exc}") from exc
+        raise StoreError(f"could not take the lock: {exc}") from exc
 
     try:
         yield LockHeld(lock)
@@ -289,10 +289,10 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     바이트가 그대로여도 슬롯에는 **마지막 활성화 시각**이 남는다.
     """
     if not slot_is_admissible(settings, target):
-        raise StoreError(f"쓸 수 없는 라벨: {target!r}")
+        raise StoreError(f"not a usable label: {target!r}")
     target_auth = slot_auth(settings, target)
     if not target_auth.is_file():
-        raise StoreError(f"등록되지 않은 라벨: {target}")
+        raise StoreError(f"label is not registered: {target}")
 
     active = active_label(settings)
     live = active_auth(settings)

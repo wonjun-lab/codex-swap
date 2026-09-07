@@ -208,7 +208,7 @@ def test_an_unusable_lock_is_reported_not_deadlocked(env) -> None:
     s = two_accounts(env, 95, 1)
     paths.lock_path(s).write_text("")  # 디렉토리가 아니라 파일
     d = rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)}))
-    assert isinstance(d, Failed) and "락" in d.reason
+    assert isinstance(d, Failed) and "lock path is not a directory" in d.reason
 
 
 def test_a_held_lock_is_an_ordinary_no_op(env) -> None:

@@ -97,7 +97,7 @@ def decide(snap: Snapshot) -> Decision:
         label, pct = _best(snap.candidates)
         if label is None:
             return Indeterminate("logged out and no stored account answered a probe")
-        return Switched(to_label=label, reason=f"logged-out 복구 -> {label}({pct}%)")
+        return Switched(to_label=label, reason=f"logged-out recovery -> {label}({pct}%)")
 
     # 전환은 계정이 둘 이상이어야 의미가 있다.
     if len(snap.candidates) < 1:
@@ -149,8 +149,8 @@ def decide(snap: Snapshot) -> Decision:
         # 활성 토큰이 죽었다. 후보가 있다는 것 자체가 조건이다 — 그 계정은 방금 프로브에
         # **성공**했으므로 지금 살아 있다는 뜻이고, 죽은 계정보다는 무조건 낫다. 95% 라도
         # 살아 있는 쪽이 0% 인데 로그인이 풀린 쪽보다 낫다.
-        reason = "auth(활성 토큰 만료·폐기)"
-        show = "토큰만료"
+        reason = "auth (active token expired or revoked)"
+        show = "token-expired"
     elif reached:
         # 소진은 사다리와 무관하다. 조금이라도 덜 쓴 계정이 있으면 무조건 낫다. 사다리
         # 끝이라고 붙들고 있으면 양쪽에 여유가 남았는데도 전부 막힌 채 끝난다.

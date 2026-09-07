@@ -70,7 +70,7 @@ def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 def test_bad_labels_are_refused_by_every_command(env, capsys, command: str, bad: str) -> None:
     """bash 는 이 검사가 adopt·add 에만 있었고 use·remove 에는 없었다."""
     assert cli.main([command, bad]) == 1
-    assert "쓸 수 없는 라벨" in capsys.readouterr().err
+    assert "not a usable label" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("command", ["adopt", "use", "remove"])
@@ -90,7 +90,7 @@ def test_a_hyphen_leading_label_is_refused_earlier_by_argparse(env, command: str
 @pytest.mark.parametrize("command", ["adopt", "use", "remove"])
 def test_a_hyphen_label_after_a_double_dash_reaches_our_gate(env, capsys, command: str) -> None:
     assert cli.main([command, "--", "-rf"]) == 1
-    assert "쓸 수 없는 라벨" in capsys.readouterr().err
+    assert "not a usable label" in capsys.readouterr().err
 
 
 def test_remove_refuses_a_symlinked_slot(env, capsys, tmp_path) -> None:
@@ -177,7 +177,7 @@ def test_list_on_an_empty_store_explains_what_to_do(tmp_path, monkeypatch, capsy
 def test_use_switches_and_says_so(env, capsys) -> None:
     assert cli.main(["use", "b"]) == 0
     assert identity.email_of(store.active_auth(env)) == "b@example.com"
-    assert "전환했다: b" in capsys.readouterr().out
+    assert "switched to b" in capsys.readouterr().out
 
 
 def test_clean_keeps_auth_and_removes_the_rest(env, capsys) -> None:
@@ -209,7 +209,7 @@ def test_list_shows_a_fresh_number_plainly(env, capsys) -> None:
     cli.main(["list"])
     out = capsys.readouterr().out
     assert "38%" in out and "~38%" not in out
-    assert "캐시가 낡았다" not in out
+    assert "stale cached value" not in out
 
 
 def test_list_still_shows_an_expired_number_marked_stale(env, capsys) -> None:
@@ -218,15 +218,15 @@ def test_list_still_shows_an_expired_number_marked_stale(env, capsys) -> None:
     cli.main(["list"])
     out = capsys.readouterr().out
     assert "~38%" in out
-    assert "캐시가 낡았다" in out, "범례가 없으면 `~` 를 오류로 읽는다"
+    assert "stale cached value" in out, "범례가 없으면 `~` 를 오류로 읽는다"
 
 
 def test_list_keeps_the_question_mark_for_a_slot_never_read(env, capsys) -> None:
     """한 번도 못 읽은 슬롯은 정직하게 물음표다. 지어내지 않는다."""
     cli.main(["list"])
     out = capsys.readouterr().out
-    assert "?" in out and "%" not in out.split("사다리")[0]
-    assert "캐시가 낡았다" not in out
+    assert "?" in out and "%" not in out.split("ladder")[0]
+    assert "stale cached value" not in out
 
 
 def test_list_does_not_probe(env, capsys, monkeypatch) -> None:
@@ -246,7 +246,7 @@ def test_list_says_when_auto_switching_is_off(env, capsys) -> None:
     env.off_switch.touch()
     assert cli.main(["list"]) == 0
     out = capsys.readouterr().out
-    assert "자동 전환: 꺼짐" in out and str(env.off_switch) in out
+    assert "automatic switching: off" in out and str(env.off_switch) in out
 
 
 # ── remove 의 성공 경로 ──────────────────────────────────────────────────────
@@ -261,7 +261,7 @@ def test_remove_deletes_only_the_named_slot(env, capsys) -> None:
     assert not store.slot_dir(env, "a").exists()
     assert store.slot_auth(env, "b").is_file(), "옆 슬롯이 함께 지워졌다"
     assert env.accounts_dir.is_dir(), "슬롯 루트까지 지워졌다"
-    assert "삭제: a" in capsys.readouterr().out
+    assert "removed a" in capsys.readouterr().out
 
 
 def test_remove_does_not_log_you_out(env) -> None:
@@ -312,7 +312,7 @@ def test_status_answers_from_the_cache_without_probing(env, capsys, monkeypatch)
     _cache_usage(env, "a", 38)
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "활성 계정: a" in out and "사용량: 38%" in out
+    assert "active account: a" in out and "usage: 38%" in out
 
 
 def test_status_fresh_ignores_a_live_cache(env, capsys, monkeypatch) -> None:
@@ -325,7 +325,7 @@ def test_status_fresh_ignores_a_live_cache(env, capsys, monkeypatch) -> None:
     _cache_usage(env, "a", 38)
     assert cli.main(["status", "--fresh"]) == 0
     out = capsys.readouterr().out
-    assert "사용량: 71%" in out and "38%" not in out
+    assert "usage: 71%" in out and "38%" not in out
     assert len(calls) == 1
     assert calls[0][1] == str(store.slot_dir(env, "a")), "활성 슬롯이 아닌 홈을 조회했다"
 
@@ -338,7 +338,7 @@ def test_status_probes_when_the_cache_is_stale(env, capsys, monkeypatch) -> None
     )
     _cache_usage(env, "a", 38, age=env.cache_ttl + 10)
     assert cli.main(["status"]) == 0
-    assert "사용량: 71%" in capsys.readouterr().out
+    assert "usage: 71%" in capsys.readouterr().out
     assert len(calls) == 1
 
 
@@ -358,7 +358,7 @@ def test_status_probes_the_default_home_when_no_slot_matches(env, capsys, monkey
     )
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "z@example.com" in out and "슬롯 미등록" in out
+    assert "z@example.com" in out and "not in any slot" in out
     assert calls[0][1] == str(env.default_home)
     assert "__active__" not in calls[0][1]
 
@@ -374,7 +374,7 @@ def test_status_folds_every_failure_into_one_line(env, capsys, monkeypatch, outc
         _probe_recorder(ProbeResult(outcome), []),
     )
     assert cli.main(["status", "--fresh"]) == 1
-    assert "사용량: 조회 실패" in capsys.readouterr().out
+    assert "usage: probe failed" in capsys.readouterr().out
 
 
 def test_status_survives_a_throwing_probe(env, capsys, monkeypatch) -> None:
@@ -386,7 +386,7 @@ def test_status_survives_a_throwing_probe(env, capsys, monkeypatch) -> None:
     monkeypatch.setattr("codex_swap.core.probe.probe", boom)
     assert cli.main(["status", "--fresh"]) == 1
     out = capsys.readouterr()
-    assert "사용량: 조회 실패" in out.out
+    assert "usage: probe failed" in out.out
     assert "eyJ" not in out.out and "eyJ" not in out.err
 
 
@@ -435,7 +435,7 @@ def test_dry_run_also_explains_a_non_switch(env, capsys, monkeypatch) -> None:
 def test_status_does_not_call_a_probe_failure_when_you_are_simply_logged_out(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    """로그인 전에는 "조회 실패" 가 아니라 "로그인하라" 여야 한다.
+    """로그인 전에는 "probe failed" 가 아니라 "로그인하라" 여야 한다.
 
     자격증명이 없으면 프로브는 실패할 수밖에 없다. 그 실패를 그대로 보여 주면 새
     사용자는 도구가 깨진 줄 안다 — 실제로는 아직 아무것도 안 한 상태다.
@@ -452,7 +452,7 @@ def test_status_does_not_call_a_probe_failure_when_you_are_simply_logged_out(
     monkeypatch.setattr("codex_swap.core.probe.probe", forbidden)
     assert cli.main(["status"]) == 1
     out = capsys.readouterr().out
-    assert "조회 실패" not in out, out
+    assert "probe failed" not in out, out
     assert "codex login" in out, out
 
 
@@ -552,3 +552,37 @@ def test_use_force_still_discards_when_you_mean_it(env, capsys) -> None:
 def test_use_is_unaffected_when_the_active_account_is_registered(env) -> None:
     assert cli.main(["use", "b"]) == 0
     assert identity.email_of(store.active_auth(env)) == "b@example.com"
+
+
+def test_status_fresh_keeps_what_it_just_read(env, capsys, monkeypatch) -> None:
+    """`list` 는 "새로 읽으려면 status --fresh" 라고 안내한다. 그 말이 참이어야 한다.
+
+    `--fresh` 는 프로브를 돌리고도 결과를 버렸다. 그래서 안내를 따라도 표는 그대로
+    `?` 였다 — 캐시에 쓰는 곳이 `rotate` 뿐이었기 때문이다. 방금 읽은 값을 그 라벨의
+    것으로 남긴다. 라벨을 아는 경우(활성이 슬롯에 있음)에만 쓸 수 있다.
+    """
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=64)), calls),
+    )
+    assert cli.main(["status", "--fresh"]) == 0
+    assert cache.read(env, "a") is not None, "읽고도 버렸다"
+    assert cache.read(env, "a")["usedPercent"] == 64
+
+    capsys.readouterr()
+    cli.main(["list"])
+    out = capsys.readouterr().out
+    assert "64%" in out and "~64%" not in out, out
+    assert len(calls) == 1, "list 가 프로브를 돌렸다"
+
+
+def test_status_does_not_cache_when_the_label_is_unknown(env, capsys, monkeypatch) -> None:
+    """활성이 어느 슬롯과도 안 맞으면 그 값을 **어느 라벨의 것으로도** 적을 수 없다."""
+    _write_auth(store.active_auth(env), "z@example.com")
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=64)), []),
+    )
+    assert cli.main(["status", "--fresh"]) == 0
+    assert cache.read_stale(env, "a") is None and cache.read_stale(env, "b") is None

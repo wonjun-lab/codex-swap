@@ -83,7 +83,7 @@ def test_an_empty_store_says_what_to_do(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_ACCOUNT_DEFAULT_HOME", str(home / ".codex"))
     monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
-    assert "등록된 계정이 없다" in text(tui.build_view(config.load()))
+    assert "No accounts yet" in text(tui.build_view(config.load()))
 
 
 # ── 전환 ─────────────────────────────────────────────────────────────────────
@@ -93,14 +93,14 @@ def test_enter_switches_to_the_selected_account(env) -> None:
     view = tui.replace(tui.build_view(env), cursor=1)  # shared
     after = tui.do_switch(view)
     assert identity.email_of(store.active_auth(env)) == "b@example.com"
-    assert "전환했다: shared" in after.message
+    assert "Switched to shared" in after.message
     # 화면이 새 상태를 반영해야 한다 — 옛 목록을 들고 있으면 활성 표시가 어긋난다.
     assert [r.label for r in after.rows if r.active] == ["shared"]
 
 
 def test_switching_to_the_active_account_is_refused_gently(env) -> None:
     after = tui.do_switch(tui.build_view(env))  # cursor 0 = master = 활성
-    assert "이미 활성" in after.message
+    assert "is already active" in after.message
     assert identity.email_of(store.active_auth(env)) == "a@example.com"
 
 
@@ -110,15 +110,15 @@ def test_switching_to_the_active_account_is_refused_gently(env) -> None:
 def test_toggling_auto_rotation_uses_the_same_file_as_bash(env) -> None:
     """off-switch 는 파일 하나다. bash 와 같은 경로여야 둘이 같은 스위치를 본다."""
     view = tui.build_view(env)
-    assert "자동 전환: 켜짐" in text(view)
+    assert "Auto switch: on" in text(view)
 
     off = tui.do_toggle_auto(view)
     assert env.off_switch.exists()
-    assert "자동 전환: 꺼짐" in text(off)
+    assert "Auto switch: off" in text(off)
 
     on = tui.do_toggle_auto(off)
     assert not env.off_switch.exists()
-    assert "자동 전환: 켜짐" in text(on)
+    assert "Auto switch: on" in text(on)
 
 
 # ── 정책 화면 ────────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ def test_toggling_auto_rotation_uses_the_same_file_as_bash(env) -> None:
 def test_policy_screen_shows_the_current_values(env) -> None:
     view = tui.replace(tui.build_view(env), mode="policy")
     body = text(view)
-    assert "50,70,85,95" in body and "사다리" in body
+    assert "50,70,85,95" in body and "Ladder" in body
     assert str(env.margin) in body
 
 
@@ -157,7 +157,7 @@ def test_saving_writes_a_file_that_load_reads_back(env) -> None:
     view = tui.replace(tui.build_view(env), mode="policy", policy_cursor=1)
     view = tui.adjust_policy(view, +3)
     saved = tui.save_policy(view)
-    assert "저장했다" in saved.message
+    assert "Saved:" in saved.message
 
     reloaded = config.load()
     assert reloaded.margin == env.margin + 3
@@ -202,13 +202,13 @@ def test_adopt_refuses_to_overwrite_another_accounts_slot(env) -> None:
     덮어써지고 되돌릴 방법이 없다. 같은 계정이면 갱신이므로 허용한다."""
     view = tui.build_view(env)
     after = tui.do_adopt(view, "shared")  # shared 는 b@, 활성은 a@
-    assert "덮어쓰지 않는다" in after.message
+    assert "Not overwriting" in after.message
     assert identity.email_of(store.slot_auth(env, "shared")) == "b@example.com"
 
 
 def test_adopt_allows_refreshing_the_same_account(env) -> None:
     after = tui.do_adopt(tui.build_view(env), "master")  # master 도 a@, 활성도 a@
-    assert "등록했다" in after.message
+    assert "Adopted master" in after.message
 
 
 def test_switch_reads_the_active_account_from_disk(env) -> None:
@@ -218,7 +218,7 @@ def test_switch_reads_the_active_account_from_disk(env) -> None:
         store.switch(env, "shared", "external")  # 화면 몰래 바뀜
     moved = tui.replace(view, cursor=0)  # 커서는 여전히 master
     after = tui.do_switch(moved)
-    assert "전환했다: master" in after.message
+    assert "Switched to master" in after.message
 
 
 def test_render_lines_touches_no_files(env, monkeypatch) -> None:
@@ -242,7 +242,7 @@ def test_an_unregistered_active_account_is_warned_about(env) -> None:
     """전환하면 sync-back 이 건너뛰어져 지금 자격증명이 사라진다."""
     _write_auth(store.active_auth(env), "stranger@example.com")
     body = text(tui.build_view(env))
-    assert "슬롯에 없다" in body and "보관되지 않는다" in body
+    assert "is not in any slot" in body and "will not keep it" in body
 
 
 def test_the_empty_screen_still_shows_messages(env, tmp_path, monkeypatch) -> None:
@@ -405,7 +405,7 @@ def test_pressing_enter_on_the_active_row_keeps_the_numbers(env) -> None:
     after = tui.do_switch(tui.replace(tui.build_view(env), cursor=1))  # shared 로 전환
     assert [r.used for r in after.rows] == ["~38%", "~70%"]
     again = tui.do_switch(after)  # 커서가 shared 에 있고 shared 가 활성이다
-    assert "이미 활성" in again.message
+    assert "is already active" in again.message
     assert [r.used for r in again.rows] == ["~38%", "~70%"]
 
 
@@ -440,7 +440,7 @@ def test_a_failed_auto_refresh_says_what_is_still_empty(env, monkeypatch) -> Non
     view = tui.build_view(env)
     after = tui.do_refresh(view, ("master", "shared"))
     assert "master" in after.message and "shared" in after.message
-    assert "r 로 다시 시도" in after.message
+    assert "r to retry" in after.message
     assert [r.used for r in after.rows] == ["?", "?"]
 
 
@@ -448,11 +448,11 @@ def test_the_stale_marker_is_explained_only_when_something_is_stale(env) -> None
     """늘 떠 있는 안내는 곧 안 읽힌다. 낡은 행이 있을 때만 범례를 낸다."""
     _cache_usage(env, "master", 38)
     _cache_usage(env, "shared", 70)
-    assert "~ 는" not in text(tui.build_view(env))
+    assert "stale" not in text(tui.build_view(env))
 
     _cache_usage(env, "master", 38, age=env.cache_ttl + 10)
     body = text(tui.build_view(env))
-    assert "~38%" in body and "~ 는 캐시가 낡았다는 표시다" in body
+    assert "~38%" in body and "~ marks a stale cached value" in body
 
 
 # ── 배경 조회 ────────────────────────────────────────────────────────────────
@@ -524,7 +524,7 @@ def test_refresh_message_names_what_it_could_not_read(env, monkeypatch) -> None:
     monkeypatch.setattr(tui, "resolve_codex_bin", lambda: "/bin/true")
     monkeypatch.setattr(tui.probe, "probe", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     msg = tui._refresh_message(env, ("master", "shared"))
-    assert "master" in msg and "shared" in msg and "r 로 다시 시도" in msg
+    assert "master" in msg and "shared" in msg and "r to retry" in msg
 
 
 def test_refresh_message_reports_a_missing_codex_instead_of_raising(env, monkeypatch) -> None:
@@ -534,7 +534,7 @@ def test_refresh_message_reports_a_missing_codex_instead_of_raising(env, monkeyp
         raise RuntimeError("없다")
 
     monkeypatch.setattr(tui, "resolve_codex_bin", missing)
-    assert "codex 를 찾지 못했다" in tui._refresh_message(env, ("master",))
+    assert "Could not find codex" in tui._refresh_message(env, ("master",))
 
 
 # ── 사용량 바와 사다리 축 ────────────────────────────────────────────────────
@@ -723,7 +723,7 @@ def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
     limit = 200 if width is None else width
     assert limit >= tui.MIN_FIT_WIDTH, "계약이 성립하는 범위 밖을 테스트하고 있다"
     for text, _ in tui.render_screen(view, width=width):
-        if text.lstrip().startswith("주의:") or (view.message and view.message in text):
+        if text.lstrip().startswith("Warning:") or (view.message and view.message in text):
             continue
         assert tui._width(text) <= limit, (width, text)
 
@@ -737,8 +737,8 @@ def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
     narrow = tui.render_lines(view, width=tui._BAR_MIN_WIDTH - 1)
     assert any("█" in line for line in wide) and any("┻" in line for line in wide)
     assert not any("█" in line for line in narrow)
-    assert "현재 관문 70%" in wide[0]
-    assert "사다리 50,70,85,95" in narrow[0]
+    assert "gate 70%" in wide[0]
+    assert "ladder 50,70,85,95" in narrow[0]
 
 
 def test_a_truncated_email_says_that_it_is_truncated(env) -> None:
@@ -756,19 +756,19 @@ def test_the_headline_shows_the_gate_that_actually_blocks(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=85, cooldown_left=735)
     head = tui.render_lines(view, width=120)[0]
-    assert "현재 관문 85%" in head
-    assert "쿨다운 12분 남음" in head
+    assert "gate 85%" in head
+    assert "cooldown 12m left" in head
 
 
 def test_the_headline_omits_a_cooldown_that_is_not_running(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=85)
-    assert "쿨다운" not in tui.render_lines(view, width=120)[0]
+    assert "cooldown" not in tui.render_lines(view, width=120)[0]
 
 
 @pytest.mark.parametrize(
     ("seconds", "text"),
-    [(45, "45초"), (60, "1분"), (735, "12분"), (3600, "1시간 0분"), (5430, "1시간 30분")],
+    [(45, "45s"), (60, "1m"), (735, "12m"), (3600, "1h 0m"), (5430, "1h 30m")],
 )
 def test_durations_are_read_by_people_not_stopwatches(seconds: int, text: str) -> None:
     assert tui._duration(seconds) == text
@@ -935,11 +935,11 @@ def test_a_provisional_gate_says_so_instead_of_disappearing(env) -> None:
     """
     stale_only = (tui.Row("a", "a@x", "~40%", "-", True, percent=40, stale=True),)
     view = tui.View(rows=stale_only, cursor=0, settings=env, current_rung=50, rung_provisional=True)
-    assert "현재 관문 ~50%" in tui.render_lines(view, width=120)[0]
+    assert "gate ~50%" in tui.render_lines(view, width=120)[0]
 
     fresh = (tui.Row("a", "a@x", "40%", "-", True, percent=40),)
     solid = tui.View(rows=fresh, cursor=0, settings=env, current_rung=50)
-    assert "현재 관문 50%" in tui.render_lines(solid, width=120)[0]
+    assert "gate 50%" in tui.render_lines(solid, width=120)[0]
 
 
 # ── 바 글자의 폭 클래스 (눈으로 안 보이는 불변식) ───────────────────────────
@@ -1099,7 +1099,7 @@ def test_only_the_key_glyphs_are_highlighted() -> None:
     assert all(style == tui._KEY_STYLE for _, _, style in spans)
     # 설명은 구간 밖이다.
     covered = {i for a, b, _ in spans for i in range(a, b)}
-    for label in ("이동", "전환", "사용량"):
+    for label in ("move", "switch", "usage"):
         at = text.index(label)
         assert not (covered & set(range(at, at + len(label)))), label
 
@@ -1107,9 +1107,9 @@ def test_only_the_key_glyphs_are_highlighted() -> None:
 def test_the_keys_survive_every_width_even_when_labels_do_not() -> None:
     """설명은 한 번 익히면 안 보지만 키는 계속 필요하다."""
     wide, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
-    assert "이동" in wide
+    assert "move" in wide
     narrow, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=30)
-    assert "이동" not in narrow, narrow
+    assert "move" not in narrow, narrow
     assert [narrow[a:b] for a, b, _ in spans] == [key for key, _ in tui.ACCOUNT_KEYS]
     tiny, tiny_spans = tui.keys_line(tui.ACCOUNT_KEYS, width=4)
     assert tiny.strip() == "q" and [tiny[a:b] for a, b, _ in tiny_spans] == ["q"]
@@ -1117,7 +1117,11 @@ def test_the_keys_survive_every_width_even_when_labels_do_not() -> None:
 
 def test_the_span_offsets_are_character_indices_not_columns(env) -> None:
     """한글이 섞인 줄에서 둘은 다르다. 칸 계산은 그리는 곳 한 군데에만 있어야 한다."""
-    text, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
+    # `ACCOUNT_KEYS` 의 설명은 이제 전부 ASCII 라 문자 인덱스와 칸이 **우연히** 같다.
+    # 그 우연에 기대면 이 계약을 검사할 수 없으므로, 넓은 글자를 가진 설명을 직접
+    # 넣어 둘을 갈라 놓는다. 검사 대상은 `keys_line` 의 구간 계산이지 라벨 자체가 아니다.
+    wide_keys = (("^v", "이동"), ("enter", "전환"), ("q", "종료"))
+    text, spans = tui.keys_line(wide_keys, width=200)
     enter = next((a, b) for a, b, _ in spans if text[a:b] == "enter")
     assert text[enter[0] : enter[1]] == "enter"
     # 앞에 한글 설명이 있으므로 문자 인덱스와 칸이 갈린다 — 그게 이 테스트의 요점이다.
@@ -1139,7 +1143,7 @@ def test_the_policy_screen_carries_them_too(env) -> None:
         st for text, st in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
     )
     assert keys.spans
-    assert "e 직접 입력" in next(
+    assert "e type" in next(
         text for text, _ in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
     )
 
@@ -1179,7 +1183,7 @@ def test_a_bad_value_is_refused_without_changing_anything(env, bad: str) -> None
     after = tui.edit_policy(before, bad)
     assert after.settings.cooldown == before.settings.cooldown
     if bad.strip():
-        assert "정수가 아니다" in after.message
+        assert "not an integer" in after.message
     else:
         assert after.message == ""  # 빈 입력은 취소다
 
@@ -1192,7 +1196,7 @@ def test_a_negative_value_is_refused_even_though_the_parser_accepts_it(env) -> N
     assert config.parse_int("-5") == -5
     after = tui.edit_policy(_policy(env, "cooldown"), "-5")
     assert after.settings.cooldown == env.cooldown
-    assert "0 보다 작을 수 없다" in after.message
+    assert "cannot be negative" in after.message
 
 
 @pytest.mark.parametrize("bad", ["abc", "a,b", "-1,-2"])
@@ -1200,7 +1204,7 @@ def test_an_unreadable_ladder_is_refused(env, bad: str) -> None:
     before = _policy(env, "ladder")
     after = tui.edit_policy(before, bad)
     assert after.settings.ladder == before.settings.ladder
-    assert "숫자를 읽지 못했다" in after.message
+    assert "could not read numbers" in after.message
 
 
 def test_a_typed_ladder_survives_the_preset_ring(env) -> None:
@@ -1222,10 +1226,10 @@ def test_a_finished_probe_does_not_throw_you_out_of_the_policy_screen(env) -> No
     editing = tui.edit_policy(
         tui.replace(tui.build_view(env), mode="policy", policy_cursor=0), "33,66,88"
     )
-    after = tui.apply_probe_result(editing, "사용량을 새로 읽었다")
+    after = tui.apply_probe_result(editing, "Usage refreshed")
     assert after.mode == "policy", "정책 화면에서 튀어나갔다"
     assert after.settings.ladder == (33, 66, 88), "미저장 편집이 날아갔다"
-    assert after.message == "사용량을 새로 읽었다"
+    assert after.message == "Usage refreshed"
 
 
 def test_a_finished_probe_does_refresh_the_account_screen(env) -> None:

@@ -74,7 +74,7 @@ def parse_int(text: str) -> int:
     """
     stripped = text.strip()
     if not (stripped.lstrip("-").isdigit() and stripped.lstrip("-") != ""):
-        raise ConfigError(f"정수가 아니다: {text!r}")
+        raise ConfigError(f"not an integer: {text!r}")
     return int(stripped)
 
 

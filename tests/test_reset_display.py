@@ -22,11 +22,11 @@ def at(**kw) -> float:
 @pytest.mark.parametrize(
     ("resets_at", "expected_tail"),
     [
-        (at(minutes=30), "(30분 뒤)"),
-        (at(hours=5), "(5시간 뒤)"),
-        (at(days=4, hours=2), "(4일 뒤)"),
-        (at(hours=-1), "(지남)"),
-        (at(seconds=59), "(0분 뒤)"),
+        (at(minutes=30), "(in 30m)"),
+        (at(hours=5), "(in 5h)"),
+        (at(days=4, hours=2), "(in 4d)"),
+        (at(hours=-1), "(past)"),
+        (at(seconds=59), "(in 0m)"),
     ],
 )
 def test_relative_time(resets_at: float, expected_tail: str) -> None:
@@ -34,7 +34,7 @@ def test_relative_time(resets_at: float, expected_tail: str) -> None:
 
 
 def test_absolute_time_is_shown_too() -> None:
-    """상대 시간만으로는 부족하다 — '4일 뒤' 가 몇 시인지 알아야 계획을 세운다."""
+    """상대 시간만으로는 부족하다 — 'in 4d' 가 몇 시인지 알아야 계획을 세운다."""
     text = _reset_text(at(days=4, hours=2), now=NOW)
     assert text.startswith("09-10 14:00")
 
@@ -50,4 +50,4 @@ def test_a_coupon_reset_moves_the_time_earlier() -> None:
     before = _reset_text(at(days=5), now=NOW)
     after = _reset_text(at(hours=2), now=NOW)
     assert before != after
-    assert "일 뒤" in before and "시간 뒤" in after
+    assert "(in 5d)" in before and "(in 2h)" in after

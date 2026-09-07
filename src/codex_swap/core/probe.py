@@ -228,12 +228,12 @@ def _converse(proc: subprocess.Popen[bytes], timeout_s: float) -> Usage:
         # 앞에 두면 `account` 가 없어도 한도는 읽히는 조합에서 멀쩡한 사용량을 버리고
         # 전환해 버린다. 여기서는 `Unknown` 으로 갈 실패를 `AuthFailed` 로 **승격**만 한다.
         if _account_missing(account):
-            raise ProbeAuthError(f"{message} (account/read 가 account:null 을 돌려줬다)")
+            raise ProbeAuthError(f"{message} (account/read returned account:null)")
         raise ProbeError(message)
 
     rate_limits = _prop(limits.get("result"), "rateLimits")
     if not js_truthy(rate_limits):
-        raise ProbeError("rateLimits 가 비어 있다 (로그인 상태를 확인하라)")
+        raise ProbeError("rateLimits is empty (check that you are logged in)")
 
     # 두 관문의 **순서**가 중요하다. `.mjs` 는 `typeof === "number"` 인 창을 전부 모아
     # `Math.max` 를 내고, 정수 판정(`^[0-9]+$`)은 bash 가 **그 max 에만** 건다. 그래서
@@ -257,14 +257,14 @@ def _converse(proc: subprocess.Popen[bytes], timeout_s: float) -> Usage:
 
     numeric = [v for v in (primary, secondary) if v is not None]
     if not numeric:
-        raise ProbeError("usedPercent 를 읽지 못했다")
+        raise ProbeError("could not read usedPercent")
     # 관문의 **순서**가 중요하다. 창별로 먼저 거르면 primary=4 · secondary=37.5 에서
     # 37.5 가 버려지고 남은 4 가 used_percent 가 되어 사용량을 과소보고한다 — bash 는
     # max 37.5 가 정규식에 걸려 "읽지 못했다"(rc=1)로 끝나는 자리다. 정책이
     # Indeterminate 로 갈 곳에서 가짜 4% 로 전환하게 되므로 순서를 지킨다.
     used = accepts_pct(max(numeric))
     if used is None:
-        raise ProbeError("usedPercent 가 정수가 아니다")
+        raise ProbeError("usedPercent is not an integer")
     windows = [used]
 
     acct = _prop(account.get("result"), "account")
@@ -301,7 +301,7 @@ class _Conn:
 
     def __init__(self, proc: subprocess.Popen[bytes], timeout_s: float) -> None:
         if proc.stdin is None or proc.stdout is None:
-            raise ProbeError("app-server 파이프를 열지 못했다")
+            raise ProbeError("could not open the app-server pipes")
         self._stdin = proc.stdin
         self._stdout = proc.stdout
         self._fd = proc.stdout.fileno()
@@ -425,7 +425,7 @@ def _prop(obj: object, key: str) -> object | None:
     """JS 의 `obj?.key`. 객체가 아니면 undefined 다.
 
     `rateLimits` 가 숫자·문자열처럼 진리값만 참인 값으로 와도 죽지 않아야 한다 —
-    JS 는 그 경우 조용히 undefined 를 내고 아래의 "usedPercent 를 읽지 못했다" 로 간다.
+    JS 는 그 경우 조용히 undefined 를 내고 아래의 "could not read usedPercent" 로 간다.
     """
     return obj.get(key) if isinstance(obj, dict) else None
 

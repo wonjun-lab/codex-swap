@@ -122,14 +122,14 @@ def test_a_typed_ladder_shows_up_on_the_policy_screen(session: Session) -> None:
     화면만 보면 "입력이 안 됐다" 와 "입력됐다가 취소됐다" 가 구별되지 않는다.
     """
     screen = session.run([b"p", b"e", b"33,66,88\n"])
-    assert "codex-swap · 정책" in screen.text
+    assert "codex-swap · policy" in screen.text
     assert "33,66,88" in screen.text, screen.text
 
 
 def test_esc_leaves_the_policy_screen_without_saving(session: Session) -> None:
     screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b", b"q"])
     assert screen.exit_code == 0
-    assert "저장하지 않고 나왔다" in screen.text
+    assert "Left without saving" in screen.text
     assert not (session.accounts / "config.json").exists(), "esc 인데 저장됐다"
 
 
@@ -150,8 +150,8 @@ def test_the_loop_still_breathes_after_a_prompt_closes(tmp_path: Path) -> None:
     s.slot("shared", "b@example.com")  # 캐시 없음 → 조회 대상
     s.delay(2.0)
 
-    screen = s.run([b"a", b"\n"], settle=0.8, total=40.0, wait_for="사용량을 새로 읽었다")
-    assert "사용량을 새로 읽었다" in screen.text, (
+    screen = s.run([b"a", b"\n"], settle=0.8, total=40.0, wait_for="Usage refreshed")
+    assert "Usage refreshed" in screen.text, (
         "프롬프트를 닫은 뒤 루프가 막혔다 — 조회 결과가 화면에 붙지 않는다"
     )
 
@@ -176,11 +176,9 @@ def test_a_finished_probe_does_not_eject_you_from_the_policy_screen(tmp_path: Pa
 
     # 조회가 **끝난 뒤**에 캡처해야 한다. 조용해졌다고 끊으면 아직 도는 중에 찍혀서
     # 검사가 아무것도 안 본 채 통과한다 — 실제로 그래서 뮤테이션을 놓쳤다.
-    screen = s.run(
-        [b"p", b"e", b"33,66,88\n"], settle=1.0, total=60.0, wait_for="사용량을 새로 읽었다"
-    )
-    assert "사용량을 새로 읽었다" in screen.text, "조회가 안 끝났다 — 검사가 성립하지 않는다"
-    assert "codex-swap · 정책" in screen.text, "정책 화면에서 튀어나갔다"
+    screen = s.run([b"p", b"e", b"33,66,88\n"], settle=1.0, total=60.0, wait_for="Usage refreshed")
+    assert "Usage refreshed" in screen.text, "조회가 안 끝났다 — 검사가 성립하지 않는다"
+    assert "codex-swap · policy" in screen.text, "정책 화면에서 튀어나갔다"
     assert "33,66,88" in screen.text, "미저장 편집이 날아갔다"
 
 
@@ -212,9 +210,13 @@ def test_the_bar_is_never_drawn_bold(session: Session) -> None:
 def test_the_reset_time_is_not_cut_off(tmp_path: Path) -> None:
     """이 열을 보는 이유는 "언제 풀리나" 하나다. 그 답의 끝이 잘리면 자리만 차지한다.
 
-    `_RESET_COLS` 가 20 이던 동안 `09-07 21:00 (3시간 뒤)`(22 칸)가 **언제나**
-    `(3시간 …` 으로 끝났다. 리셋은 대개 하루 안에 오므로 그게 가장 흔한 형태다.
-    폭이 넉넉한 화면에서까지 그랬다는 것이 이 회귀의 핵심이라, 넓게 띄워 확인한다.
+    **`_RESET_COLS` 는 표시 언어를 따라간다.** 한국어이던 동안 상한은 23 이었는데
+    (`09-07 21:00 (3시간 뒤)`) 상수가 20 이라, 하루 안쪽 리셋 — 가장 흔한 형태 — 이
+    폭이 넉넉한 화면에서까지 **언제나** `(3시간 …` 으로 잘렸다. 영어로 옮기면서 상한이
+    20 (`(in 23h)`)으로 내려가 상수도 다시 도출했다.
+
+    그래서 이 테스트가 지키는 것은 특정 숫자가 아니라 **문구와 상수가 함께 움직인다**는
+    것이다. 표시 문구를 고치면서 상수를 안 보면 같은 잘림이 되돌아온다.
     """
     s = Session(tmp_path / "home")
     s.slot("master", "a@example.com")
@@ -223,7 +225,7 @@ def test_the_reset_time_is_not_cut_off(tmp_path: Path) -> None:
 
     screen = s.run([b"q"], cols=120)
     row = screen.row("master")
-    assert "시간 뒤)" in row, row
+    assert "(in 3h)" in row, row
     assert "…" not in row, f"리셋 시각이 잘렸다: {row}"
 
 
@@ -243,8 +245,8 @@ def test_auto_switching_being_off_is_not_whispered(tmp_path: Path) -> None:
     (s.home / ".claude/.codex-rotate-off").touch()
 
     screen = s.run([b"q"])
-    assert "자동 전환: 꺼짐" in screen.text, screen.text
-    assert "33" in screen.attrs_of("자동 전환: 꺼짐"), "꺼짐이 켜짐과 같은 밝기다"
+    assert "Auto switch: off" in screen.text, screen.text
+    assert "33" in screen.attrs_of("Auto switch: off"), "꺼짐이 켜짐과 같은 밝기다"
 
 
 def test_only_the_key_glyphs_are_coloured(session: Session) -> None:
@@ -252,7 +254,7 @@ def test_only_the_key_glyphs_are_coloured(session: Session) -> None:
     screen = session.run([b"q"])
     keys = screen.attrs_of("^v")
     assert "1" in keys and "36" in keys, keys
-    assert "36" not in screen.attrs_of("이동"), "설명까지 색을 입혔다"
+    assert "36" not in screen.attrs_of("move"), "설명까지 색을 입혔다"
 
 
 # ── 색이 없는 터미널에서도 깨지지 않는다 ────────────────────────────────────
