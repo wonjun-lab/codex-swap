@@ -303,6 +303,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-swap",
         description="Codex 계정을 여러 개 보관하고 사용량에 따라 갈아끼운다.",
+        # 주 화면이 TUI 인데 도움말이 그것을 말하지 않으면, 인자 없이 실행해 볼 생각을
+        # 하지 않은 사용자는 이 도구에 화면이 있다는 것을 모른 채로 쓴다.
+        epilog=(
+            "인자 없이 실행하면 TUI 가 뜬다 (목록·사용량 바·정책 편집). "
+            "파이프나 스크립트에서 부르면 이 도움말이 나온다.\n"
+            "자동 전환이 왜 안 됐는지 보려면: codex-swap rotate --dry-run"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"codex-swap {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
