@@ -100,11 +100,19 @@ class View:
 
 
 POLICY_FIELDS = (
-    ("ladder", "사다리", "전환 관문. 가장 덜 쓴 계정의 사용량 바로 위 칸이 현재 관문이다"),
-    ("margin", "마진(%p)", "대상이 이만큼 낮아야 전환한다. 동률 근처의 무의미한 교체를 막는다"),
-    ("cooldown", "쿨다운(초)", "자동 전환 사이 최소 간격"),
-    ("cache_ttl", "캐시(초)", "사용량 캐시 수명"),
-    ("check_interval", "스로틀(초)", "판단 자체를 이 간격으로 묶는다"),
+    (
+        "ladder",
+        "Ladder",
+        "Switch gates. The current gate is the rung just above the least-used account",
+    ),
+    (
+        "margin",
+        "Margin (%p)",
+        "Target must be this much lower to switch. Avoids pointless swaps near a tie",
+    ),
+    ("cooldown", "Cooldown (s)", "Minimum interval between automatic switches"),
+    ("cache_ttl", "Cache TTL (s)", "How long a usage reading stays fresh"),
+    ("check_interval", "Throttle (s)", "Batches the decision itself to this interval"),
 )
 
 LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
@@ -115,29 +123,34 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
 ACCOUNT_KEYS = (
-    ("^v", "이동"),
-    ("enter", "전환"),
-    ("r", "사용량"),
-    ("a", "등록"),
-    ("p", "정책"),
-    ("o", "자동전환"),
-    ("q", "종료"),
+    ("^v", "move"),
+    ("enter", "switch"),
+    ("r", "usage"),
+    ("a", "adopt"),
+    ("p", "policy"),
+    ("o", "auto"),
+    ("q", "quit"),
 )
-AUTO_ON_LINES = ("  자동 전환: 켜짐   (o 로 끄기)", "  자동 전환: 켜짐", "  자동 ON", "  ON")
-AUTO_OFF_LINES = ("  자동 전환: 꺼짐   (o 로 켜기)", "  자동 전환: 꺼짐", "  자동 OFF", "  OFF")
+AUTO_ON_LINES = ("  Auto switch: on   (o to turn off)", "  Auto switch: on", "  Auto: on", "  ON")
+AUTO_OFF_LINES = (
+    "  Auto switch: off   (o to turn on)",
+    "  Auto switch: off",
+    "  Auto: off",
+    "  OFF",
+)
 STALE_LEGENDS = (
-    "  ~ 는 캐시가 낡았다는 표시다 (r 로 새로 읽는다)",
-    "  ~ 는 낡은 값 (r 로 갱신)",
-    "  ~ = 낡음",
+    "  ~ marks a stale cached value (r to refresh)",
+    "  ~ = stale (r to refresh)",
+    "  ~ = stale",
 )
 
 POLICY_KEYS = (
-    ("^v", "이동"),
-    ("<>", "값 조정"),
-    ("e", "직접 입력"),
-    ("s", "저장"),
-    ("esc", "취소"),
-    ("q", "종료"),
+    ("^v", "move"),
+    ("<>", "adjust"),
+    ("e", "type"),
+    ("s", "save"),
+    ("esc", "cancel"),
+    ("q", "quit"),
 )
 
 _TICK_MS = 120
@@ -243,7 +256,7 @@ def build_view(
             rows=(),
             cursor=0,
             settings=settings,
-            message=f"슬롯을 읽지 못했다: {exc}",
+            message=f"Could not read slots: {exc}",
             auto_off=False,
         )
 
@@ -475,21 +488,21 @@ _EMAIL_MIN = 20
 """
 
 # 바가 있는 줄의 고정 소비: 커서·활성 표시(3) + 라벨(14) + 공백 + 공백 + 사용량(6) +
-# 공백 + 바 + 공백 + 리셋(20). 이메일은 남는 자리를 받는다.
+# 공백 + 바 + 공백 + 쿠폰 + 공백 + 리셋. 이메일은 남는 자리를 받는다.
 _CREDIT_COLS = 4
-"""리셋 쿠폰 열의 폭. `쿠폰` 머리말이 4 칸(한글 두 자)이고 값은 한 자리다."""
+"""리셋 크레딧 열의 폭. 머리말 `CRED` 가 4 칸이고 값은 한 자리다."""
 
-_RESET_COLS = 23
+_RESET_COLS = 20
 """리셋 시각 열의 폭. `_reset_text` 가 만드는 **가장 긴 문자열**에서 나온 값이다.
 
-20 이던 동안 `09-07 21:00 (3시간 뒤)`(22 칸)가 **언제나** 잘렸다 — 리셋은 대개 하루
-안에 오므로 `N시간 뒤` 가 가장 흔한 형태인데, 하필 그것이 화면에서 `(3시간 …` 으로
-끝났다. 이 열을 보는 이유가 "언제 풀리나" 하나라서, 그 답의 마지막 글자가 잘리면
-열이 자리만 차지하고 뜻을 잃는다.
+`%m-%d %H:%M (…)` 에서 도출된다: 시각 11 칸 + 괄호·공백 3 칸 + 괄호 안이 최대 6 칸
+(`in 23h` · `in 59m` · `in 99d`) = 20. `(past)` 는 더 짧다.
 
-한계는 `%m-%d %H:%M (…)` 서식에서 도출된다: 시각 11 칸 + 괄호 안이 최대
-`23시간 뒤`(10 칸) + 괄호·공백 2 칸 = 23. 분은 `59분 뒤`(9), 일은 `99일 뒤`(9) 라
-시간 쪽이 상한이다. 그보다 긴 값(수백 일)은 `ellipsis` 가 계속 받아 준다.
+**이 값은 표시 언어를 따라간다.** 한국어이던 동안 상한은 23 이었고(`(3시간 뒤)` 류),
+그때 20 으로 두었더니 가장 흔한 형태가 **언제나** `(3시간 …` 으로 잘렸다. 이 열을 보는
+이유가 "언제 풀리나" 하나라서 그 답의 끝이 잘리면 열이 자리만 차지한다. 문구를 고칠 때
+이 상수를 함께 보지 않으면 같은 일이 반복된다 — 지금 값은 영어 서식에서 다시 도출한
+것이지 옛 값으로 되돌린 것이 아니다. 그보다 긴 값(수백 일)은 `ellipsis` 가 받아 준다.
 """
 
 
@@ -666,15 +679,15 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
     자르지 않고 버리는 것은 `마진 5%` 처럼 반쯤 남은 값이 틀린 정보이기 때문이다.
     """
     s = view.settings
-    ladder = f"사다리 {','.join(map(str, s.ladder))}"
+    ladder = f"ladder {','.join(map(str, s.ladder))}"
     if show_ladder or view.current_rung is None:
         gate = ladder
     else:
-        gate = f"현재 관문 {'~' if view.rung_provisional else ''}{view.current_rung}%"
+        gate = f"gate {'~' if view.rung_provisional else ''}{view.current_rung}%"
     parts = [gate]
     if view.cooldown_left is not None:
-        parts.append(f"쿨다운 {_duration(view.cooldown_left)} 남음")
-    parts.append(f"마진 {s.margin}%p")
+        parts.append(f"cooldown {_duration(view.cooldown_left)} left")
+    parts.append(f"margin {s.margin}%p")
 
     title = "codex-swap"
     while parts:
@@ -688,10 +701,10 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
 def _duration(seconds: int) -> str:
     """사람이 읽는 길이. 초 단위로 흐르는 숫자는 화면에서 잡음이다."""
     if seconds >= 3600:
-        return f"{seconds // 3600}시간 {seconds % 3600 // 60}분"
+        return f"{seconds // 3600}h {seconds % 3600 // 60}m"
     if seconds >= 60:
-        return f"{seconds // 60}분"
-    return f"{seconds}초"
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
 
 
 def render_lines(view: View, *, height: int | None = None, width: int | None = None) -> list[str]:
@@ -741,10 +754,10 @@ def render_screen(
     # 사용자는 enter 한 번으로 그것을 잃는다.
     keep: list[tuple[str, Style]] = []
     if view.rows and not view.active_registered:
-        who = view.active_email or "알 수 없는 계정"
+        who = view.active_email or "unknown account"
         keep.append(
             (
-                f"  주의: 활성({who})이 슬롯에 없다. 전환하면 이 자격증명은 보관되지 않는다",
+                f"  Warning: active ({who}) is not in any slot. Switching will not keep it",
                 Style("warn"),
             )
         )
@@ -755,9 +768,9 @@ def render_screen(
         # 빈 화면에서도 메시지가 보여야 한다 — 등록 실패가 여기서 나온다. 다만 조작법은
         # 이 화면에 실제로 있는 키만 적는다.
         empty = [
-            ("  등록된 계정이 없다.", _PLAIN),
+            ("  No accounts yet.", _PLAIN),
             ("", _PLAIN),
-            ("  a  지금 로그인된 계정을 슬롯에 등록   q  종료", _DIM),
+            ("  a  adopt the account you are logged in as   q  quit", _DIM),
         ]
         if view.message:
             empty += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
@@ -770,7 +783,7 @@ def render_screen(
     if with_bar:
         columns += f"{_GUTTER}{_cell('', BAR_COLS)}"
     if with_reset:
-        columns += f"{_GUTTER}{_cell('쿠폰', _CREDIT_COLS, right=True)}{_GUTTER}RESET"
+        columns += f"{_GUTTER}{_cell('CRED', _CREDIT_COLS, right=True)}{_GUTTER}RESET"
     header = [*head, (columns.rstrip() if not with_reset else columns, _DIM)]
 
     # ── 뷰포트 ──
@@ -787,7 +800,7 @@ def render_screen(
             # 마지막 계정의 한 줄처럼 읽혀서, 그 계정에만 해당하는 표시로 오해된다.
             ("", _PLAIN),
             (f"{pad}{axis}", _DIM),
-            (f"{pad}{labels}{_GUTTER}{AXIS_TICK_CURRENT} = 현재 관문", _DIM),
+            (f"{pad}{labels}{_GUTTER}{AXIS_TICK_CURRENT} = current gate", _DIM),
         ]
 
     tail_keep = [("", _PLAIN), *keep] if keep else []
@@ -816,7 +829,7 @@ def render_screen(
 
     body: list[tuple[str, Style]] = []
     if hidden_above:
-        body.append((f"   ^ {hidden_above}개 더", _DIM))
+        body.append((f"   ^ {hidden_above} more", _DIM))
     for i, row in enumerate(rows, start=start):
         cursor = ">" if i == view.cursor else " "
         mark = "*" if row.active else " "
@@ -849,7 +862,7 @@ def render_screen(
             spans.append((2, 3 + len(row.label), Style(tone, bold=True)))
         body.append((line, Style(tone, spans=tuple(spans))))
     if hidden_below:
-        body.append((f"   v {hidden_below}개 더", _DIM))
+        body.append((f"   v {hidden_below} more", _DIM))
     body += axis_lines
 
     # 최종 클램프. 아주 짧은 화면에서는 스크롤 표시까지 합한 바닥(머리말 3 + 표시 2 +
@@ -882,7 +895,7 @@ def _render_policy(
 ) -> list[tuple[str, Style]]:
     s = view.settings
     saved = view.saved_settings
-    out: list[tuple[str, Style]] = [("codex-swap · 정책", _PLAIN), ("", _PLAIN)]
+    out: list[tuple[str, Style]] = [("codex-swap · policy", _PLAIN), ("", _PLAIN)]
     for i, (key, title, why) in enumerate(POLICY_FIELDS):
         cursor = ">" if i == view.policy_cursor else " "
         value = ",".join(map(str, s.ladder)) if key == "ladder" else getattr(s, key)
@@ -896,8 +909,8 @@ def _render_policy(
     out += [
         ("", _PLAIN),
         (keys_text, Style("dim", spans=keys_spans)),
-        ("  s 를 누르면 저장되고, 이후 자동 전환이 이 값을 따른다", _DIM),
-        (f"  저장 위치: {s.accounts_dir / config.CONFIG_NAME}", _DIM),
+        ("  s saves; automatic switching follows these values from then on", _DIM),
+        (f"  Saved to: {s.accounts_dir / config.CONFIG_NAME}", _DIM),
     ]
     if view.message:
         out += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
@@ -928,12 +941,12 @@ def do_switch(view: View) -> View:
     화면의 `*` 가 낡아, 그것을 믿으면 멀쩡한 전환을 "이미 활성" 이라며 거부한다.
     """
     if not view.rows:
-        return replace(view, message="등록된 계정이 없다")
+        return replace(view, message="No accounts yet")
     target = view.rows[view.cursor]
     try:
         current = store.active_label(view.settings)
     except OSError as exc:
-        return replace(view, message=f"상태를 읽지 못했다: {exc}")
+        return replace(view, message=f"Could not read state: {exc}")
     if target.label == current:
         # 아무것도 하지 않은 분기인데도 `carry` 가 필요하다. 전환이 캐시를 비운 직후
         # 같은 행에서 enter 를 한 번 더 누르는 것이 흔한 조작인데, 여기서 이어받지
@@ -941,7 +954,7 @@ def do_switch(view: View) -> View:
         return build_view(
             view.settings,
             select=target.label,
-            message=f"{target.label} 은 이미 활성이다",
+            message=f"{target.label} is already active",
             carry=_carry(view),
         )
     try:
@@ -951,17 +964,20 @@ def do_switch(view: View) -> View:
         return build_view(
             view.settings,
             select=target.label,
-            message="다른 전환이 진행 중이다. 잠시 뒤 다시 눌러라",
+            message="Another switch is in progress. Try again in a moment",
             carry=_carry(view),
         )
     except (store.LockUnusable, store.StoreError) as exc:
         return build_view(view.settings, select=target.label, message=str(exc), carry=_carry(view))
     except Exception as exc:
         return build_view(
-            view.settings, select=target.label, message=f"전환 실패: {exc}", carry=_carry(view)
+            view.settings, select=target.label, message=f"Switch failed: {exc}", carry=_carry(view)
         )
     return build_view(
-        view.settings, select=target.label, message=f"전환했다: {target.label}", carry=_carry(view)
+        view.settings,
+        select=target.label,
+        message=f"Switched to {target.label}",
+        carry=_carry(view),
     )
 
 
@@ -975,7 +991,7 @@ def do_adopt(view: View, label: str | None) -> View:
     if not label:
         return replace(view, message="")
     if not store.label_syntax_ok(label):
-        return replace(view, message=f"쓸 수 없는 라벨이다: {label}")
+        return replace(view, message=f"Not a usable label: {label}")
 
     existing = store.slot_auth(view.settings, label)
     if existing.exists():
@@ -984,7 +1000,7 @@ def do_adopt(view: View, label: str | None) -> View:
         if slot_email is not None and slot_email != live_email:
             return replace(
                 view,
-                message=f"'{label}' 에는 이미 {slot_email} 이 있다. 덮어쓰지 않는다",
+                message=f"'{label}' already holds {slot_email}. Not overwriting",
             )
 
     from codex_swap import cli
@@ -995,8 +1011,8 @@ def do_adopt(view: View, label: str | None) -> View:
         with contextlib.redirect_stdout(io.StringIO()):
             cli.cmd_adopt(view.settings, label)
     except Exception as exc:
-        return replace(view, message=f"등록 실패: {exc}")
-    return build_view(view.settings, select=label, message=f"등록했다: {label}", carry=_carry(view))
+        return replace(view, message=f"Adopt failed: {exc}")
+    return build_view(view.settings, select=label, message=f"Adopted {label}", carry=_carry(view))
 
 
 def _probe_into_cache(s: config.Settings, label: str, active: str | None, codex_bin: str) -> bool:
@@ -1041,21 +1057,21 @@ def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
     try:
         codex_bin = str(resolve_codex_bin())
     except Exception as exc:
-        return replace(view, message=f"codex 를 찾지 못했다: {exc}")
+        return replace(view, message=f"Could not find codex: {exc}")
     try:
         active = store.active_label(s)
         targets = labels if labels is not None else tuple(store.labels(s))
     except OSError as exc:
-        return replace(view, message=f"슬롯을 읽지 못했다: {exc}")
+        return replace(view, message=f"Could not read slots: {exc}")
 
     failed = [lb for lb in targets if not _probe_into_cache(s, lb, active, codex_bin)]
     if not failed:
-        msg = "사용량을 새로 읽었다"
+        msg = "Usage refreshed"
     elif labels is not None:
         # 자동 조회의 실패는 사용자가 시킨 일이 아니다. 무엇이 비어 있는지만 알린다.
-        msg = f"사용량을 읽지 못했다: {', '.join(failed)} (r 로 다시 시도)"
+        msg = f"Could not read usage for {', '.join(failed)} (r to retry)"
     else:
-        msg = f"조회 실패: {', '.join(failed)}"
+        msg = f"Probe failed: {', '.join(failed)}"
     select = view.rows[view.cursor].label if view.rows else None
     return build_view(s, select=select, message=msg, carry=_carry(view))
 
@@ -1081,13 +1097,13 @@ def do_toggle_auto(view: View) -> View:
     try:
         if sw.exists():
             sw.unlink()
-            msg = "자동 전환을 켰다"
+            msg = "Automatic switching on"
         else:
             sw.parent.mkdir(parents=True, exist_ok=True)
             sw.touch()
-            msg = "자동 전환을 껐다"
+            msg = "Automatic switching off"
     except OSError as exc:
-        return replace(view, message=f"스위치를 바꾸지 못했다: {exc}")
+        return replace(view, message=f"Could not toggle the switch: {exc}")
     return build_view(view.settings, select=select, message=msg, carry=_carry(view))
 
 
@@ -1133,7 +1149,7 @@ def edit_policy(view: View, raw: str | None) -> View:
     if key == "ladder":
         rungs = config.parse_ladder(raw)
         if not rungs:
-            return replace(view, message=f"{title}: 숫자를 읽지 못했다 (보기: 50,70,85,95)")
+            return replace(view, message=f"{title}: could not read numbers (example: 50,70,85,95)")
         # 정렬해 둔다. 정책은 앞에서부터 훑어 첫 상회 칸을 관문으로 잡으므로(`rung_for`),
         # 순서가 뒤엉킨 사다리는 조용히 엉뚱한 칸을 고른다.
         return replace(
@@ -1142,11 +1158,11 @@ def edit_policy(view: View, raw: str | None) -> View:
     try:
         value = config.parse_int(raw)
     except config.ConfigError:
-        return replace(view, message=f"{title}: 정수가 아니다 ({raw.strip()!r})")
+        return replace(view, message=f"{title}: not an integer ({raw.strip()!r})")
     if value < 0:
         # 음수는 `config` 가 받지만(bash 패리티) 이 값들에 뜻이 없다. 저장하면 쿨다운이
         # 영원히 안 걸리는 식으로 조용히 이상해진다.
-        return replace(view, message=f"{title}: 0 보다 작을 수 없다")
+        return replace(view, message=f"{title}: cannot be negative")
     return replace(view, settings=replace(view.settings, **{key: value}), message="")
 
 
@@ -1162,15 +1178,15 @@ def save_policy(view: View) -> View:
             check_interval=s.check_interval,
         )
     except OSError as exc:
-        return replace(view, message=f"저장 실패: {exc}")
+        return replace(view, message=f"Save failed: {exc}")
 
     # 환경변수가 파일을 이긴다(설계상). 저장했는데 안 먹는 값이 있으면 말해 준다 —
     # 아무 말 없이 "저장했다" 만 띄우면 사용자는 반영된 줄 안다.
     fresh = config.load()
     shadowed = [title for key, title, _ in POLICY_FIELDS if getattr(fresh, key) != getattr(s, key)]
-    msg = f"저장했다: {path}"
+    msg = f"Saved: {path}"
     if shadowed:
-        msg += f" (환경변수가 이깁니다: {', '.join(shadowed)})"
+        msg += f" (environment variables win: {', '.join(shadowed)})"
     return replace(view, saved_settings=s, message=msg)
 
 
@@ -1368,7 +1384,7 @@ class _Prober:
         # 넓게 잡는다. 이 스레드에서 나가는 예외는 아무도 못 보고, 큐가 비면 `take` 가
         # 영영 None 을 돌려줘 화면이 "조회 중" 에 굳는다.
         except BaseException as exc:
-            self._queue.put(f"사용량 조회가 실패했다: {exc}")
+            self._queue.put(f"Usage probe failed: {exc}")
 
 
 def _refresh_message(settings: config.Settings, labels: tuple[str, ...]) -> str:
@@ -1376,15 +1392,15 @@ def _refresh_message(settings: config.Settings, labels: tuple[str, ...]) -> str:
     try:
         codex_bin = str(resolve_codex_bin())
     except Exception as exc:
-        return f"codex 를 찾지 못했다: {exc}"
+        return f"Could not find codex: {exc}"
     try:
         active = store.active_label(settings)
     except OSError as exc:
-        return f"슬롯을 읽지 못했다: {exc}"
+        return f"Could not read slots: {exc}"
     failed = [lb for lb in labels if not _probe_into_cache(settings, lb, active, codex_bin)]
     if not failed:
-        return "사용량을 새로 읽었다"
-    return f"사용량을 읽지 못했다: {', '.join(failed)} (r 로 다시 시도)"
+        return "Usage refreshed"
+    return f"Could not read usage for {', '.join(failed)} (r to retry)"
 
 
 def apply_probe_result(view: View, message: str) -> View:
@@ -1425,7 +1441,7 @@ def probing_note(view: View, labels: Sequence[str]) -> View:
     """
     if not labels:
         return view
-    note = f"사용량 조회 중… ({', '.join(labels)})"
+    note = f"Reading usage… ({', '.join(labels)})"
     return replace(view, message=f"{view.message}   {note}" if view.message else note)
 
 
@@ -1489,7 +1505,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 view = build_view(
                     config.load(),
                     cursor=view.cursor,
-                    message="저장하지 않고 나왔다",
+                    message="Left without saving",
                     carry=_carry(view),
                 )
             elif key == curses.KEY_UP:
@@ -1533,12 +1549,12 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             # 네트워크 장애로 억제된 슬롯이 영영 물음표로 남으면 안 된다.
             attempted.clear()
             if not prober.start(settings, [r.label for r in view.rows]):
-                view = replace(view, message="이미 조회 중이다")
+                view = replace(view, message="Already probing")
         elif key in (ord("o"), ord("O")):
             view = do_toggle_auto(view)
             curses.flushinp()
         elif key in (ord("a"), ord("A")):
-            view = do_adopt(view, _prompt(stdscr, "슬롯 이름: "))
+            view = do_adopt(view, _prompt(stdscr, "Slot name: "))
             curses.flushinp()
         elif key in (ord("p"), ord("P")):
             view = replace(
@@ -1557,7 +1573,8 @@ def run(settings: config.Settings) -> int:  # pragma: no cover - 터미널 필�
         import sys
 
         print(
-            f"codex-swap: 이 터미널에서는 화면을 열 수 없다 ({exc}). `codex-swap list` 를 쓰라.",
+            f"codex-swap: cannot open a screen on this terminal ({exc}). "
+            "Use `codex-swap list` instead.",
             file=sys.stderr,
         )
         return 1

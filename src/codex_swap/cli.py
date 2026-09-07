@@ -52,21 +52,21 @@ def _reset_text(resets_at: object, *, now: float | None = None) -> str:
     current = datetime.datetime.now() if now is None else datetime.datetime.fromtimestamp(now)
     secs = int((when - current).total_seconds())
     if secs < 0:
-        rel = "지남"
+        rel = "past"
     elif secs < 3600:
-        rel = f"{secs // 60}분 뒤"
+        rel = f"in {secs // 60}m"
     elif secs < 86400:
-        rel = f"{secs // 3600}시간 뒤"
+        rel = f"in {secs // 3600}h"
     else:
-        rel = f"{secs // 86400}일 뒤"
+        rel = f"in {secs // 86400}d"
     return f"{when:%m-%d %H:%M} ({rel})"
 
 
 def _usage_line(u: Usage) -> str:
     return (
-        f"사용량: {u.used_percent}% "
+        f"usage: {u.used_percent}% "
         f"(primary {_opt(u.primary_percent)}%, secondary {_opt(u.secondary_percent)}%) "
-        f"· plan {_opt(u.plan_type)} · 리셋 {_reset_text(u.resets_at)}"
+        f"· plan {_opt(u.plan_type)} · resets {_reset_text(u.resets_at)}"
     )
 
 
@@ -87,10 +87,10 @@ def _usage_from_cache(d: dict[str, Any]) -> Usage:
 
 def cmd_adopt(settings: config.Settings, label: str) -> int:
     if not store.label_syntax_ok(label):
-        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+        raise CliError(f"not a usable label: {label}")
     live = store.active_auth(settings)
     if not live.is_file():
-        raise CliError(f"로그인 상태가 아니다 ({live} 없음)")
+        raise CliError(f"not logged in ({live} is missing)")
 
     # **다른 계정의 슬롯을 덮어쓰지 않는다.** `adopt` 는 활성 자격증명을 그 이름 위에
     # 그냥 복사하므로, 기존 이름을 입력하면 그 계정의 보관본이 사라지고 되돌릴 방법이
@@ -103,8 +103,8 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
         slot_email = identity.email_of(existing)
         if slot_email is not None and slot_email != identity.email_of(live):
             raise CliError(
-                f"'{label}' 에는 이미 {slot_email} 이 있다. 덮어쓰지 않는다 "
-                f"(그 계정을 버리려면 먼저: codex-swap remove {label})"
+                f"'{label}' already holds {slot_email}. Not overwriting "
+                f"(to discard that account first: codex-swap remove {label})"
             )
 
     paths.ensure_root(settings)
@@ -114,7 +114,7 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
     dest = store.slot_auth(settings, label)
     shutil.copy2(live, dest)
     dest.chmod(0o600)
-    print(f"등록: {label} ({identity.email_of(dest) or '이메일 불명'})")
+    print(f"adopted {label} ({identity.email_of(dest) or 'email unknown'})")
     return 0
 
 
@@ -134,21 +134,21 @@ def cmd_add(
     자격증명이 엉뚱한 홈에 떨어지거나 wrapper 재귀가 생긴다.
     """
     if not store.label_syntax_ok(label):
-        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+        raise CliError(f"not a usable label: {label}")
     if store.slot_auth(settings, label).exists():
-        raise CliError(f"이미 있는 라벨이다: {label} (지우려면 remove)")
+        raise CliError(f"label already exists: {label} (use remove to drop it)")
 
     try:
         codex_bin = discovery.resolve_codex_bin()
     except Exception as exc:
-        raise CliError(f"codex 바이너리를 찾지 못했다: {exc}") from exc
+        raise CliError(f"could not find the codex binary: {exc}") from exc
 
     paths.ensure_root(settings)
     slot = store.slot_dir(settings, label)
     slot.mkdir(mode=0o700, parents=True, exist_ok=True)
     slot.chmod(0o700)
 
-    print(f"새 슬롯 '{label}' 에 로그인한다. 지금 활성 계정과 **다른** 계정으로 로그인하라.")
+    print(f"Logging in to new slot '{label}'. Use an account **different** from the active one.")
 
     # `CODEX_ROTATE_SKIP=1` 이 없으면 이 로그인이 띄우는 codex 가 wrapper 를 거쳐 다시
     # rotate 를 부르고, 그 rotate 가 지금 만들고 있는 슬롯을 후보로 본다. `CODEX_HOME` 이
@@ -159,13 +159,13 @@ def cmd_add(
 
     run = runner or _run_login
     if run([str(codex_bin), "login"], env) != 0:
-        raise CliError("로그인 실패")
+        raise CliError("login failed")
 
     dest = store.slot_auth(settings, label)
     if not dest.is_file():
-        raise CliError("로그인은 끝났는데 auth.json 이 생기지 않았다")
+        raise CliError("login finished but no auth.json appeared")
     dest.chmod(0o600)
-    print(f"등록: {label} ({identity.email_of(dest) or '이메일 불명'})")
+    print(f"adopted {label} ({identity.email_of(dest) or 'email unknown'})")
     return 0
 
 
@@ -182,15 +182,15 @@ def _run_login(argv: list[str], env: dict[str, str]) -> int:
         return subprocess.call(argv, env=env)
     except OSError as exc:
         raise CliError(
-            f"codex 를 실행할 수 없다: {argv[0]} ({exc.strerror}). "
-            "CODEX_ACCOUNT_BIN 을 확인하거나, 비우고 다시 시도하라"
+            f"cannot run codex: {argv[0]} ({exc.strerror}). "
+            "Check CODEX_ACCOUNT_BIN, or unset it and retry"
         ) from exc
 
 
 def cmd_list(settings: config.Settings) -> int:
     labels = store.labels(settings)
     if not labels:
-        print("등록된 계정이 없다. 먼저: codex-swap adopt <label>")
+        print("No accounts yet. Start with: codex-swap adopt <label>")
         return 0
     active = store.active_label(settings)
     print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} RESET")
@@ -221,14 +221,14 @@ def cmd_list(settings: config.Settings) -> int:
     print()
     # 낡은 행이 있을 때만 범례를 낸다. 늘 떠 있는 안내는 곧 안 읽힌다.
     if stale_seen:
-        print("~ 는 캐시가 낡았다는 표시다. 새로 읽으려면: codex-swap status --fresh")
+        print("~ marks a stale cached value. To refresh: codex-swap status --fresh")
     ladder = ",".join(str(x) for x in settings.ladder)
     print(
-        f"사다리 {ladder} · 마진 {settings.margin}%p · "
-        f"캐시 {settings.cache_ttl}s · 쿨다운 {settings.cooldown}s"
+        f"ladder {ladder} · margin {settings.margin}%p · "
+        f"cache {settings.cache_ttl}s · cooldown {settings.cooldown}s"
     )
     if settings.off_switch.exists():
-        print(f"자동 전환: 꺼짐 ({settings.off_switch})")
+        print(f"automatic switching: off ({settings.off_switch})")
     return 0
 
 
@@ -240,15 +240,15 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     # 상태다. 실패의 종류를 늘어놓지 않는다는 원칙(아래)과 다른 얘기다: 여기서는 애초에
     # 물어볼 것이 없다는 것을 알고 있으므로, 묻지 않고 다음 행동을 말해 준다.
     if not store.active_auth(settings).is_file():
-        print("활성 계정: 로그인 안 됨")
-        print("먼저 codex login 으로 로그인하고, codex-swap adopt <label> 로 보관하라.")
+        print("active account: not logged in")
+        print("Run codex login first, then codex-swap adopt <label> to keep it.")
         return 1
 
     if active is None:
-        email = identity.email_of(store.active_auth(settings)) or "이메일 불명"
-        print(f"활성 계정: {email} (슬롯 미등록)")
+        email = identity.email_of(store.active_auth(settings)) or "email unknown"
+        print(f"active account: {email} (not in any slot)")
     else:
-        print(f"활성 계정: {active}")
+        print(f"active account: {active}")
 
     if not fresh and active is not None:
         cached = cache.read(settings, active)
@@ -265,18 +265,40 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     except Exception:
         # 조회 실패는 한 줄로만 알린다. bash 도 프로브의 모든 비인증 실패를 이 한 줄로
         # 접는다 — 사용자에게 유용한 것은 "왜 실패했는가" 가 아니라 "지금 모른다" 다.
-        print("사용량: 조회 실패")
+        print("usage: probe failed")
         return 1
     if result.outcome is ProbeOutcome.OK and result.usage is not None:
+        # 읽었으면 남긴다. `list` 는 "새로 읽으려면 status --fresh" 라고 안내하는데, 그
+        # 값을 버리면 안내를 따라도 표가 그대로 `?` 다 — 캐시에 쓰는 곳이 `rotate` 뿐이라
+        # 실제로 그랬다. 라벨을 아는 경우에만 쓸 수 있다: 활성이 어느 슬롯과도 안 맞으면
+        # 그 값을 **어느 라벨의 것으로도** 적을 수 없다.
+        #
+        # 실패는 조용하다 — 캐시를 못 쓴 대가는 다음 호출의 프로브 한 번이다.
+        if active is not None:
+            u = result.usage
+            cache.write(
+                settings,
+                active,
+                {
+                    "email": u.email,
+                    "planType": u.plan_type,
+                    "usedPercent": u.used_percent,
+                    "primaryPercent": u.primary_percent,
+                    "secondaryPercent": u.secondary_percent,
+                    "resetsAt": u.resets_at,
+                    "resetCredits": u.reset_credits,
+                    "reached": u.reached,
+                },
+            )
         print(_usage_line(result.usage))
         return 0
-    print("사용량: 조회 실패")
+    print("usage: probe failed")
     return 1
 
 
 def cmd_use(settings: config.Settings, label: str, *, force: bool = False) -> int:
     if not store.label_syntax_ok(label):
-        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+        raise CliError(f"not a usable label: {label}")
 
     # 전환은 활성 자격증명을 슬롯으로 되돌려 놓고(sync-back) 바꾼다. 그런데 활성이 어느
     # 슬롯과도 안 맞으면 되돌려 놓을 자리가 없어 **그냥 사라진다** (`store.switch` 가
@@ -288,27 +310,27 @@ def cmd_use(settings: config.Settings, label: str, *, force: bool = False) -> in
     # 것이 뜻인 경우(임시 로그인)를 위해 `--force` 를 둔다.
     live = store.active_auth(settings)
     if not force and live.is_file() and store.active_label(settings) is None:
-        who = identity.email_of(live) or "알 수 없는 계정"
+        who = identity.email_of(live) or "unknown account"
         raise CliError(
-            f"활성({who})이 어느 슬롯에도 없다. 전환하면 이 자격증명은 보관되지 않는다. "
-            "먼저 codex-swap adopt <label> 로 보관하거나, 버려도 되면 --force"
+            f"the active account ({who}) is not in any slot; switching will not keep it. "
+            "Adopt it first (codex-swap adopt <label>), or pass --force to discard it"
         )
 
     with store.switch_lock(settings):
         store.switch(settings, label, "manual")
     print(
-        f"전환했다: {label}. "
-        "떠 있는 브로커는 옛 토큰을 들고 있으니 다음 프롬프트에서 자동 재시작된다."
+        f"switched to {label}. "
+        "A codex session that is already running keeps the old token until you restart it."
     )
     return 0
 
 
 def cmd_remove(settings: config.Settings, label: str) -> int:
     if not store.label_syntax_ok(label):
-        raise CliError(f"쓸 수 없는 라벨이다: {label}")
+        raise CliError(f"not a usable label: {label}")
     target = store.slot_dir(settings, label)
     if not target.is_dir() or target.is_symlink():
-        raise CliError(f"없는 라벨이다: {label}")
+        raise CliError(f"no such label: {label}")
     shutil.rmtree(target)
     # 캐시는 라벨로만 색인된다 — 어느 계정의 숫자인지는 적혀 있지 않다. 항목을 남기면
     # `adopt <같은 라벨>` 로 다른 계정을 그 이름에 넣었을 때 새 계정이 지운 계정의
@@ -318,7 +340,7 @@ def cmd_remove(settings: config.Settings, label: str) -> int:
     # 한 키만 빼지 않고 파일째 버리는 것은 `store.switch` 와 같다. 남는 항목도 어차피
     # TTL 안에서만 유효하고, 대가는 다음 rotate 의 프로브 몇 번뿐이다.
     cache.clear(settings)
-    print(f"삭제: {label}")
+    print(f"removed {label}")
     return 0
 
 
@@ -333,14 +355,14 @@ def cmd_clean(settings: config.Settings) -> int:
             else:
                 entry.unlink(missing_ok=True)
     cache.clear(settings)
-    print("슬롯의 프로브 부산물을 지웠다 (auth.json 은 보존).")
+    print("Cleared probe leftovers from the slots (auth.json kept).")
     return 0
 
 
 def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
     """정책 실행. 평상시에는 **아무것도 출력하지 않는다.**"""
     decision = rotate.rotate(settings, dry_run=dry_run)
-    origin = decision.from_label or "(로그아웃)" if isinstance(decision, Switched) else ""
+    origin = decision.from_label or "(logged out)" if isinstance(decision, Switched) else ""
     if dry_run:
         if isinstance(decision, Switched):
             print(f"would switch: {origin} -> {decision.to_label} [{decision.reason}]")
@@ -358,45 +380,45 @@ def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-swap",
-        description="Codex 계정을 여러 개 보관하고 사용량에 따라 갈아끼운다.",
+        description="Keep several Codex accounts and swap between them as usage climbs.",
         # 주 화면이 TUI 인데 도움말이 그것을 말하지 않으면, 인자 없이 실행해 볼 생각을
         # 하지 않은 사용자는 이 도구에 화면이 있다는 것을 모른 채로 쓴다.
         epilog=(
-            "인자 없이 실행하면 TUI 가 뜬다 (목록·사용량 바·정책 편집). "
-            "파이프나 스크립트에서 부르면 이 도움말이 나온다.\n"
-            "자동 전환이 왜 안 됐는지 보려면: codex-swap rotate --dry-run"
+            "With no arguments this opens a TUI (list, usage bars, policy editor). "
+            "Called from a pipe or a script it prints this help instead.\n"
+            "To see why an automatic switch did not happen: codex-swap rotate --dry-run"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"codex-swap {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    p = sub.add_parser("adopt", help="지금 로그인된 계정을 슬롯에 등록")
+    p = sub.add_parser("adopt", help="store the account you are logged in as")
     p.add_argument("label")
 
-    p = sub.add_parser("add", help="새 슬롯에 로그인")
+    p = sub.add_parser("add", help="log in to a new slot (opens a browser)")
     p.add_argument("label")
 
-    sub.add_parser("list", aliases=["ls"], help="등록된 계정과 캐시된 사용량")
+    sub.add_parser("list", aliases=["ls"], help="stored accounts and cached usage")
 
-    p = sub.add_parser("status", help="활성 계정과 사용량")
-    p.add_argument("--fresh", action="store_true", help="캐시를 무시하고 다시 조회")
+    p = sub.add_parser("status", help="active account and its usage")
+    p.add_argument("--fresh", action="store_true", help="ignore the cache and probe now")
 
-    p = sub.add_parser("use", aliases=["switch"], help="수동 전환")
+    p = sub.add_parser("use", aliases=["switch"], help="switch by hand")
     p.add_argument("label")
     p.add_argument(
         "--force",
         action="store_true",
-        help="활성 계정이 어느 슬롯에도 없어도 전환한다 (그 자격증명은 사라진다)",
+        help="switch even if the active account is in no slot (its credentials are lost)",
     )
 
-    p = sub.add_parser("rotate", help="정책 실행")
-    p.add_argument("--dry-run", action="store_true", help="판단만 하고 바꾸지 않는다")
+    p = sub.add_parser("rotate", help="run the policy")
+    p.add_argument("--dry-run", action="store_true", help="decide and report, change nothing")
 
-    p = sub.add_parser("remove", aliases=["rm"], help="슬롯 삭제")
+    p = sub.add_parser("remove", aliases=["rm"], help="delete a slot")
     p.add_argument("label")
 
-    sub.add_parser("clean", help="슬롯의 프로브 부산물 정리")
+    sub.add_parser("clean", help="clear probe leftovers from the slots")
     return parser
 
 
@@ -447,7 +469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "clean":
                 return cmd_clean(settings)
             case _:
-                raise CliError(f"모르는 명령: {args.command}")
+                raise CliError(f"unknown command: {args.command}")
     except CliError as exc:
         print(f"codex-swap: {exc}", file=sys.stderr)
         return 1

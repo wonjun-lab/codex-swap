@@ -69,24 +69,24 @@ def test_add_invokes_codex_login_with_the_slot_as_home(env, capsys) -> None:
     # 이게 없으면 로그인이 띄우는 codex 가 wrapper 를 거쳐 다시 rotate 를 부른다.
     assert run_env["CODEX_ROTATE_SKIP"] == "1"
     assert oct(os.stat(slot_auth).st_mode & 0o777) == "0o600"
-    assert "등록: second" in capsys.readouterr().out
+    assert "adopted second" in capsys.readouterr().out
 
 
 def test_add_refuses_an_existing_label(env, capsys) -> None:
     _write_auth(store.slot_auth(env, "taken"), "a@example.com")
     assert cli.main(["add", "taken"]) == 1
-    assert "이미 있는 라벨" in capsys.readouterr().err
+    assert "label already exists" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("bad", ["../evil", "a/b", ".hidden", ".."])
 def test_add_refuses_a_bad_label(env, capsys, bad: str) -> None:
     assert cli.main(["add", bad]) == 1
-    assert "쓸 수 없는 라벨" in capsys.readouterr().err
+    assert "not a usable label" in capsys.readouterr().err
 
 
 def test_add_reports_a_failed_login(env, capsys) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
-    with pytest.raises(cli.CliError, match="로그인 실패"):
+    with pytest.raises(cli.CliError, match="login failed"):
         cli.cmd_add(env, "second", runner=capture_runner(calls, rc=1))
 
 

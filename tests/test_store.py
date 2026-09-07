@@ -28,9 +28,9 @@ def settings(tmp_path: Path) -> config.Settings:
 def test_invalid_label_never_becomes_slot(settings: config.Settings, label: str) -> None:
     assert not store.label_syntax_ok(label)
     assert not store.slot_is_admissible(settings, label)
-    with pytest.raises(store.StoreError, match="쓸 수 없는 라벨"):
+    with pytest.raises(store.StoreError, match="not a usable label"):
         store.slot_dir(settings, label)
-    with pytest.raises(store.StoreError, match="쓸 수 없는 라벨"):
+    with pytest.raises(store.StoreError, match="not a usable label"):
         store.switch(settings, label)
     assert not settings.accounts_dir.exists()
 
@@ -44,7 +44,7 @@ def test_trailing_newline_is_not_a_label(settings: config.Settings) -> None:
     """
     assert not store.label_syntax_ok("valid\n")
     assert not store.slot_is_admissible(settings, "valid\n")
-    with pytest.raises(store.StoreError, match="쓸 수 없는 라벨"):
+    with pytest.raises(store.StoreError, match="not a usable label"):
         store.slot_dir(settings, "valid\n")
 
 
@@ -75,7 +75,10 @@ def test_unusable_lock_is_preserved(settings: config.Settings, kind: str) -> Non
         lock.write_text("owner")
     else:
         lock.symlink_to(settings.accounts_dir / "missing")
-    with pytest.raises(store.LockUnusable, match="디렉토리가 아니다"), store.switch_lock(settings):
+    with (
+        pytest.raises(store.LockUnusable, match="lock path is not a directory"),
+        store.switch_lock(settings),
+    ):
         pytest.fail("쓸 수 없는 락에 진입했다")
     if kind == "file":
         assert lock.read_text() == "owner"
@@ -131,7 +134,10 @@ def test_lock_creation_error_is_store_error(
         original(path, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(store.os, "mkdir", denied)
-    with pytest.raises(store.StoreError, match="락을 잡지 못했다"), store.switch_lock(settings):
+    with (
+        pytest.raises(store.StoreError, match="could not take the lock"),
+        store.switch_lock(settings),
+    ):
         pytest.fail("생성 실패 뒤 락에 진입했다")
     assert not lock.exists()
 
@@ -199,7 +205,7 @@ def test_unregistered_target_cannot_replace_live_auth(settings: config.Settings)
     live = store.active_auth(settings)
     live.parent.mkdir(parents=True)
     live.write_bytes(b"preserve")
-    with pytest.raises(store.StoreError, match="등록되지 않은 라벨"):
+    with pytest.raises(store.StoreError, match="label is not registered"):
         store.switch(settings, "missing")
     assert live.read_bytes() == b"preserve"
 

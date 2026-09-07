@@ -209,9 +209,7 @@ def find_upstream(env: Mapping[str, str] | None = None) -> Path:
             return Path(override)
         # 다음 티어로 흘리지 않는 것이 핵심이다. 사용자가 명시한 경로를 조용히
         # 무시하고 다른 바이너리로 돌면 어느 codex 가 실행됐는지 알 수 없어진다.
-        raise UpstreamNotFound(
-            f"CODEX_REAL_BIN 이 실행 가능한 upstream 바이너리가 아니다: {override}"
-        )
+        raise UpstreamNotFound(f"CODEX_REAL_BIN is not a runnable upstream binary: {override}")
 
     # bash 가 `command -v` 대신 `type -P` 를 쓴 이유가 그대로 적용된다 — 셸 함수·alias 를
     # 잡으면 경로가 아니라 이름("codex")이 나오고, 그 이름을 원래 PATH 로 다시 부르면
@@ -232,7 +230,7 @@ def find_upstream(env: Mapping[str, str] | None = None) -> Path:
             if is_usable_binary(candidate):
                 return candidate
 
-    raise UpstreamNotFound("codex 바이너리를 찾지 못했다")
+    raise UpstreamNotFound("could not find the codex binary")
 
 
 def resolve_codex_bin(env: Mapping[str, str] | None = None) -> Path:

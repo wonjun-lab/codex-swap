@@ -345,7 +345,7 @@ def test_fractional_max_is_unknown_with_exact_reason(server: Server) -> None:
     server.configure(limits_messages(4, 37.5))
     assert server.run() == ProbeResult.unknown()
     # 공개 결과는 이유를 지우므로 같은 실제 프로세스 경로에서 예외 문구도 확인한다.
-    with pytest.raises(probe.ProbeError, match=r"^usedPercent 가 정수가 아니다$"):
+    with pytest.raises(probe.ProbeError, match=r"^usedPercent is not an integer$"):
         probe._run(server.path, server.home, 2000)
 
 
