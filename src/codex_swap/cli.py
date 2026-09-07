@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from codex_swap import __version__
@@ -90,6 +92,16 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
         raise CliError(f"not a usable label: {label}")
     live = store.active_auth(settings)
     if not live.is_file():
+        # `CODEX_HOME` 으로 홈을 옮긴 사용자는 실제로 **로그인돼 있는데** 여기서 "안 됐다"
+        # 는 말을 듣는다. 이 도구가 그 변수를 따라가지 않는 것은 의도이므로(재귀 방어가
+        # 죽는다 — `config.load` 참조), 대신 무엇을 하면 되는지 말해 준다. 그 안내 없이는
+        # `codex login` 을 다시 돌리게 되고, 그건 같은 자리에 또 쓰여 영영 안 낫는다.
+        moved = os.environ.get("CODEX_HOME")
+        if moved and Path(moved).resolve() != settings.default_home.resolve():
+            raise CliError(
+                f"not logged in ({live} is missing), but CODEX_HOME points at {moved}. "
+                f"Tell codex-swap too: CODEX_ACCOUNT_DEFAULT_HOME={moved}"
+            )
         raise CliError(f"not logged in ({live} is missing)")
 
     # **다른 계정의 슬롯을 덮어쓰지 않는다.** `adopt` 는 활성 자격증명을 그 이름 위에
@@ -140,8 +152,13 @@ def cmd_add(
 
     try:
         codex_bin = discovery.resolve_codex_bin()
+    except discovery.UpstreamNotFound as exc:
+        # `UpstreamNotFound` 의 메시지가 이미 "codex 를 못 찾았다" 이므로 그것을 다시
+        # 감싸면 같은 말이 두 번 나온다 — 실제로
+        # `could not find the codex binary: could not find the codex binary` 였다.
+        raise CliError(f"{exc}. Set CODEX_ACCOUNT_BIN if it is installed elsewhere") from exc
     except Exception as exc:
-        raise CliError(f"could not find the codex binary: {exc}") from exc
+        raise CliError(f"could not resolve the codex binary: {exc}") from exc
 
     paths.ensure_root(settings)
     slot = store.slot_dir(settings, label)
@@ -195,8 +212,11 @@ def cmd_list(settings: config.Settings) -> int:
     active = store.active_label(settings)
     print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} RESET")
     stale_seen: list[str] = []
+    seen_emails: dict[str, list[str]] = {}
     for label in labels:
         email = identity.email_of(store.slot_auth(settings, label)) or "?"
+        if email != "?":
+            seen_emails.setdefault(email, []).append(label)
         # 프로브를 돌리지 않는 것은 의도다 — `list` 는 네트워크를 타지 않는 조회여야
         # 매 호출이 싸다. 신선한 값이 필요하면 `status --fresh`.
         #
@@ -222,11 +242,29 @@ def cmd_list(settings: config.Settings) -> int:
     # 낡은 행이 있을 때만 범례를 낸다. 늘 떠 있는 안내는 곧 안 읽힌다.
     if stale_seen:
         print("~ marks a stale cached value. To refresh: codex-swap status --fresh")
+
+    # 같은 이메일이 두 라벨에 있으면 **진 쪽 사본은 갱신을 못 받고 썩는다.** 활성 판정은
+    # 정렬 첫 일치가 이기므로(`store.active_label`) 나머지는 sync-back 대상이 아니다.
+    # 화면에 그 사실이 없으면 사용자는 두 줄이 그냥 둘인 줄 알고, 나중에 쓰려는 순간
+    # 만료된 토큰을 만난다.
+    for email, owners in sorted(seen_emails.items()):
+        if len(owners) > 1:
+            kept = active if active in owners else owners[0]
+            rotting = [x for x in owners if x != kept]
+            print(
+                f"note: {', '.join(owners)} hold the same account ({email}). "
+                f"Only '{kept}' is kept up to date; {', '.join(rotting)} will go stale"
+            )
+
     ladder = ",".join(str(x) for x in settings.ladder)
     print(
         f"ladder {ladder} · margin {settings.margin}%p · "
         f"cache {settings.cache_ttl}s · cooldown {settings.cooldown}s"
     )
+    # 위 줄이 방금 보여 준 값이 **저장한 값이 아닐 수 있다.** 그 사실을 바로 아래 붙인다.
+    broken = config.file_config_error(settings.accounts_dir)
+    if broken is not None:
+        print(f"warning: the saved policy is being ignored — {broken}")
     if settings.off_switch.exists():
         print(f"automatic switching: off ({settings.off_switch})")
     return 0
@@ -260,10 +298,22 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     # `__active__` 를 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌리는데,
     # 자격증명은 실제로 기본 홈에 있으므로 그 파생은 결함이다 (설계문 §7.5 D3).
     home = settings.default_home if active is None else store.slot_dir(settings, active)
+
+    # 바이너리 해석을 프로브 호출의 **인자 안**에 두면 그 실패가 아래 `except` 에 걸려
+    # "사용량 조회 실패" 로 접힌다. 그러면 codex 가 아예 없는 기기에서도 화면은 계정을
+    # 의심하게 만든다 — 고쳐야 할 것이 전혀 다른데 말이 같다. 설치 문제는 설치 문제로
+    # 말해야 다음 행동이 정해진다.
     try:
-        result = probe.probe(str(discovery.resolve_codex_bin()), str(home))
+        codex_bin = discovery.resolve_codex_bin()
+    except Exception as exc:
+        print(f"cannot run codex: {exc}")
+        print("Check that `codex --version` works, or set CODEX_ACCOUNT_BIN to its path.")
+        return 1
+
+    try:
+        result = probe.probe(str(codex_bin), str(home))
     except Exception:
-        # 조회 실패는 한 줄로만 알린다. bash 도 프로브의 모든 비인증 실패를 이 한 줄로
+        # 여기서부터는 한 줄로만 알린다. bash 도 프로브의 모든 비인증 실패를 이 한 줄로
         # 접는다 — 사용자에게 유용한 것은 "왜 실패했는가" 가 아니라 "지금 모른다" 다.
         print("usage: probe failed")
         return 1
@@ -331,6 +381,7 @@ def cmd_remove(settings: config.Settings, label: str) -> int:
     target = store.slot_dir(settings, label)
     if not target.is_dir() or target.is_symlink():
         raise CliError(f"no such label: {label}")
+    was_active = store.active_label(settings) == label
     shutil.rmtree(target)
     # 캐시는 라벨로만 색인된다 — 어느 계정의 숫자인지는 적혀 있지 않다. 항목을 남기면
     # `adopt <같은 라벨>` 로 다른 계정을 그 이름에 넣었을 때 새 계정이 지운 계정의
@@ -341,6 +392,14 @@ def cmd_remove(settings: config.Settings, label: str) -> int:
     # TTL 안에서만 유효하고, 대가는 다음 rotate 의 프로브 몇 번뿐이다.
     cache.clear(settings)
     print(f"removed {label}")
+    # 지운 것이 **활성 라벨**이면 자동 전환이 이 순간부터 영구 무동작이다 — 이후 rotate
+    # 는 `active account is not a registered slot` 으로 끝나는데 그 사유는 `--dry-run`
+    # 에서만 보인다. 여기서 말하지 않으면 사용자는 며칠 뒤에 "왜 안 바뀌지" 로 만난다.
+    if was_active:
+        print(
+            "Note: that was the account you are using, so it is now in no slot. "
+            "Automatic switching stops until you run: codex-swap adopt <label>"
+        )
     return 0
 
 
@@ -445,7 +504,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except config.ConfigError as exc:
         # rotate 는 fail-open 이다. 설정이 깨졌다고 여기서 시끄럽게 죽으면 그 출력이
         # 매 codex 호출에 실린다 — 조용히 무동작으로 끝낸다.
-        if args.command == "rotate":
+        #
+        # **`--dry-run` 은 예외다.** 그 침묵은 wrapper 가 부르는 핫패스를 위한 것인데,
+        # `--dry-run` 은 사람이 "왜 안 바뀌나" 를 물으려고 직접 친 명령이다. 원인이
+        # 설정일 때만 그 유일한 진단 도구가 입을 닫으면, 가장 알고 싶은 순간에 아무
+        # 답도 없다.
+        if args.command == "rotate" and not getattr(args, "dry_run", False):
             return 1
         print(f"codex-swap: {exc}", file=sys.stderr)
         return 1
@@ -473,7 +537,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CliError as exc:
         print(f"codex-swap: {exc}", file=sys.stderr)
         return 1
-    except (store.StoreError, store.LockBusy, store.LockUnusable) as exc:
+    except store.LockBusy as exc:
+        # `LockBusy` 는 경로만 들고 온다. 그대로 찍으면 화면에 파일 경로 한 줄이 남고,
+        # 사용자는 그것이 오류인지 안내인지도 모른다. TUI 는 같은 상황에 "다른 전환이
+        # 진행 중이다. 잠시 뒤 다시 눌러라" 라고 말하는데 그 문구가 CLI 로 오지 않았다.
+        print(
+            f"codex-swap: another switch is in progress ({exc}). Try again in a moment",
+            file=sys.stderr,
+        )
+        return 1
+    except (store.StoreError, store.LockUnusable) as exc:
         print(f"codex-swap: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:

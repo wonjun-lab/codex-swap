@@ -87,7 +87,7 @@ In `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 codex() {
-  command codex-swap rotate >/dev/null   # drop stdout only (see below)
+  command codex-swap rotate >/dev/null || true   # see the two notes below
   command codex "$@"
 }
 ```
@@ -100,16 +100,23 @@ In `~/.config/fish/functions/codex.fish`:
 
 ```fish
 function codex
-    command codex-swap rotate >/dev/null
+    command codex-swap rotate >/dev/null; or true
     command codex $argv
 end
 ```
 </details>
 
-`rotate` keeps a strict **output discipline** for exactly this spot. Normally it writes
-nothing at all, to either stream; only when a switch actually happened does it put one
-line on stderr. So swallowing stderr with `2>&1` means you never see that a switch
-occurred. If the configuration is broken it exits quietly without doing anything
+Two things about that line.
+
+**`|| true`.** `rotate` exits non-zero whenever it did *not* switch, which is the normal
+case. That is a deliberate contract — a caller can test the exit code to find out whether
+the account changed — but it means the command "fails" almost every time. Inside a script
+running under `set -e`, that aborts before codex ever starts.
+
+**`>/dev/null`, not `2>&1`.** `rotate` keeps a strict output discipline for exactly this
+spot: normally it writes nothing at all, to either stream, and only when a switch
+actually happened does it put one line on stderr. Swallowing stderr too means you never
+see that your account changed under you. If the configuration is broken it exits quietly without doing anything
 (fail-open) — the switcher will not be the reason codex fails to start.
 
 A codex session that is already running keeps the old token. The new account takes
@@ -220,8 +227,14 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `CODEX_ROTATE_SKIP` | — | Any value makes `rotate` do nothing |
 | `CODEX_ROTATE_STATE_ROOT` | (below) | Directory the busy gate watches |
 | `CODEX_ACCOUNTS_DIR` | `~/.codex/accounts` | Where slots live |
-| `CODEX_ACCOUNT_DEFAULT_HOME` | `~/.codex` | Home of the active account |
+| `CODEX_ACCOUNT_DEFAULT_HOME` | `~/.codex` | Home of the active account. **Set this if you moved codex's home with `CODEX_HOME`** — see below |
 | `CODEX_ACCOUNT_BIN` · `CODEX_REAL_BIN` | — | Point at the codex binary directly (skips discovery) |
+
+**If you set `CODEX_HOME`, set `CODEX_ACCOUNT_DEFAULT_HOME` to match.** codex-swap does
+not follow `CODEX_HOME` on purpose: `add` hands a slot to its child through that same
+variable, and if the default home followed it the recursion guard in `rotate` would stop
+firing. Without the extra variable, `adopt` will tell you that you are not logged in
+even though you are — it now says so and names the variable to set.
 
 **The busy gate is effectively off by default.** It defers a switch when some `*.log`
 under `CODEX_ROTATE_STATE_ROOT` has been touched recently — the idea being "you are in

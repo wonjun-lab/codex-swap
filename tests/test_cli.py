@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from codex_swap import cli
-from codex_swap.core import cache, config, identity, store
+from codex_swap.core import cache, config, discovery, identity, store
 from codex_swap.core.types import ProbeOutcome, ProbeResult, Usage
 
 
@@ -586,3 +586,150 @@ def test_status_does_not_cache_when_the_label_is_unknown(env, capsys, monkeypatc
     )
     assert cli.main(["status", "--fresh"]) == 0
     assert cache.read_stale(env, "a") is None and cache.read_stale(env, "b") is None
+
+
+# ── 진단 가능성: 원인을 말해 주는가 ─────────────────────────────────────────
+#
+# 아래는 전부 "고장 났다는 것은 알겠는데 무엇을 고쳐야 하는지 모른다" 는 자리다.
+# 각각 격리 환경에서 직접 재현해 확인했다.
+
+
+def test_a_missing_codex_is_not_reported_as_a_usage_problem(env, capsys, monkeypatch) -> None:
+    """설치 문제를 "사용량 조회 실패" 로 말하면 사용자는 계정을 의심한다.
+
+    `cmd_status` 는 `probe.probe(str(discovery.resolve_codex_bin()), …)` 로 바이너리
+    해석을 프로브 호출의 **인자 안**에 두었다. 그래서 해석 실패가 같은 `except` 에
+    걸려, codex 가 아예 없는 기기에서도 `usage: probe failed` 만 나왔다. 고쳐야 할 것이
+    전혀 다른데 화면은 같은 말을 한다.
+    """
+
+    def missing(*a, **k):
+        raise discovery.UpstreamNotFound("could not find the codex binary")
+
+    monkeypatch.setattr("codex_swap.core.discovery.resolve_codex_bin", missing)
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("바이너리도 없이 프로브했다")),
+    )
+    assert cli.main(["status", "--fresh"]) == 1
+    out = capsys.readouterr().out
+    assert "codex" in out and "probe failed" not in out, out
+
+
+def test_add_does_not_say_the_same_thing_twice(env, capsys, monkeypatch) -> None:
+    """`could not find the codex binary: could not find the codex binary` 였다."""
+
+    def missing(*a, **k):
+        raise discovery.UpstreamNotFound("could not find the codex binary")
+
+    monkeypatch.setattr("codex_swap.core.discovery.resolve_codex_bin", missing)
+    assert cli.main(["add", "fresh"]) == 1
+    err = capsys.readouterr().err.strip()
+    assert err.count("could not find the codex binary") == 1, err
+
+
+def test_dry_run_reports_a_broken_configuration_instead_of_going_quiet(
+    env, capsys, monkeypatch
+) -> None:
+    """`--dry-run` 은 "왜 안 바뀌나" 에 답하는 **유일한** 명령이다.
+
+    그런데 원인이 설정일 때만 입을 닫았다 — `main` 의 fail-open 이 `command == "rotate"`
+    만 보고 `--dry-run` 여부를 안 봤기 때문이다. 핫패스 침묵(계약 2)은 wrapper 가 매
+    codex 호출마다 부르는 그 경로를 위한 것이지, 사람이 진단하려고 직접 친 명령에까지
+    걸릴 이유가 없다.
+    """
+    monkeypatch.setenv("CODEX_ROTATE_MARGIN", "abc")
+    assert cli.main(["rotate", "--dry-run"]) == 1
+    err = capsys.readouterr().err
+    assert "CODEX_ROTATE_MARGIN" in err, err
+
+
+def test_plain_rotate_stays_silent_on_a_broken_configuration(env, capsys, monkeypatch) -> None:
+    """반대쪽은 그대로다. 핫패스는 설정이 깨져도 조용히 무동작으로 끝난다."""
+    monkeypatch.setenv("CODEX_ROTATE_MARGIN", "abc")
+    assert cli.main(["rotate"]) == 1
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""
+
+
+def test_a_broken_policy_file_is_not_silently_ignored(env, capsys) -> None:
+    """TUI 로 저장한 정책이 조용히 무시되면, 사용자는 저장이 안 된 줄 안다.
+
+    `_file_config` 가 `JSONDecodeError` 를 삼킨다. 그 침묵은 rotate 핫패스를 위한
+    것이지만, 사람이 직접 부르는 `list` 까지 아무 말도 안 하면 기본값이 자기 설정인 줄
+    안다 — 화면의 숫자가 저장한 값과 다른데 이유가 어디에도 없다.
+    """
+    (env.accounts_dir / "config.json").write_text("{ this is not json")
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "config.json" in out, out
+
+
+def test_removing_the_active_slot_says_what_it_costs(env, capsys) -> None:
+    """활성 라벨을 지우면 자동 전환이 **영구 무동작**이 된다.
+
+    이후 `rotate` 는 `active account is not a registered slot` 으로 끝나는데, 그 사유는
+    `--dry-run` 에서만 보인다. 지우는 순간에 말해 주지 않으면 사용자는 며칠 뒤에
+    "왜 안 바뀌지" 로 만난다.
+    """
+    assert cli.main(["remove", "a"]) == 0  # a 가 활성이다
+    out = capsys.readouterr().out
+    assert "adopt" in out, out
+
+
+def test_removing_an_idle_slot_says_nothing_extra(env, capsys) -> None:
+    """정상 경로는 조용해야 한다. 늘 뜨는 경고는 곧 안 읽힌다."""
+    assert cli.main(["remove", "b"]) == 0
+    assert "adopt" not in capsys.readouterr().out
+
+
+def test_list_warns_when_two_labels_hold_the_same_account(env, capsys) -> None:
+    """같은 이메일이 두 라벨에 있으면 진 쪽 사본은 갱신을 못 받고 썩는다.
+
+    활성 판정은 정렬 첫 일치가 이기므로(`store.active_label`), 나머지는 sync-back 대상이
+    되지 않는다. 화면 어디에도 그 사실이 없어서, 사용자는 두 줄이 그냥 둘인 줄 안다.
+    """
+    _write_auth(store.slot_auth(env, "dup"), "a@example.com")  # a 와 같은 계정
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "a@example.com" in out
+    assert "dup" in out and "same account" in out, out
+
+
+def test_a_busy_lock_tells_you_what_to_do(env, capsys, monkeypatch) -> None:
+    """경로만 찍혀 나왔다 — `codex-swap: /home/u/.codex/accounts/.lock`.
+
+    TUI 는 같은 상황에 "다른 전환이 진행 중이다. 잠시 뒤 다시 눌러라" 라고 말한다.
+    문구가 이미 있는데 CLI 로 오지 않았다.
+    """
+
+    def busy(*a, **k):
+        raise store.LockBusy(str(env.accounts_dir / ".lock"))
+
+    monkeypatch.setattr("codex_swap.core.store.switch_lock", busy)
+    assert cli.main(["use", "b"]) == 1
+    err = capsys.readouterr().err
+    assert "in progress" in err, err
+
+
+def test_adopt_points_a_codex_home_user_at_the_right_variable(env, capsys, monkeypatch) -> None:
+    """`CODEX_HOME` 으로 홈을 옮긴 사용자는 **로그인돼 있는데** 아니라는 말을 듣는다.
+
+    이 도구가 `CODEX_HOME` 을 따라가지 않는 것은 의도다 — 따라가면 `rotate` 의 재귀
+    방어가 죽는다(`config.load` 참조). 그래서 대신 무엇을 하면 되는지 말해야 한다.
+    안내가 없으면 사용자는 `codex login` 을 다시 돌리고, 그건 같은 자리에 또 쓰여
+    영영 낫지 않는다.
+    """
+    store.active_auth(env).unlink()
+    monkeypatch.setenv("CODEX_HOME", "/somewhere/else")
+    assert cli.main(["adopt", "fresh"]) == 1
+    err = capsys.readouterr().err
+    assert "CODEX_ACCOUNT_DEFAULT_HOME=/somewhere/else" in err, err
+
+
+def test_adopt_says_the_plain_thing_when_codex_home_is_not_involved(env, capsys) -> None:
+    """엉뚱한 안내를 늘 붙이지는 않는다."""
+    store.active_auth(env).unlink()
+    assert cli.main(["adopt", "fresh"]) == 1
+    err = capsys.readouterr().err
+    assert "not logged in" in err and "CODEX_ACCOUNT_DEFAULT_HOME" not in err, err
