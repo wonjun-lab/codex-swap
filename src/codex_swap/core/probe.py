@@ -9,9 +9,9 @@
 실려 오지 않는다. 한도 수치를 공식 경로로 얻는 유일한 지점이 app-server 의
 `account/rateLimits/read` 이고, 이 호출은 턴을 시작하지 않으므로 토큰을 소비하지 않는다.
 
-바이너리 경로를 인자로 받는 이유는 재귀 때문이다. `~/.local/bin/codex` 는 dotfiles
-wrapper 라, 그걸 부르면 wrapper 가 다시 rotate 를 돌리고 rotate 가 다시 이 프로브를
-부른다. 호출자(`discovery`)가 이미 해석해 둔 upstream 경로만 실행한다.
+바이너리 경로를 인자로 받는 이유는 재귀 때문이다. `~/.local/bin/codex` 가 자동 전환을
+붙인 wrapper 인 설치에서는, 그걸 부르면 wrapper 가 다시 rotate 를 돌리고 rotate 가 다시
+이 프로브를 부른다. 호출자(`discovery`)가 이미 해석해 둔 upstream 경로만 실행한다.
 
 돌려주는 것은 불리언이 아니라 3-variant 다 (`Ok` / `AuthFailed` / `Unknown`). 인증 실패와
 네트워크·파싱 실패는 정반대의 결론으로 가고, 둘을 묶으면 하필 전환이 가장 절실한 순간에

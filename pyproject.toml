@@ -2,6 +2,9 @@
 name = "codex-swap"
 version = "0.1.0"
 description = "Multi-account switcher for the Codex CLI — stores, probes, and rotates ChatGPT accounts"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # 런타임 의존 없음. 프로브는 표준 라이브러리 subprocess + json 으로 app-server 와
 # 직접 NDJSON JSON-RPC 를 주고받는다. 이식하는 bash 판이 요구하던 jq · base64 · node
@@ -9,10 +12,9 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-# 진입점은 이것 하나뿐이다. 호환 이름 `codex-account` 를 여기서 노출하면
-# `uv tool install` 이 dotfiles 가 소유한 ~/.local/bin/codex-account 심링크와 충돌해
-# 설치 자체가 실패한다 (uv 는 자신이 관리하지 않는 실행 파일을 덮지 않는다).
-# 그 이름은 마이그레이션이 끝날 때까지 dotfiles 가 계속 소유한다.
+# 진입점은 이것 하나뿐이다. 다른 이름을 여기서 함께 노출하면, 그 이름이 이미
+# `~/.local/bin` 에 있는 기기에서 `uv tool install` 이 통째로 실패한다 — uv 는 자신이
+# 관리하지 않는 실행 파일을 덮지 않고, 그 충돌을 설치 전에 먼저 검사한다.
 codex-swap = "codex_swap.cli:main"
 
 [build-system]

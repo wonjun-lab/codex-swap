@@ -8,3 +8,12 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# 공개 저장소에서 가장 흔한 사고. 이 프로젝트는 `.env` 를 읽지 않지만, 기여자가
+# 실험용으로 하나 만들어 두고 같이 커밋하는 것이 전형적인 유출 경로다.
+.env
+.env.*
+
+.DS_Store
+.idea/
+.vscode/

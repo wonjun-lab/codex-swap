@@ -1,5 +1,5 @@
 {
-  "_source": "실제 codex-cli 0.153.4 app-server 응답 캡처 (2026-09-06). 이메일·계정 ID·설치 ID·경로만 치환했고 나머지는 서버가 보낸 그대로다.",
+  "_source": "실제 codex-cli 0.153.4 app-server 응답 캡처 (2026-09-06). 이메일·계정 ID·설치 ID·호스트명·경로만 치환했고 나머지는 서버가 보낸 그대로다.",
   "_case": "음성 대조군 — 자격증명은 **유효한데** 네트워크가 죽었다. account 는 non-null 로 채워지고(로컬 auth.json 파싱) rateLimits 만 -32603 'error sending request for url' 로 접힌다. 인증 문구가 없으므로 UNKNOWN 이어야 한다. AuthFailed 승격이 여기까지 삼키면 네트워크 장애마다 멀쩡한 계정을 떠난다.",
   "messages": [
     "{\"id\":1,\"result\":{\"userAgent\":\"codex-account-rotate/0.153.4 (Ubuntu 22.4.0; x86_64) unknown (codex-account-rotate; 1.0.0)\",\"codexHome\":\"<CODEX_HOME>\",\"platformFamily\":\"unix\",\"platformOs\":\"linux\"}}",
