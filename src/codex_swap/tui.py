@@ -1212,6 +1212,17 @@ def _paint(stdscr, view: View, colored: bool = False) -> None:  # pragma: no cov
     stdscr.refresh()
 
 
+def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
+    """터미널 조작 하나를 시도하고 실패는 삼킨다.
+
+    화면을 못 여는 이유로는 사소한 것들(`civis` 가 없다 …)이라 삼키는 것이 맞다. 다만
+    **한 번에 하나씩** 삼켜야 한다 — 여럿을 한 블록에 두면 하나의 실패가 나머지를
+    조용히 건너뛴다.
+    """
+    with contextlib.suppress(curses.error):
+        fn(*args)
+
+
 def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 필요
     """한 줄 입력. 취소하거나 비면 None.
 
@@ -1221,10 +1232,13 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     넣으면서 `stdscr.timeout()` 이 생겼고, 그때 이 함수를 같이 보지 않았다.
     """
     height, width = stdscr.getmaxyx()
-    with contextlib.suppress(curses.error):
-        curses.echo()
-        curses.curs_set(1)
-        stdscr.timeout(-1)
+    # **한 문장씩 따로 감싼다.** 한 `suppress` 에 몰아 넣으면 앞 문장이 던지는 순간
+    # 뒤가 통째로 건너뛰어진다. 실제로 `curs_set(1)` 이 없는 터미널(vt100)에서 바로
+    # 다음 줄인 타임아웃 해제가 실행되지 않아, `getstr` 가 논블로킹으로 남아 입력을
+    # 한 글자도 못 받았다 — pty 테스트가 이것을 잡았다.
+    _try(curses.echo)
+    _try(curses.curs_set, 1)
+    _try(stdscr.timeout, -1)
     try:
         stdscr.addnstr(height - 1, 0, _clip(label, width - 1), max(width - 1, 0))
         stdscr.clrtoeol()
@@ -1232,10 +1246,11 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     except (curses.error, KeyboardInterrupt):
         return None
     finally:
-        with contextlib.suppress(curses.error):
-            curses.noecho()
-            curses.curs_set(0)
-            stdscr.timeout(_TICK_MS)
+        # 나가는 쪽이 더 중요하다. 타임아웃을 복원하지 못하면 루프가 통째로 블로킹이
+        # 되어, 배경 조회 결과가 영영 화면에 붙지 않고 쿨다운도 멈춘다.
+        _try(curses.noecho)
+        _try(curses.curs_set, 0)
+        _try(stdscr.timeout, _TICK_MS)
         stdscr.clearok(True)
     return raw.decode("utf-8", "replace").strip() or None
 
