@@ -62,6 +62,31 @@ def _file_config(accounts_dir: Path) -> dict[str, object]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def file_config_error(accounts_dir: Path) -> str | None:
+    """정책 파일이 **있는데 못 읽는** 경우의 사유. 멀쩡하거나 없으면 None.
+
+    `_file_config` 의 침묵은 rotate 핫패스를 위한 것이다 — 매 codex 호출에 실리는 경로가
+    파일 하나 때문에 시끄러우면 안 된다. 그런데 그 침묵이 대화형 표면까지 덮으면, TUI 로
+    저장한 정책이 조용히 무시되는데 화면은 기본값을 자기 설정인 양 보여 준다. 사용자는
+    저장이 안 된 줄 알고 같은 값을 다시 넣는다.
+
+    그래서 판단은 그대로 조용히 두고, **묻는 쪽에만** 사유를 준다. 대가는 대화형 명령에서
+    파일을 한 번 더 읽는 것뿐이다.
+    """
+    path = accounts_dir / CONFIG_NAME
+    if not path.exists():
+        return None
+    try:
+        loaded = json.loads(path.read_text())
+    except OSError as exc:
+        return f"{path}: {exc.strerror}"
+    except json.JSONDecodeError as exc:
+        return f"{path}: not valid JSON ({exc.msg}, line {exc.lineno})"
+    if not isinstance(loaded, dict):
+        return f"{path}: expected a JSON object, found {type(loaded).__name__}"
+    return None
+
+
 def parse_int(text: str) -> int:
     """숫자 노브 하나를 읽는다. 못 읽으면 `ConfigError`.
 
