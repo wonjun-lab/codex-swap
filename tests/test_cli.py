@@ -493,3 +493,62 @@ def test_no_command_lets_an_os_error_reach_the_screen_as_a_traceback(env, capsys
     err = capsys.readouterr().err
     assert "Traceback" not in err, err
     assert "Permission denied" in err, err
+
+
+# ── 자격증명을 되돌릴 수 없게 잃는 두 경로 ─────────────────────────────────
+#
+# 둘 다 TUI 에는 이미 방어가 있고 CLI 에만 없었다. 같은 위험에 대해 두 표면이 다르게
+# 행동하면, 더 약한 쪽이 곧 그 도구의 실제 안전 수준이다.
+
+
+def test_adopt_refuses_to_overwrite_another_account(env, capsys) -> None:
+    """`adopt` 는 활성 자격증명을 그 이름 위에 **그냥 복사**한다.
+
+    기존 이름을 입력하면 그 계정의 보관본이 사라지고 되돌릴 방법이 없다. `tui.do_adopt`
+    는 정확히 이것을 막는데(docstring: "되돌릴 방법이 없다") CLI 에는 가드가 없었다.
+    """
+    assert identity.email_of(store.slot_auth(env, "b")) == "b@example.com"
+    assert cli.main(["adopt", "b"]) == 1
+    assert identity.email_of(store.slot_auth(env, "b")) == "b@example.com", "덮어썼다"
+    err = capsys.readouterr().err
+    assert "b@example.com" in err, err
+    assert "remove" in err, "무엇을 하면 되는지 말해야 한다"
+
+
+def test_adopt_still_refreshes_the_same_account(env, capsys) -> None:
+    """같은 계정이면 갱신이다 — 썩은 사본을 새로 뜨는 정상 용법이라 막으면 안 된다."""
+    assert cli.main(["adopt", "a"]) == 0
+    assert identity.email_of(store.slot_auth(env, "a")) == "a@example.com"
+
+
+def test_adopt_into_a_free_label_is_untouched(env) -> None:
+    assert cli.main(["adopt", "brand-new"]) == 0
+    assert identity.email_of(store.slot_auth(env, "brand-new")) == "a@example.com"
+
+
+def test_use_refuses_to_discard_an_unregistered_active_credential(env, capsys) -> None:
+    """전환은 활성 자격증명을 슬롯으로 되돌려 놓고(sync-back) 바꾼다.
+
+    그런데 활성이 어느 슬롯과도 안 맞으면 되돌려 놓을 자리가 없어 그냥 사라진다
+    (`store.switch` 가 `active_label is None` 이면 sync-back 을 건너뛴다). 사용자가 손으로
+    `codex login` 한 계정이 그 경우이고, 잃으면 브라우저 재로그인 말고는 복구가 없다.
+    TUI 는 이 상태에 전용 경고줄을 띄운다 — CLI 는 아무 말 없이 실행했다.
+    """
+    _write_auth(store.active_auth(env), "unregistered@example.com")
+    assert cli.main(["use", "a"]) == 1
+    assert identity.email_of(store.active_auth(env)) == "unregistered@example.com", "버렸다"
+    err = capsys.readouterr().err
+    assert "unregistered@example.com" in err, err
+    assert "adopt" in err and "--force" in err, err
+
+
+def test_use_force_still_discards_when_you_mean_it(env, capsys) -> None:
+    """버리는 것이 뜻인 경우가 있다(임시 로그인). 다만 말로 밝혀야 한다."""
+    _write_auth(store.active_auth(env), "throwaway@example.com")
+    assert cli.main(["use", "--force", "a"]) == 0
+    assert identity.email_of(store.active_auth(env)) == "a@example.com"
+
+
+def test_use_is_unaffected_when_the_active_account_is_registered(env) -> None:
+    assert cli.main(["use", "b"]) == 0
+    assert identity.email_of(store.active_auth(env)) == "b@example.com"

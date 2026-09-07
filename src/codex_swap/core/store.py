@@ -205,6 +205,15 @@ def switch_lock(settings: Settings):
 # ── 전환 ─────────────────────────────────────────────────────────────────────
 
 
+def _secret_opener(path: str, flags: int) -> int:
+    """`open()` 이 자격증명 temp 를 **처음부터** 0600 으로 만들게 한다.
+
+    `cache._opener` 와 같은 장치다. 거기 담기는 것은 email 이고 여기 담기는 것은 토큰이라,
+    둘 중 하나만 이 보호를 받고 있던 것이 이상한 상태였다.
+    """
+    return os.open(path, flags, 0o600)
+
+
 def _install(src: Path, dst: Path, *, keep_mtime: bool) -> None:
     """같은 파일시스템 안의 temp + rename. 반쪽 쓰인 auth.json 이 생기지 않는다.
 
@@ -212,10 +221,20 @@ def _install(src: Path, dst: Path, *, keep_mtime: bool) -> None:
     """
     tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
     try:
-        # copy2 는 mtime 까지 가져오고, copy 는 내용과 권한 비트만 가져온다. 둘 다 권한은
-        # 옮기며, 어느 쪽이든 아래 chmod 가 0600 을 확정한다 (계약 8).
-        (shutil.copy2 if keep_mtime else shutil.copy)(src, tmp)
+        # **처음부터 0600 으로 만든다.** `shutil.copy` 계열은 dst 를 만든 뒤에 권한을
+        # 옮기므로, 그 사이 파일이 umask 모드로 존재한다 — 흔한 개발 기기에서 0664 를
+        # 실측했다. temp 는 `~/.codex` 안에 생기는데 그 디렉토리는 codex 소유라 0775 인
+        # 기기가 있어, 매 전환마다 로컬 타 계정이 OAuth 토큰을 읽을 수 있는 창이 열렸다.
+        # `cache._opener` 가 email 만 담긴 캐시에 이미 쓰던 패턴인데 정작 토큰 파일에는
+        # 적용되지 않았다.
+        with open(src, "rb") as rfh, open(tmp, "wb", opener=_secret_opener) as wfh:
+            shutil.copyfileobj(rfh, wfh)
+        # 앞선 실행이 남긴 temp 를 덮어썼다면 `O_CREAT` 의 mode 는 걸리지 않는다.
         os.chmod(tmp, 0o600)
+        if keep_mtime:
+            # `copy2` 가 하던 일 중 이 함수가 실제로 쓰는 것은 mtime 뿐이다.
+            st = os.stat(src)
+            os.utime(tmp, (st.st_atime, st.st_mtime))
         if not keep_mtime:
             # **초 단위로 올림한다.** 훅은 `stat %Y` 와 `date +%s` 로 **정수 초**를 견준다
             # (`broker 시작 < auth mtime`). 그래서 같은 초 안에서 broker 가 먼저 뜨고

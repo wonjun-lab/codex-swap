@@ -91,6 +91,22 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
     live = store.active_auth(settings)
     if not live.is_file():
         raise CliError(f"로그인 상태가 아니다 ({live} 없음)")
+
+    # **다른 계정의 슬롯을 덮어쓰지 않는다.** `adopt` 는 활성 자격증명을 그 이름 위에
+    # 그냥 복사하므로, 기존 이름을 입력하면 그 계정의 보관본이 사라지고 되돌릴 방법이
+    # 없다. `tui.do_adopt` 는 이것을 막고 있었는데 CLI 에만 가드가 없었다 — 같은 위험에
+    # 두 표면이 다르게 행동하면 약한 쪽이 곧 이 도구의 실제 안전 수준이다.
+    #
+    # 같은 계정이면 갱신이므로 허용한다. 썩은 사본을 새로 뜨는 정상 용법이다.
+    existing = store.slot_auth(settings, label)
+    if existing.exists():
+        slot_email = identity.email_of(existing)
+        if slot_email is not None and slot_email != identity.email_of(live):
+            raise CliError(
+                f"'{label}' 에는 이미 {slot_email} 이 있다. 덮어쓰지 않는다 "
+                f"(그 계정을 버리려면 먼저: codex-swap remove {label})"
+            )
+
     paths.ensure_root(settings)
     slot = store.slot_dir(settings, label)
     slot.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -258,9 +274,26 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     return 1
 
 
-def cmd_use(settings: config.Settings, label: str) -> int:
+def cmd_use(settings: config.Settings, label: str, *, force: bool = False) -> int:
     if not store.label_syntax_ok(label):
         raise CliError(f"쓸 수 없는 라벨이다: {label}")
+
+    # 전환은 활성 자격증명을 슬롯으로 되돌려 놓고(sync-back) 바꾼다. 그런데 활성이 어느
+    # 슬롯과도 안 맞으면 되돌려 놓을 자리가 없어 **그냥 사라진다** (`store.switch` 가
+    # `active_label is None` 이면 sync-back 을 건너뛴다). 사용자가 손으로 `codex login`
+    # 한 계정이 그 경우이고, 잃으면 브라우저 재로그인 말고는 복구가 없다.
+    #
+    # TUI 는 이 상태에 전용 경고줄을 띄운다 — 대화형이라 사용자가 그것을 보고 enter 를
+    # 누르면 동의한 것이다. CLI 는 볼 기회 없이 실행되므로 거부하는 편이 맞다. 버리는
+    # 것이 뜻인 경우(임시 로그인)를 위해 `--force` 를 둔다.
+    live = store.active_auth(settings)
+    if not force and live.is_file() and store.active_label(settings) is None:
+        who = identity.email_of(live) or "알 수 없는 계정"
+        raise CliError(
+            f"활성({who})이 어느 슬롯에도 없다. 전환하면 이 자격증명은 보관되지 않는다. "
+            "먼저 codex-swap adopt <label> 로 보관하거나, 버려도 되면 --force"
+        )
+
     with store.switch_lock(settings):
         store.switch(settings, label, "manual")
     print(
@@ -351,6 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("use", aliases=["switch"], help="수동 전환")
     p.add_argument("label")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="활성 계정이 어느 슬롯에도 없어도 전환한다 (그 자격증명은 사라진다)",
+    )
 
     p = sub.add_parser("rotate", help="정책 실행")
     p.add_argument("--dry-run", action="store_true", help="판단만 하고 바꾸지 않는다")
@@ -401,7 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "status":
                 return cmd_status(settings, fresh=args.fresh)
             case "use" | "switch":
-                return cmd_use(settings, args.label)
+                return cmd_use(settings, args.label, force=args.force)
             case "rotate":
                 return cmd_rotate(settings, dry_run=args.dry_run)
             case "remove" | "rm":
