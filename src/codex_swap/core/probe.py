@@ -282,8 +282,9 @@ def _converse(proc: subprocess.Popen[bytes], timeout_s: float) -> Usage:
         resets_at=_as_epoch(_prop(_prop(rate_limits, "primary"), "resetsAt")),
         # 쿠폰은 `rateLimits` 밖, 응답 최상위에 있다. `bash`/`.mjs` 는 이 값을 읽지
         # 않았으므로 패리티 대상이 아니고, 없으면 없는 대로 None 이다.
-        reset_credits=_as_count(_prop(_prop(limits.get("result"), "rateLimitResetCredits"),
-                                      "availableCount")),
+        reset_credits=_as_count(
+            _prop(_prop(limits.get("result"), "rateLimitResetCredits"), "availableCount")
+        ),
         reached=_reached(_prop(rate_limits, "rateLimitReachedType")),
     )
 
