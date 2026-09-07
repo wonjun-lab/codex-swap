@@ -483,7 +483,7 @@ def _overhead(*, with_bar: bool, with_reset: bool) -> int:
     return 3 + g + g + 6 + (BAR_COLS + g if with_bar else 0) + tail
 
 
-_BAR_MIN_WIDTH = _overhead(with_bar=True, with_reset=True) + _LABEL_COLS + _EMAIL_MIN
+_BAR_MIN_WIDTH = _overhead(with_bar=True, with_reset=True) + _LABEL_MIN + _EMAIL_MIN
 """바를 그리기 시작하는 폭. 손으로 고른 숫자가 아니라 다른 칸을 다 지키고 남는 자리에서 나온다."""
 
 MIN_FIT_WIDTH = _overhead(with_bar=False, with_reset=False)
@@ -501,7 +501,17 @@ MIN_FIT_WIDTH = _overhead(with_bar=False, with_reset=False)
 """
 
 
-def _layout(width: int | None) -> tuple[bool, bool, int, int]:
+def _content_cols(values: Sequence[str], header: str, lo: int, hi: int) -> int:
+    """내용에 맞춘 칸 폭. 머리말보다 좁아지지 않고, `hi` 를 넘지 않는다.
+
+    고정폭으로 두면 짧은 값 뒤에 죽은 공백이 남는다 — 라벨 14 칸에 `master`(6) 를 넣으면
+    여덟 칸이 그냥 비고, 그 빈 자리가 칼럼 사이 간격처럼 보여서 실제 간격(2 칸)과 뒤섞인다.
+    """
+    longest = max((_width(v) for v in values), default=0)
+    return min(hi, max(lo, _width(header), longest))
+
+
+def _layout(width: int | None, label_want: int, email_want: int) -> tuple[bool, bool, int, int]:
     """폭에 따라 무엇을 보여줄지 정한다. `(바, 리셋 시각, 라벨 칸, 이메일 칸)`.
 
     버리는 순서가 곧 우선순위다 — **바 → 리셋 시각 → 이메일 폭 → 라벨 폭**. 바는 있으면
@@ -512,15 +522,17 @@ def _layout(width: int | None) -> tuple[bool, bool, int, int]:
     `_MIN_FIT_WIDTH` 이상에서 성립한다.
     """
     if width is None:
-        return True, True, _LABEL_COLS, 30
+        return True, True, label_want, email_want
     for with_bar, with_reset in ((True, True), (False, True), (False, False)):
         room = width - _overhead(with_bar=with_bar, with_reset=with_reset)
-        if room >= _LABEL_COLS + _EMAIL_MIN:
-            return with_bar, with_reset, _LABEL_COLS, min(30, room - _LABEL_COLS)
-    # 열을 다 뺐는데도 좁다. 남는 자리를 라벨에 먼저 주고 — 어느 계정인지가 마지막까지
-    # 남아야 하는 정보다 — 그러고도 남으면 이메일에 준다.
+        if room >= label_want + email_want:
+            return with_bar, with_reset, label_want, email_want
+        # 자리가 모자라면 **이메일부터** 줄인다. 라벨은 어느 계정인지를 말하는 유일한
+        # 열이고, 이메일은 그 확인일 뿐이다.
+        if room >= label_want + _EMAIL_MIN:
+            return with_bar, with_reset, label_want, room - label_want
     room = max(width - _overhead(with_bar=False, with_reset=False), 0)
-    label = min(_LABEL_COLS, room)
+    label = min(label_want, room)
     return False, False, label, max(0, room - label)
 
 
@@ -669,7 +681,11 @@ def render_screen(
     s = view.settings
     # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
     # 바보다 먼저 필요한 정보다.
-    with_bar, with_reset, label_cols, email_cols = _layout(width)
+    with_bar, with_reset, label_cols, email_cols = _layout(
+        width,
+        _content_cols([r.label for r in view.rows], "LABEL", _LABEL_MIN, _LABEL_COLS),
+        _content_cols([r.email for r in view.rows], "EMAIL", _EMAIL_MIN, 30),
+    )
     head = [(_headline(view, show_ladder=not with_bar, width=width), _PLAIN), ("", _PLAIN)]
 
     # 꼬리말은 **버릴 수 있는 순서**로 쌓는다. 화면이 짧으면 앞쪽부터 버리고, 메시지는
@@ -776,7 +792,12 @@ def render_screen(
                 f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
                 f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
             ).rstrip()
-        body.append((line, Style(_row_tone(row, view), bold=row.active)))
+        # **행 전체에 bold 를 걸지 않는다.** 이 터미널에서 bold 글자는 더 굵고 넓게
+        # 그려져서, 같은 문자열인 바가 활성 행에서만 길어 보인다 — 실제로 두 행의
+        # 문자열·폭·열 위치가 전부 같은데도 "아래 바가 더 짧다" 로 읽혔다.
+        # 강조는 라벨 구간에만 얹는다. 거기는 글자라 굵어져도 뜻이 왜곡되지 않는다.
+        spans = ((1, 3 + _width(row.label), Style(bold=True)),) if row.active else ()
+        body.append((line, Style(_row_tone(row, view), spans=spans)))
     if hidden_below:
         body.append((f"   v {hidden_below}개 더", _DIM))
     body += axis_lines

@@ -615,13 +615,37 @@ def test_the_row_colour_follows_the_ladder_not_arbitrary_bands(
     assert tui._row_tone(row, view) == tone
 
 
-def test_the_active_row_is_bold_and_the_chrome_is_dim(env) -> None:
+def test_the_active_row_bolds_only_its_label_never_the_bar(env) -> None:
+    """행 전체에 bold 를 걸면 **같은 문자열인 바가 활성 행에서만 길어 보인다.**
+
+    이 터미널의 bold 글자가 더 굵고 넓게 그려져서다. 두 행의 문자열·표시 폭·모든 열
+    위치가 완전히 동일한데도 "아래 바가 더 짧다" 로 읽혔다 — 실측으로 확인했다.
+    강조는 라벨 구간에만 얹는다. 거기는 글자라 굵어져도 뜻이 왜곡되지 않는다.
+    """
+    rows = (
+        tui.Row("master", "a@x", "70%", "-", True, percent=70),
+        tui.Row("shared", "b@x", "70%", "-", False, percent=70),
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    screen = tui.render_screen(view, width=140)
+    active = next(st for text, st in screen if text.startswith(" >*"))
+    idle = next(st for text, st in screen if text.lstrip().startswith("shared"))
+
+    assert active.bold is False, "행 전체에 bold 를 걸면 바가 밀린다"
+    assert active.spans and all(sp[2].bold for sp in active.spans)
+    assert not idle.spans
+
+    # 강조 구간이 라벨을 벗어나 바까지 덮지 않는다.
+    text = next(t for t, _ in screen if t.startswith(" >*"))
+    bar_at = text.index(tui.BAR_FILL)
+    assert all(end <= bar_at for _, end, _ in active.spans), (active.spans, bar_at)
+    assert text[active.spans[0][0] : active.spans[0][1]].strip() == ">*master"
+
+
+def test_the_chrome_is_dim(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    styles = dict(tui.render_screen(view, width=120))
-    body = next(st for text, st in tui.render_screen(view, width=120) if text.startswith(" >*"))
-    assert body.bold is True
-    assert any(st.tone == "dim" for st in styles.values())
+    assert any(st.tone == "dim" for _, st in tui.render_screen(view, width=120))
 
 
 # ── 폭 적응 ──────────────────────────────────────────────────────────────────
@@ -746,7 +770,8 @@ def test_columns_are_dropped_in_priority_order(env) -> None:
     임계는 **상수에서 파생**시킨다. 숫자를 박아 두면 간격 한 칸을 바꿀 때마다 테스트가
     같이 틀어지고, 그러면 테스트가 규칙이 아니라 그때의 숫자를 지키게 된다.
     """
-    reset_min = tui._overhead(with_bar=False, with_reset=True) + tui._LABEL_COLS + tui._EMAIL_MIN
+    # 임계는 **최소 폭 기준**으로 판다 — `_BAR_MIN_WIDTH` 도 그렇게 파생된다.
+    reset_min = tui._overhead(with_bar=False, with_reset=True) + tui._LABEL_MIN + tui._EMAIL_MIN
     cases = [
         (tui._BAR_MIN_WIDTH + 100, True, True),
         (tui._BAR_MIN_WIDTH, True, True),
@@ -755,7 +780,9 @@ def test_columns_are_dropped_in_priority_order(env) -> None:
         (reset_min - 1, False, False),
     ]
     for width, bar, reset in cases:
-        with_bar, with_reset, label_cols, email_cols = tui._layout(width)
+        with_bar, with_reset, label_cols, email_cols = tui._layout(
+            width, tui._LABEL_MIN, tui._EMAIL_MIN
+        )
         assert (with_bar, with_reset) == (bar, reset), width
         assert label_cols > 0 and email_cols > 0, width
 
@@ -973,7 +1000,7 @@ def test_an_unknown_coupon_count_shows_a_dash_not_a_zero(env) -> None:
 def test_the_bar_is_dropped_before_the_coupon_count(env) -> None:
     """바는 `%` 숫자의 재표현이지만 쿠폰은 화면 어디에도 없는 정보다."""
     narrow = tui._BAR_MIN_WIDTH - 1
-    with_bar, with_reset, _, _ = tui._layout(narrow)
+    with_bar, with_reset, _, _ = tui._layout(narrow, tui._LABEL_MIN, tui._EMAIL_MIN)
     assert (with_bar, with_reset) == (False, True)
 
 
