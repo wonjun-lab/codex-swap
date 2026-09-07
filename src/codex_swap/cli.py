@@ -254,6 +254,14 @@ def cmd_remove(settings: config.Settings, label: str) -> int:
     if not target.is_dir() or target.is_symlink():
         raise CliError(f"없는 라벨이다: {label}")
     shutil.rmtree(target)
+    # 캐시는 라벨로만 색인된다 — 어느 계정의 숫자인지는 적혀 있지 않다. 항목을 남기면
+    # `adopt <같은 라벨>` 로 다른 계정을 그 이름에 넣었을 때 새 계정이 지운 계정의
+    # 사용량을 최대 한 TTL 뒤집어쓴다. 표시만의 문제가 아니다: `rotate` 도 이 캐시를
+    # 정책 입력으로 읽으므로(`rotate._usage_of`) 후보 선택이 통째로 틀어진다.
+    #
+    # 한 키만 빼지 않고 파일째 버리는 것은 `store.switch` 와 같다. 남는 항목도 어차피
+    # TTL 안에서만 유효하고, 대가는 다음 rotate 의 프로브 몇 번뿐이다.
+    cache.clear(settings)
     print(f"삭제: {label}")
     return 0
 

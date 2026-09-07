@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from codex_swap import cli
-from codex_swap.core import config, identity, store
+from codex_swap.core import cache, config, identity, store
+from codex_swap.core.types import ProbeOutcome, ProbeResult, Usage
 
 
 def _write_auth(path: Path, email: str) -> None:
@@ -237,3 +238,187 @@ def test_list_does_not_probe(env, capsys, monkeypatch) -> None:
     monkeypatch.setattr("codex_swap.core.probe.probe", forbidden)
     _cache_usage(env, "a", 38, age=env.cache_ttl + 10)
     assert cli.main(["list"]) == 0
+
+
+def test_list_says_when_auto_switching_is_off(env, capsys) -> None:
+    """꺼 놓은 것을 잊고 "왜 안 바뀌지" 를 디버깅하게 두면 안 된다."""
+    env.off_switch.parent.mkdir(parents=True, exist_ok=True)
+    env.off_switch.touch()
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "자동 전환: 꺼짐" in out and str(env.off_switch) in out
+
+
+# ── remove 의 성공 경로 ──────────────────────────────────────────────────────
+#
+# 이 도구에서 파일을 **지우는** 명령은 이것 하나다. 거부 경로(나쁜 라벨·심링크·없는
+# 라벨)는 이미 고정돼 있었는데 정작 "지울 때 그것만 지우는가" 가 비어 있었다. 거부만
+# 검사하면 `rmtree` 의 인자가 한 칸 위를 가리켜도 전부 통과한다.
+
+
+def test_remove_deletes_only_the_named_slot(env, capsys) -> None:
+    assert cli.main(["remove", "a"]) == 0
+    assert not store.slot_dir(env, "a").exists()
+    assert store.slot_auth(env, "b").is_file(), "옆 슬롯이 함께 지워졌다"
+    assert env.accounts_dir.is_dir(), "슬롯 루트까지 지워졌다"
+    assert "삭제: a" in capsys.readouterr().out
+
+
+def test_remove_does_not_log_you_out(env) -> None:
+    """슬롯을 지우는 것과 로그아웃은 다른 일이다.
+
+    활성 자격증명은 기본 홈에 따로 있고 슬롯은 그 사본을 보관할 뿐이다. 지금 쓰는
+    계정의 슬롯을 지웠다고 세션까지 끊기면 사용자는 영문도 모른 채 다시 로그인한다.
+    """
+    assert cli.main(["remove", "a"]) == 0
+    assert identity.email_of(store.active_auth(env)) == "a@example.com"
+
+
+def test_remove_forgets_the_cached_usage(env) -> None:
+    """라벨은 재사용된다. 지운 계정의 숫자가 그 이름에 남아 있으면 안 된다.
+
+    캐시는 라벨로만 색인된다 — 어느 계정의 숫자인지는 적혀 있지 않다. `remove work`
+    직후 `adopt work` 로 다른 계정을 같은 이름에 넣으면, TTL 이 지나기 전까지 새 계정이
+    옛 계정의 사용량을 뒤집어쓴다. 표시만의 문제가 아니다: `rotate` 도 이 캐시를 정책
+    입력으로 읽으므로(`rotate.py` `_usage_of`), 방금 등록한 멀쩡한 계정이 92% 로 보여
+    후보에서 빠지거나 반대로 소진된 계정이 3% 로 보여 선택된다.
+    """
+    _cache_usage(env, "a", 38)
+    assert cli.main(["remove", "a"]) == 0
+    assert cache.read(env, "a") is None
+    assert cache.read_stale(env, "a") is None, "지운 라벨의 숫자가 캐시에 남았다"
+
+
+# ── status ───────────────────────────────────────────────────────────────────
+#
+# `--fresh` 는 프로브를 타는 **유일한** CLI 경로다. 그 하나가 통째로 미검증이었다.
+
+
+def _probe_recorder(result: ProbeResult, calls: list[tuple[str, str]]):
+    def run(codex_bin: str, home: str) -> ProbeResult:
+        calls.append((codex_bin, home))
+        return result
+
+    return run
+
+
+def test_status_answers_from_the_cache_without_probing(env, capsys, monkeypatch) -> None:
+    """캐시가 살아 있으면 조회하지 않는다 — 그것이 TTL 을 두는 이유다."""
+
+    def forbidden(*a, **k):
+        raise AssertionError("status 가 살아 있는 캐시를 두고 프로브를 돌렸다")
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", forbidden)
+    _cache_usage(env, "a", 38)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "활성 계정: a" in out and "사용량: 38%" in out
+
+
+def test_status_fresh_ignores_a_live_cache(env, capsys, monkeypatch) -> None:
+    """`--fresh` 가 캐시를 존중하면 그 플래그는 아무 일도 하지 않는 것이다."""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=71)), calls),
+    )
+    _cache_usage(env, "a", 38)
+    assert cli.main(["status", "--fresh"]) == 0
+    out = capsys.readouterr().out
+    assert "사용량: 71%" in out and "38%" not in out
+    assert len(calls) == 1
+    assert calls[0][1] == str(store.slot_dir(env, "a")), "활성 슬롯이 아닌 홈을 조회했다"
+
+
+def test_status_probes_when_the_cache_is_stale(env, capsys, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=71)), calls),
+    )
+    _cache_usage(env, "a", 38, age=env.cache_ttl + 10)
+    assert cli.main(["status"]) == 0
+    assert "사용량: 71%" in capsys.readouterr().out
+    assert len(calls) == 1
+
+
+def test_status_probes_the_default_home_when_no_slot_matches(env, capsys, monkeypatch) -> None:
+    """설계문 §7.5 D3 의 회귀 가드.
+
+    bash 는 활성 계정이 어느 슬롯에도 없을 때 가짜 라벨을 만들어
+    `CODEX_HOME=<root>/__active__` 로 프로브를 돌렸다. 자격증명은 실제로 기본 홈에
+    있으므로 그 조회는 언제나 빈 홈을 보고 "조회 실패" 로 끝난다 — 정작 로그인은
+    멀쩡한데도. 여기서는 **어느 홈을 물었는가**를 직접 본다.
+    """
+    _write_auth(store.active_auth(env), "z@example.com")  # 어느 슬롯과도 안 맞는 계정
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=12)), calls),
+    )
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "z@example.com" in out and "슬롯 미등록" in out
+    assert calls[0][1] == str(env.default_home)
+    assert "__active__" not in calls[0][1]
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [ProbeOutcome.AUTH_FAILED, ProbeOutcome.UNKNOWN],
+)
+def test_status_folds_every_failure_into_one_line(env, capsys, monkeypatch, outcome) -> None:
+    """실패의 종류를 늘어놓지 않는다. 사용자에게 쓸모 있는 것은 "지금 모른다" 다."""
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult(outcome), []),
+    )
+    assert cli.main(["status", "--fresh"]) == 1
+    assert "사용량: 조회 실패" in capsys.readouterr().out
+
+
+def test_status_survives_a_throwing_probe(env, capsys, monkeypatch) -> None:
+    """프로브가 던져도 역추적이 사용자 화면으로 새면 안 된다."""
+
+    def boom(*a, **k):
+        raise RuntimeError("id_token eyJhbGciOi... 유출 금지")
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", boom)
+    assert cli.main(["status", "--fresh"]) == 1
+    out = capsys.readouterr()
+    assert "사용량: 조회 실패" in out.out
+    assert "eyJ" not in out.out and "eyJ" not in out.err
+
+
+# ── rotate --dry-run ─────────────────────────────────────────────────────────
+
+
+def test_dry_run_says_what_it_would_do_and_changes_nothing(env, capsys) -> None:
+    """`--dry-run` 이 자격증명을 건드리면 그건 dry 가 아니다."""
+    from codex_swap.core import rotate as rotate_mod
+
+    def fake(settings, *, dry_run=False, probe_fn=None, now=None):
+        return rotate_mod._rotate(
+            settings,
+            dry_run=dry_run,
+            probe_fn=lambda b, h: ProbeResult.of(
+                Usage(used_percent=95 if Path(h).name == ".codex" else 1)
+            ),
+            now=now,
+        )
+
+    original = cli.rotate.rotate
+    cli.rotate.rotate = fake
+    try:
+        assert cli.main(["rotate", "--dry-run"]) == 0
+    finally:
+        cli.rotate.rotate = original
+
+    assert "would switch:" in capsys.readouterr().out
+    assert identity.email_of(store.active_auth(env)) == "a@example.com", "dry-run 이 전환했다"
+
+
+def test_dry_run_also_explains_a_non_switch(env, capsys, monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_ROTATE_SKIP", "1")
+    cli.main(["rotate", "--dry-run"])
+    assert "no switch:" in capsys.readouterr().out
