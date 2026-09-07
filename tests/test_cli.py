@@ -461,10 +461,35 @@ def test_add_reports_an_unrunnable_codex_instead_of_a_traceback(env, capsys, mon
 
     `CODEX_ACCOUNT_BIN` 은 의도적으로 검증하지 않는다(핫패스). 그 대가를 `add` 가
     raw traceback 으로 치르고 있었다. `main` 의 예외 처리는 `CliError` 계열만 잡는다.
+
+    방어가 **두 층**이라 각각 보장하는 것을 따로 본다. `_run_login` 의 핸들러는
+    *무엇을 하면 되는지*를 주고, `main` 의 안전망은 *역추적을 막는* 것까지만 한다.
+    "codex" 가 나오는지만 보면 `codex-swap:` 접두어에도 걸려서 둘 중 하나가 사라져도
+    통과한다 — 실제로 그렇게 뮤테이션 둘을 놓쳤다.
     """
     monkeypatch.setenv("CODEX_ACCOUNT_BIN", str(tmp_missing := env.accounts_dir / "no-such-codex"))
     assert not tmp_missing.exists()
     assert cli.main(["add", "fresh"]) == 1
     err = capsys.readouterr().err
-    assert "Traceback" not in err
-    assert "codex" in err and str(tmp_missing) in err, err
+    assert "Traceback" not in err, err
+    assert str(tmp_missing) in err, err
+    # 처방까지 준다. 이 문구가 없으면 사용자는 무엇을 고쳐야 할지 모른 채 errno 만 본다.
+    assert "CODEX_ACCOUNT_BIN" in err, err
+
+
+def test_no_command_lets_an_os_error_reach_the_screen_as_a_traceback(env, capsys, monkeypatch):
+    """`main` 의 안전망 자체. 어느 명령에서든 `OSError` 는 한 줄로 접혀야 한다.
+
+    위 테스트는 `_run_login` 의 처방 문구가 먼저 잡아 주므로 안전망을 지나가지 않는다.
+    안전망이 실제로 있는지는 그 층을 직접 건드려야 보인다 — 여기서는 `cmd_list` 가
+    쓰는 열거가 `OSError` 를 던지게 만든다.
+    """
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Permission denied", str(env.accounts_dir))
+
+    monkeypatch.setattr("codex_swap.core.store.labels", boom)
+    assert cli.main(["list"]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err, err
+    assert "Permission denied" in err, err
