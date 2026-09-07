@@ -154,8 +154,21 @@ def cmd_add(
 
 
 def _run_login(argv: list[str], env: dict[str, str]) -> int:
-    """브라우저 로그인은 대화형이라 stdio 를 그대로 물려준다."""
-    return subprocess.call(argv, env=env)
+    """브라우저 로그인은 대화형이라 stdio 를 그대로 물려준다.
+
+    `discovery.resolve_codex_bin` 은 `CODEX_ACCOUNT_BIN` 을 **검증하지 않는다** — 핫패스에
+    파일 읽기를 얹지 않으려는 의도된 선택이다(§8). 그 대가가 여기서 나온다: 값이 실행할
+    수 없는 경로면 `subprocess` 가 `OSError` 를 던지고, `main` 은 `CliError` 계열만 잡으므로
+    그 예외가 raw traceback 으로 사용자 화면까지 갔다. 환경 문제를 프로그램 결함처럼
+    보이게 하는 출력이라 여기서 접는다.
+    """
+    try:
+        return subprocess.call(argv, env=env)
+    except OSError as exc:
+        raise CliError(
+            f"codex 를 실행할 수 없다: {argv[0]} ({exc.strerror}). "
+            "CODEX_ACCOUNT_BIN 을 확인하거나, 비우고 다시 시도하라"
+        ) from exc
 
 
 def cmd_list(settings: config.Settings) -> int:
@@ -205,8 +218,18 @@ def cmd_list(settings: config.Settings) -> int:
 
 def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     active = store.active_label(settings)
+
+    # 자격증명이 아예 없으면 프로브는 실패할 수밖에 없다. 그 실패를 "조회 실패" 로
+    # 보여 주면 방금 설치한 사용자는 도구가 깨진 줄 안다 — 실제로는 아직 아무것도 안 한
+    # 상태다. 실패의 종류를 늘어놓지 않는다는 원칙(아래)과 다른 얘기다: 여기서는 애초에
+    # 물어볼 것이 없다는 것을 알고 있으므로, 묻지 않고 다음 행동을 말해 준다.
+    if not store.active_auth(settings).is_file():
+        print("활성 계정: 로그인 안 됨")
+        print("먼저 codex login 으로 로그인하고, codex-swap adopt <label> 로 보관하라.")
+        return 1
+
     if active is None:
-        email = identity.email_of(store.active_auth(settings)) or "로그인 안 됨"
+        email = identity.email_of(store.active_auth(settings)) or "이메일 불명"
         print(f"활성 계정: {email} (슬롯 미등록)")
     else:
         print(f"활성 계정: {active}")
@@ -303,6 +326,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-swap",
         description="Codex 계정을 여러 개 보관하고 사용량에 따라 갈아끼운다.",
+        # 주 화면이 TUI 인데 도움말이 그것을 말하지 않으면, 인자 없이 실행해 볼 생각을
+        # 하지 않은 사용자는 이 도구에 화면이 있다는 것을 모른 채로 쓴다.
+        epilog=(
+            "인자 없이 실행하면 TUI 가 뜬다 (목록·사용량 바·정책 편집). "
+            "파이프나 스크립트에서 부르면 이 도움말이 나온다.\n"
+            "자동 전환이 왜 안 됐는지 보려면: codex-swap rotate --dry-run"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"codex-swap {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -383,6 +414,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"codex-swap: {exc}", file=sys.stderr)
         return 1
     except (store.StoreError, store.LockBusy, store.LockUnusable) as exc:
+        print(f"codex-swap: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # 안전망. `OSError` 는 이 도구에서 거의 전부 **환경 문제**다 — 권한, 없는 경로,
+        # 실행할 수 없는 바이너리, 꽉 찬 디스크. 그것을 raw traceback 으로 보여 주면
+        # 사용자는 프로그램 결함으로 읽고 자기 환경을 보지 않는다. 넓은 `Exception` 을
+        # 잡지 않는 이유는 그쪽은 실제로 우리 결함이고, 그때는 역추적이 필요하기 때문이다.
         print(f"codex-swap: {exc}", file=sys.stderr)
         return 1
 
