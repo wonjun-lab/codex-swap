@@ -221,6 +221,14 @@ def load(environ: dict[str, str] | None = None) -> Settings:
         os.environ.update(environ)
 
     home = Path(os.environ.get("HOME") or Path.home())
+    # **`CODEX_HOME` 을 여기서 보지 않는 것은 의도다.** codex 의 공식 환경변수이므로 그걸로
+    # 홈을 옮긴 사용자를 따라가는 편이 자연스러워 보이지만, 그러면 `rotate` 의 재귀 방어가
+    # 죽는다 — `add` 는 자식에게 `CODEX_HOME=<슬롯>` 을 주는데, `default_home` 이 그것을
+    # 따라가면 `_codex_home_mismatch` 의 두 값이 같아져 가드가 통과한다(실측 확인).
+    # 남는 방어는 `CODEX_ROTATE_SKIP` 한 겹뿐이고, 원래 두 겹으로 막던 자리다.
+    #
+    # 홈을 옮긴 사용자는 `CODEX_ACCOUNT_DEFAULT_HOME` 으로 이 도구에 따로 알려 준다.
+    # 그 안내는 `cmd_adopt` 의 오류 메시지와 README 에 있다.
     default_home = Path(_raw("CODEX_ACCOUNT_DEFAULT_HOME") or home / ".codex")
     accounts_dir = Path(_raw("CODEX_ACCOUNTS_DIR") or default_home / "accounts")
     state_root = Path(

@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from codex_swap import __version__
@@ -90,6 +92,16 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
         raise CliError(f"not a usable label: {label}")
     live = store.active_auth(settings)
     if not live.is_file():
+        # `CODEX_HOME` 으로 홈을 옮긴 사용자는 실제로 **로그인돼 있는데** 여기서 "안 됐다"
+        # 는 말을 듣는다. 이 도구가 그 변수를 따라가지 않는 것은 의도이므로(재귀 방어가
+        # 죽는다 — `config.load` 참조), 대신 무엇을 하면 되는지 말해 준다. 그 안내 없이는
+        # `codex login` 을 다시 돌리게 되고, 그건 같은 자리에 또 쓰여 영영 안 낫는다.
+        moved = os.environ.get("CODEX_HOME")
+        if moved and Path(moved).resolve() != settings.default_home.resolve():
+            raise CliError(
+                f"not logged in ({live} is missing), but CODEX_HOME points at {moved}. "
+                f"Tell codex-swap too: CODEX_ACCOUNT_DEFAULT_HOME={moved}"
+            )
         raise CliError(f"not logged in ({live} is missing)")
 
     # **다른 계정의 슬롯을 덮어쓰지 않는다.** `adopt` 는 활성 자격증명을 그 이름 위에

@@ -710,3 +710,26 @@ def test_a_busy_lock_tells_you_what_to_do(env, capsys, monkeypatch) -> None:
     assert cli.main(["use", "b"]) == 1
     err = capsys.readouterr().err
     assert "in progress" in err, err
+
+
+def test_adopt_points_a_codex_home_user_at_the_right_variable(env, capsys, monkeypatch) -> None:
+    """`CODEX_HOME` 으로 홈을 옮긴 사용자는 **로그인돼 있는데** 아니라는 말을 듣는다.
+
+    이 도구가 `CODEX_HOME` 을 따라가지 않는 것은 의도다 — 따라가면 `rotate` 의 재귀
+    방어가 죽는다(`config.load` 참조). 그래서 대신 무엇을 하면 되는지 말해야 한다.
+    안내가 없으면 사용자는 `codex login` 을 다시 돌리고, 그건 같은 자리에 또 쓰여
+    영영 낫지 않는다.
+    """
+    store.active_auth(env).unlink()
+    monkeypatch.setenv("CODEX_HOME", "/somewhere/else")
+    assert cli.main(["adopt", "fresh"]) == 1
+    err = capsys.readouterr().err
+    assert "CODEX_ACCOUNT_DEFAULT_HOME=/somewhere/else" in err, err
+
+
+def test_adopt_says_the_plain_thing_when_codex_home_is_not_involved(env, capsys) -> None:
+    """엉뚱한 안내를 늘 붙이지는 않는다."""
+    store.active_auth(env).unlink()
+    assert cli.main(["adopt", "fresh"]) == 1
+    err = capsys.readouterr().err
+    assert "not logged in" in err and "CODEX_ACCOUNT_DEFAULT_HOME" not in err, err

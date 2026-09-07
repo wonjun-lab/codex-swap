@@ -330,3 +330,39 @@ def test_a_partially_valid_ladder_keeps_what_parsed(env, monkeypatch) -> None:
     """일부만 걸러지면 그건 사용자의 뜻이 남은 것이다. 기본값으로 덮지 않는다."""
     monkeypatch.setenv("CODEX_ROTATE_LADDER", "50,oops,90")
     assert config.load().ladder == (50, 90)
+
+
+# ── CODEX_HOME 으로 홈을 옮긴 사용자 ────────────────────────────────────────
+
+
+def test_codex_home_alone_does_not_move_the_default_home(tmp_path, monkeypatch) -> None:
+    """`CODEX_HOME` 을 여기서 따라가지 **않는 것이 의도**다.
+
+    codex 의 공식 환경변수이므로 따라가는 편이 자연스러워 보이지만, 그러면 `rotate` 의
+    재귀 방어가 죽는다 — `add` 는 자식에게 `CODEX_HOME=<슬롯>` 을 주는데 `default_home`
+    이 그것을 따라가면 `_codex_home_mismatch` 의 두 값이 같아져 가드가 통과한다.
+    실제로 그렇게 고쳤다가 가드가 죽는 것을 확인하고 되돌렸다.
+
+    대신 홈을 옮긴 사용자에게는 `CODEX_ACCOUNT_DEFAULT_HOME` 을 안내한다(아래 테스트).
+    """
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "cfg/codex"))
+    monkeypatch.delenv("CODEX_ACCOUNT_DEFAULT_HOME", raising=False)
+    monkeypatch.delenv("CODEX_ACCOUNTS_DIR", raising=False)
+    assert config.load().default_home == home / ".codex"
+
+
+def test_a_slot_home_still_stops_rotate(tmp_path, monkeypatch) -> None:
+    """재귀 방어가 살아 있는지 직접 본다. 위 결정이 지키려는 것이 이것이다."""
+    home = tmp_path / "home"
+    (home / ".codex/accounts/b").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_ACCOUNT_DEFAULT_HOME", raising=False)
+    monkeypatch.delenv("CODEX_ACCOUNTS_DIR", raising=False)
+    monkeypatch.delenv("CODEX_ROTATE_SKIP", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(home / ".codex/accounts/b"))
+    decision = rotate.rotate(config.load(), dry_run=True)
+    assert isinstance(decision, NoOp), decision
+    assert "CODEX_HOME" in decision.reason, decision.reason
