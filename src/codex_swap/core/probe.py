@@ -9,9 +9,9 @@
 실려 오지 않는다. 한도 수치를 공식 경로로 얻는 유일한 지점이 app-server 의
 `account/rateLimits/read` 이고, 이 호출은 턴을 시작하지 않으므로 토큰을 소비하지 않는다.
 
-바이너리 경로를 인자로 받는 이유는 재귀 때문이다. `~/.local/bin/codex` 는 dotfiles
-wrapper 라, 그걸 부르면 wrapper 가 다시 rotate 를 돌리고 rotate 가 다시 이 프로브를
-부른다. 호출자(`discovery`)가 이미 해석해 둔 upstream 경로만 실행한다.
+바이너리 경로를 인자로 받는 이유는 재귀 때문이다. `~/.local/bin/codex` 가 자동 전환을
+붙인 wrapper 인 설치에서는, 그걸 부르면 wrapper 가 다시 rotate 를 돌리고 rotate 가 다시
+이 프로브를 부른다. 호출자(`discovery`)가 이미 해석해 둔 upstream 경로만 실행한다.
 
 돌려주는 것은 불리언이 아니라 3-variant 다 (`Ok` / `AuthFailed` / `Unknown`). 인증 실패와
 네트워크·파싱 실패는 정반대의 결론으로 가고, 둘을 묶으면 하필 전환이 가장 절실한 순간에
@@ -38,8 +38,10 @@ DEFAULT_TIMEOUT_MS = 20_000
 _TEARDOWN_WAIT_S = 2.0
 _READ_CHUNK = 65536
 
-# 서버가 보는 값이라 `.mjs` 와 같아야 한다. 병행 기간에 한쪽만 다른 이름으로 붙으면
-# 서버측 로그에서 두 구현이 구별되지 않거나(같아야 좋다) 미묘한 게이팅이 갈릴 수 있다.
+# 서버가 보는 값이다. 이름이 도구와 안 맞는 것은 선행 구현에서 물려받았기 때문인데,
+# 그대로 두는 이유는 **바꿔서 얻을 것이 없고 잃을 수 있기 때문**이다 — 서버가 이 값으로
+# 무엇을 게이팅하는지 알 수 없고, 캡처해 둔 픽스처의 `userAgent` 도 이 이름으로 찍혀 있어
+# 바꾸면 픽스처와 실제 핸드셰이크가 갈린다.
 _CLIENT_INFO = {
     "name": "codex-account-rotate",
     "title": "codex-account-rotate",

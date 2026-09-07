@@ -1,5 +1,5 @@
 {
-  "_source": "실제 codex-cli 0.153.4 app-server 응답 캡처 (2026-09-06). 이메일·계정 ID·설치 ID·경로만 치환했고 나머지는 서버가 보낸 그대로다.",
+  "_source": "실제 codex-cli 0.153.4 app-server 응답 캡처 (2026-09-06). 이메일·계정 ID·설치 ID·호스트명·경로만 치환했고 나머지는 서버가 보낸 그대로다.",
   "_case": "id_token·access_token 이 만료 — 401, body 가 JSON 본문(text/plain)으로 온다",
   "messages": [
     "{\"id\":1,\"result\":{\"userAgent\":\"codex-account-rotate/0.153.4 (Ubuntu 22.4.0; x86_64) unknown (codex-account-rotate; 1.0.0)\",\"codexHome\":\"<CODEX_HOME>\",\"platformFamily\":\"unix\",\"platformOs\":\"linux\"}}",

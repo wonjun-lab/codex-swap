@@ -2,7 +2,7 @@
 
 라벨 검증과 경로 조립이 **같은 모듈에** 있다. 라벨은 그대로 디렉토리 이름이 되므로,
 검증을 통과하지 않은 값으로 경로를 만들 수 있는 자리가 하나라도 있으면 그것이 곧
-구멍이다 — dotfiles PR #75·#76 이 닫은 것이 정확히 그 자리였고, 두 번에 걸쳐 닫은 이유는
+구멍이다 — bash 판에서 두 번에 걸쳐 닫은 것이 정확히 그 자리였고, 한 번에 못 닫은 이유는
 검사가 명령마다 흩어져 있어 새 명령에서 빠졌기 때문이다.
 """
 
@@ -20,7 +20,7 @@ from pathlib import Path
 from codex_swap.core import identity, log, paths
 from codex_swap.core.config import Settings
 
-# ── 라벨 계약 (dotfiles PR #75 · #76 에서 확정, 설계문 §6.6) ──────────────────
+# ── 라벨 계약 (bash 판에서 확정, 설계문 §6.6) ────────────────────────────────
 #
 # 단일 경로 요소만 통과시킨다. `.` 로 시작하는 이름을 막는 것은 보안이 아니라 규약이다 —
 # 내부 상태 파일(.usage-cache.json · .last-rotate · .lock · .last-check)이 같은 디렉토리에
@@ -49,7 +49,7 @@ def label_syntax_ok(label: str) -> bool:
     주의: bash 의 `[[ =~ ]]` 는 glibc 로케일 정렬을 쓰므로 UTF-8 로케일에서 `A-Za-z` 가
     ASCII 밖까지 포함할 수 있다. Python `re` 는 이 클래스를 항상 ASCII 로만 본다. 즉
     여기는 bash 의 `LC_ALL=C` 가지를 영구화한다 — 이미 비-ASCII 라벨 슬롯이 있으면
-    목록에서 사라지므로, 설치 전 `doctor` 가 그것을 먼저 보고한다 (설계문 §6.7).
+    목록에서 사라진다. 그 슬롯은 손으로 이름을 바꿔야 다시 보인다 (설계문 §6.7).
     """
     return bool(label) and len(label) <= MAX_LABEL_LEN and LABEL_RE.match(label) is not None
 
@@ -252,10 +252,10 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     원본은 **슬롯에 보관된 며칠 전 사본**이다. 그래서 방금 전환했는데도 mtime 이 과거로
     찍히고, 위 조건이 **항상 거짓**이 되어 훅이 낡은 broker 를 하나도 죽이지 못한다.
 
-    실측(2026-09-06, 이 기기): 원장에 그날 다섯 번의 전환이 남아 있는데
-    `~/.codex/auth.json` mtime 은 이틀 전(09-04 06:34)이었고, 떠 있던 broker 넷은 전부
-    그보다 **뒤에** 시작해 하나도 낡은 것으로 잡히지 않았다. 훅 주석(hook:79-80)은 이
-    비교가 "옛 토큰을 든 broker 를 같은 실행에서 내린다" 고 적고 있지만 작동한 적이 없다.
+    실측: 원장에 하루 다섯 번의 전환이 남아 있는데 `~/.codex/auth.json` mtime 은 이틀
+    전이었고, 떠 있던 broker 는 전부 그보다 **뒤에** 시작해 하나도 낡은 것으로 잡히지
+    않았다. "옛 토큰을 든 broker 를 같은 실행에서 내린다" 는 것이 이 비교의 목적인데,
+    그렇게 쓰는 쪽에서 한 번도 작동한 적이 없었다는 뜻이다.
 
     그래서 (B)는 mtime 을 새로 찍는다. bash 와 갈리는 의도된 divergence 이고, 설계문의
     계약 12("mtime 을 보존한다")는 이 발견으로 폐기됐다 — 그 계약은 bash 충실성만 보고

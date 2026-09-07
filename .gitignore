@@ -8,3 +8,19 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# 공개 저장소에서 가장 흔한 사고. 이 프로젝트는 `.env` 를 읽지 않지만, 기여자가
+# 실험용으로 하나 만들어 두고 같이 커밋하는 것이 전형적인 유출 경로다.
+.env
+.env.*
+
+# 이 도구가 다루는 것이 자격증명 파일이라, 재현용으로 하나 떠 놓고 잊는 사고가 다른
+# 프로젝트보다 일어나기 쉽다.
+auth.json
+*.pem
+*.key
+id_rsa*
+
+.DS_Store
+.idea/
+.vscode/

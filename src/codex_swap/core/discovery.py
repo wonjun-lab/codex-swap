@@ -232,7 +232,7 @@ def path_with_bin_dir(
 ) -> str:
     """탐색된 경로의 **lexical** 부모를 앞에 붙인 PATH (설계문 §6.2, 검증됨).
 
-    이 기기의 탐색 결과는 네이티브 바이너리가 아니라 `#!/usr/bin/env node` 스크립트다.
+    nvm 설치에서 탐색 결과는 네이티브 바이너리가 아니라 `#!/usr/bin/env node` 스크립트다.
     축소 PATH(`/usr/bin:/bin`)로 그대로 띄우면 실측 rc=127,
     stderr `/usr/bin/env: 'node': No such file or directory` 로 죽는다.
 
