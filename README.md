@@ -209,10 +209,50 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
 | `codex-swap use <label>` | Switch by hand |
 | `codex-swap rotate [--dry-run]` | Run the policy |
+| `codex-swap rename <old> <new>` | Give a slot a different name |
 | `codex-swap remove <label>` | Delete a slot (the live credentials are untouched) |
 | `codex-swap clean` | Clear probe leftovers from the slots (`auth.json` is kept) |
 
 `ls`, `switch` and `rm` exist as aliases.
+
+`remove` asks for confirmation when it is talking to a terminal, and names the account it
+is about to delete. `--yes` skips the question; called from a script it does not ask at
+all, because a prompt behind a pipe never returns.
+
+If a slot's token has gone stale, `codex-swap add --force <label>` logs in again and
+replaces it. Without `--force` an existing label is refused — the point is that you should
+not have to `remove` (irreversible) before attempting a login (which can fail).
+
+### Machine-readable output
+
+`list --json` and `status --json` print values instead of a formatted table, and their
+shape is a contract — the human table is free to change its widths and wording, so scripts
+should not parse it.
+
+```bash
+$ codex-swap list --json | jq -r '.accounts | map(select(.usedPercent != null))
+                                            | min_by(.usedPercent) | .label'
+personal
+```
+
+Usage that has never been read is `null`, not `0`. Zero would read as "the least-used
+account" and invert the decision it feeds.
+
+```json
+{
+  "active": "work",
+  "accounts": [
+    {"label": "work", "email": "…", "active": true,
+     "usedPercent": 58, "stale": false, "resetsAt": 1788844071, "resetCredits": 1}
+  ],
+  "policy": {"ladder": [50,70,85,95], "margin": 5, "cooldown": 900,
+             "cacheTtl": 300, "checkInterval": 60, "busyWindow": 180},
+  "autoSwitch": true
+}
+```
+
+`status --json` reports failure as data too (`"ok": false` with null readings), so a
+script never has to read prose off stderr. The exit code still follows the human form.
 
 ## Environment variables
 
@@ -270,6 +310,11 @@ This tool moves OAuth tokens around, so here is what it does and does not do.
 ~/.codex/accounts/.last-check         last decision (throttle)
 ~/.codex/accounts/rotate.log          switch ledger (never holds tokens)
 ```
+
+Probing runs `codex app-server` with the slot as its `CODEX_HOME`, so each slot grows a
+full codex home of its own — sqlite databases, logs, caches. Measured at roughly 8 MB per
+slot after ordinary use. `codex-swap clean` deletes all of it and keeps `auth.json`; run
+it when the directory gets larger than you would like. Nothing breaks if you never do.
 
 Not recording "which account am I on" as a separate field is the heart of the design.
 The active account is always decided by the email inside `~/.codex/auth.json`. Log in

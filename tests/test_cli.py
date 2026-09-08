@@ -836,3 +836,93 @@ def test_remove_does_not_ask_a_script(env, capsys, monkeypatch) -> None:
         "builtins.input", lambda _: (_ for _ in ()).throw(AssertionError("tty 가 아닌데 물었다"))
     )
     assert cli.main(["remove", "b"]) == 0
+
+
+# ── 기계가 읽는 출력 ────────────────────────────────────────────────────────
+#
+# 이 도구는 래퍼·훅에서 불리는 것이 존재 이유인데, 스크립트가 상태를 알아내려면 사람이
+# 읽으라고 만든 표를 파싱해야 했다. 그 표는 폭·문구가 바뀌는 것이 정상이라 계약이 될 수
+# 없다. `--json` 은 **바뀌지 않기로 한 표면**이므로 여기서 모양을 고정한다.
+
+
+def test_list_json_is_a_stable_shape(env, capsys) -> None:
+    _cache_usage(env, "a", 58)
+    assert cli.main(["list", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+
+    assert doc["active"] == "a"
+    assert doc["autoSwitch"] is True
+    assert doc["policy"] == {
+        "ladder": [50, 70, 85, 95],
+        "margin": 5,
+        "cooldown": 900,
+        "cacheTtl": 300,
+        "checkInterval": 60,
+        "busyWindow": 180,
+    }
+    by_label = {a["label"]: a for a in doc["accounts"]}
+    assert set(by_label) == {"a", "b"}
+    assert by_label["a"]["email"] == "a@example.com"
+    assert by_label["a"]["usedPercent"] == 58
+    assert by_label["a"]["stale"] is False
+    assert by_label["a"]["active"] is True
+    # 한 번도 못 읽은 슬롯은 **없는 값**이지 0 이 아니다. 0 으로 채우면 "가장 덜 쓴
+    # 계정" 으로 읽혀 정반대의 판단이 나온다.
+    assert by_label["b"]["usedPercent"] is None
+    assert by_label["b"]["active"] is False
+
+
+def test_list_json_marks_a_stale_reading(env, capsys) -> None:
+    _cache_usage(env, "a", 58, age=env.cache_ttl + 10)
+    cli.main(["list", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    entry = next(a for a in doc["accounts"] if a["label"] == "a")
+    assert entry["usedPercent"] == 58 and entry["stale"] is True
+
+
+def test_list_json_says_nothing_in_prose(env, capsys) -> None:
+    """사람용 줄이 섞이면 `json.loads` 가 깨진다 — 표·범례·경고 전부."""
+    _cache_usage(env, "a", 58, age=env.cache_ttl + 10)
+    _write_auth(store.slot_auth(env, "dup"), "a@example.com")  # 중복 경고 대상
+    (env.accounts_dir / "config.json").write_text("{ broken")  # 깨진 정책 경고 대상
+    assert cli.main(["list", "--json"]) == 0
+    json.loads(capsys.readouterr().out)  # 깨지면 여기서 실패한다
+
+
+def test_list_json_on_an_empty_store_is_still_json(tmp_path, monkeypatch, capsys) -> None:
+    home = tmp_path / "home"
+    (home / ".codex/accounts").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_ACCOUNT_DEFAULT_HOME", str(home / ".codex"))
+    monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
+    assert cli.main(["list", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["accounts"] == [] and doc["active"] is None
+
+
+def test_list_json_reports_the_off_switch(env, capsys) -> None:
+    env.off_switch.parent.mkdir(parents=True, exist_ok=True)
+    env.off_switch.touch()
+    cli.main(["list", "--json"])
+    assert json.loads(capsys.readouterr().out)["autoSwitch"] is False
+
+
+def test_status_json_carries_the_usage(env, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=64, plan_type="pro")), []),
+    )
+    assert cli.main(["status", "--fresh", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["active"] == "a" and doc["usedPercent"] == 64 and doc["planType"] == "pro"
+    assert doc["ok"] is True
+
+
+def test_status_json_reports_a_failure_as_data(env, capsys, monkeypatch) -> None:
+    """실패도 파싱 가능해야 한다. 스크립트가 stderr 문구를 읽게 두면 안 된다."""
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe", _probe_recorder(ProbeResult(ProbeOutcome.UNKNOWN), [])
+    )
+    assert cli.main(["status", "--fresh", "--json"]) == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["usedPercent"] is None

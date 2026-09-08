@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -216,6 +217,62 @@ def _run_login(argv: list[str], env: dict[str, str]) -> int:
         ) from exc
 
 
+def _policy_json(settings: config.Settings) -> dict[str, Any]:
+    return {
+        "ladder": list(settings.ladder),
+        "margin": settings.margin,
+        "cooldown": settings.cooldown,
+        "cacheTtl": settings.cache_ttl,
+        "checkInterval": settings.check_interval,
+        "busyWindow": settings.busy_window,
+    }
+
+
+def cmd_list_json(settings: config.Settings) -> int:
+    """`list` 의 기계용 판. **이 모양이 계약이다.**
+
+    사람용 표는 폭·문구가 바뀌는 것이 정상이라 스크립트가 기댈 수 없다. 그런데 이 도구는
+    래퍼·훅에서 불리는 것이 존재 이유라 기계가 읽을 자리가 필요하다. 여기서는 서식 대신
+    **값**만 낸다 — `~` 접두어 대신 `stale` 불리언, `?` 대신 `null`.
+
+    못 읽은 사용량을 `0` 으로 채우지 않는 것이 중요하다. 0 은 "가장 덜 쓴 계정" 으로
+    읽혀 정반대의 판단을 부른다 (설계문 §6.4.1 의 3-상태와 같은 이유다).
+    """
+    active = store.active_label(settings)
+    accounts = []
+    for label in store.labels(settings):
+        cached = cache.read(settings, label)
+        stale = False
+        if cached is None:
+            aged = cache.read_stale(settings, label)
+            if aged is not None:
+                cached, stale = aged[0], True
+        pct = cached.get("usedPercent") if isinstance(cached, dict) else None
+        accounts.append(
+            {
+                "label": label,
+                "email": identity.email_of(store.slot_auth(settings, label)),
+                "active": label == active,
+                "usedPercent": pct if isinstance(pct, int) else None,
+                "stale": stale if pct is not None else False,
+                "resetsAt": cached.get("resetsAt") if isinstance(cached, dict) else None,
+                "resetCredits": cached.get("resetCredits") if isinstance(cached, dict) else None,
+            }
+        )
+    print(
+        json.dumps(
+            {
+                "active": active,
+                "accounts": accounts,
+                "policy": _policy_json(settings),
+                "autoSwitch": not settings.off_switch.exists(),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def cmd_list(settings: config.Settings) -> int:
     labels = store.labels(settings)
     if not labels:
@@ -282,27 +339,52 @@ def cmd_list(settings: config.Settings) -> int:
     return 0
 
 
-def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
+def _status_json(active: str | None, email: str | None, usage: Usage | None) -> int:
+    """실패도 **데이터로** 낸다. 스크립트가 stderr 문구를 읽게 두면 안 된다."""
+    print(
+        json.dumps(
+            {
+                "ok": usage is not None,
+                "active": active,
+                "email": email if usage is None else (usage.email or email),
+                "usedPercent": None if usage is None else usage.used_percent,
+                "planType": None if usage is None else usage.plan_type,
+                "resetsAt": None if usage is None else usage.resets_at,
+                "resetCredits": None if usage is None else usage.reset_credits,
+                "reached": None if usage is None else usage.reached,
+            },
+            indent=2,
+        )
+    )
+    return 0 if usage is not None else 1
+
+
+def cmd_status(settings: config.Settings, *, fresh: bool, as_json: bool = False) -> int:
     active = store.active_label(settings)
+    live_email = identity.email_of(store.active_auth(settings))
 
     # 자격증명이 아예 없으면 프로브는 실패할 수밖에 없다. 그 실패를 "조회 실패" 로
     # 보여 주면 방금 설치한 사용자는 도구가 깨진 줄 안다 — 실제로는 아직 아무것도 안 한
     # 상태다. 실패의 종류를 늘어놓지 않는다는 원칙(아래)과 다른 얘기다: 여기서는 애초에
     # 물어볼 것이 없다는 것을 알고 있으므로, 묻지 않고 다음 행동을 말해 준다.
     if not store.active_auth(settings).is_file():
+        if as_json:
+            return _status_json(active, None, None)
         print("active account: not logged in")
         print("Run codex login first, then codex-swap adopt <label> to keep it.")
         return 1
 
-    if active is None:
-        email = identity.email_of(store.active_auth(settings)) or "email unknown"
-        print(f"active account: {email} (not in any slot)")
-    else:
-        print(f"active account: {active}")
+    if not as_json:
+        if active is None:
+            print(f"active account: {live_email or 'email unknown'} (not in any slot)")
+        else:
+            print(f"active account: {active}")
 
     if not fresh and active is not None:
         cached = cache.read(settings, active)
         if cached is not None and "usedPercent" in cached:
+            if as_json:
+                return _status_json(active, live_email, _usage_from_cache(cached))
             print(_usage_line(_usage_from_cache(cached)))
             return 0
 
@@ -318,6 +400,8 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     try:
         codex_bin = discovery.resolve_codex_bin()
     except Exception as exc:
+        if as_json:
+            return _status_json(active, live_email, None)
         print(f"cannot run codex: {exc}")
         print("Check that `codex --version` works, or set CODEX_ACCOUNT_BIN to its path.")
         return 1
@@ -327,6 +411,8 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
     except Exception:
         # 여기서부터는 한 줄로만 알린다. bash 도 프로브의 모든 비인증 실패를 이 한 줄로
         # 접는다 — 사용자에게 유용한 것은 "왜 실패했는가" 가 아니라 "지금 모른다" 다.
+        if as_json:
+            return _status_json(active, live_email, None)
         print("usage: probe failed")
         return 1
     if result.outcome is ProbeOutcome.OK and result.usage is not None:
@@ -352,8 +438,12 @@ def cmd_status(settings: config.Settings, *, fresh: bool) -> int:
                     "reached": u.reached,
                 },
             )
+        if as_json:
+            return _status_json(active, live_email, result.usage)
         print(_usage_line(result.usage))
         return 0
+    if as_json:
+        return _status_json(active, live_email, None)
     print("usage: probe failed")
     return 1
 
@@ -519,10 +609,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="log in again even if the label already exists"
     )
 
-    sub.add_parser("list", aliases=["ls"], help="stored accounts and cached usage")
+    p = sub.add_parser("list", aliases=["ls"], help="stored accounts and cached usage")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
 
     p = sub.add_parser("status", help="active account and its usage")
     p.add_argument("--fresh", action="store_true", help="ignore the cache and probe now")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
 
     p = sub.add_parser("use", aliases=["switch"], help="switch by hand")
     p.add_argument("label")
@@ -587,9 +679,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "add":
                 return cmd_add(settings, args.label, force=args.force)
             case "list" | "ls":
-                return cmd_list(settings)
+                return cmd_list_json(settings) if args.json else cmd_list(settings)
             case "status":
-                return cmd_status(settings, fresh=args.fresh)
+                return cmd_status(settings, fresh=args.fresh, as_json=args.json)
             case "use" | "switch":
                 return cmd_use(settings, args.label, force=args.force)
             case "rotate":
