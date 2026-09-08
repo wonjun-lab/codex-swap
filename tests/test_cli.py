@@ -1039,3 +1039,76 @@ def test_status_says_the_same_thing_from_cache_and_from_a_probe(env, capsys, mon
     cached = capsys.readouterr().out
 
     assert cached == fresh, f"캐시 경로가 다른 말을 한다\n--fresh:\n{fresh}\ncached:\n{cached}"
+
+
+# ── 비활성 계정은 갱신될 경로가 없었다 ─────────────────────────────────────
+#
+# 실기기에서 잡았다. 화면은 `~93%`, 실제는 12% 였다 — 그 계정의 주간 한도가 리셋됐는데
+# 캐시가 5 시간 전 값이었다. 세 경로가 모두 비활성 계정을 비껴간다:
+#   - `rotate` 는 활성이 첫 관문 아래면 **지름길로 끝나** 후보를 프로브하지 않는다
+#     (주중 대부분의 호출이 여기다 — 의도된 절제다)
+#   - `status --fresh` 는 **활성 계정만** 읽는다
+#   - `list` 는 프로브를 아예 안 한다 (의도)
+# 그래서 비활성 슬롯의 숫자는 며칠이고 굳는다.
+
+
+def test_list_shows_how_old_a_stale_reading_is(env, capsys) -> None:
+    """`~` 하나로는 5 분 전과 5 일 전이 구별되지 않는다.
+
+    그 둘은 신뢰도가 전혀 다르다 — 5 분 전 값은 사실상 지금 값이고, 5 일 전 값은
+    한도가 리셋됐을 수도 있는 값이다. 실제로 81%p 틀린 값을 `~` 하나로 보여줬다.
+    """
+    _cache_usage(env, "a", 93, age=5 * 3600)
+    assert cli.main(["list"]) == 0
+    row = next(ln for ln in capsys.readouterr().out.splitlines() if " a " in ln)
+    assert "~93%" in row and "5h" in row, row
+
+
+def test_list_fresh_reads_every_slot(env, capsys, monkeypatch) -> None:
+    """비활성 계정을 갱신하는 경로가 하나는 있어야 한다."""
+    seen: list[str] = []
+
+    def fake(codex_bin: str, home: str):
+        label = Path(home).name
+        seen.append(label)
+        return ProbeResult.of(Usage(used_percent=12 if label == "b" else 34))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", fake)
+    assert cli.main(["list", "--fresh"]) == 0
+    assert set(seen) == {".codex", "b"}, seen  # 활성은 기본 홈으로, 나머지는 슬롯으로
+    out = capsys.readouterr().out
+    assert "34%" in out and "12%" in out and "~" not in out, out
+
+
+def test_list_fresh_writes_what_it_read(env, capsys, monkeypatch) -> None:
+    """읽고 버리면 다음 `list` 가 다시 `?` 다."""
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        lambda b, h: ProbeResult.of(Usage(used_percent=12)),
+    )
+    assert cli.main(["list", "--fresh"]) == 0
+    assert cache.read(env, "a") is not None and cache.read(env, "b") is not None
+
+
+def test_list_fresh_keeps_going_when_one_slot_fails(env, capsys, monkeypatch) -> None:
+    """한 계정이 죽었다고 나머지 숫자까지 잃으면 안 된다."""
+
+    def flaky(codex_bin: str, home: str):
+        if Path(home).name == "b":
+            raise RuntimeError("boom")
+        return ProbeResult.of(Usage(used_percent=34))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", flaky)
+    assert cli.main(["list", "--fresh"]) == 0
+    out = capsys.readouterr().out
+    assert "34%" in out, out
+    assert "?" in out, out  # b 는 못 읽었다고 정직하게
+
+
+def test_plain_list_still_does_not_probe(env, capsys, monkeypatch) -> None:
+    """`--fresh` 없이는 그대로 네트워크를 안 탄다. 매 호출이 싸야 한다."""
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("list 가 프로브했다")),
+    )
+    assert cli.main(["list"]) == 0

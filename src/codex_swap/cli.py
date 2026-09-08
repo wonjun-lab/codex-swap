@@ -281,13 +281,80 @@ def cmd_list_json(settings: config.Settings) -> int:
     return 0
 
 
-def cmd_list(settings: config.Settings) -> int:
+def _age_text(seconds: int) -> str:
+    """낡음의 크기. `~` 하나로는 5 분 전과 5 일 전이 구별되지 않는다.
+
+    그 둘은 신뢰도가 전혀 다르다 — 5 분 전 값은 사실상 지금 값이고, 5 일 전 값은 그
+    사이에 한도가 리셋됐을 수도 있는 값이다. 실제로 81%p 틀린 값을 `~` 하나로 보여줬다.
+    """
+    if seconds >= 86400:
+        return f"{seconds // 86400}d"
+    if seconds >= 3600:
+        return f"{seconds // 3600}h"
+    return f"{max(seconds // 60, 1)}m"
+
+
+def refresh_all(settings: config.Settings) -> None:
+    """모든 슬롯을 프로브해 캐시에 남긴다.
+
+    이것이 없는 동안 **비활성 계정은 갱신될 경로가 없었다.** `rotate` 는 활성이 첫 관문
+    아래면 지름길로 끝나 후보를 프로브하지 않고(주중 대부분의 호출이 여기다 — 의도된
+    절제다), `status --fresh` 는 활성 계정만 읽으며, `list` 는 프로브를 아예 안 한다.
+    그래서 비활성 슬롯의 숫자가 며칠이고 굳었다 — 실측으로 93% 라고 적힌 계정이 실제로는
+    12% 였다.
+
+    활성 계정은 슬롯 사본이 아니라 **기본 홈**으로 읽는다. 슬롯 사본은 토큰이 갱신되며
+    뒤처지고 기본 홈이 언제나 사실이다 (`rotate._home_for` 와 같은 이유).
+
+    한 슬롯이 실패해도 나머지는 계속한다 — 하나가 죽었다고 다른 계정의 숫자까지 잃을
+    이유가 없다.
+    """
+    try:
+        codex_bin = str(discovery.resolve_codex_bin())
+    except Exception as exc:
+        raise CliError(
+            f"cannot run codex: {exc}. Check that `codex --version` works, "
+            "or set CODEX_ACCOUNT_BIN to its path"
+        ) from exc
+
+    active = store.active_label(settings)
+    for label in store.labels(settings):
+        home = settings.default_home if label == active else store.slot_dir(settings, label)
+        try:
+            result = probe.probe(codex_bin, str(home))
+        except Exception:
+            continue
+        if result.outcome is not ProbeOutcome.OK or result.usage is None:
+            continue
+        u = result.usage
+        cache.write(
+            settings,
+            label,
+            {
+                "email": u.email,
+                "planType": u.plan_type,
+                "usedPercent": u.used_percent,
+                "primaryPercent": u.primary_percent,
+                "secondaryPercent": u.secondary_percent,
+                "resetsAt": u.resets_at,
+                "resetCredits": u.reset_credits,
+                "reached": u.reached,
+            },
+        )
+
+
+def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
     labels = store.labels(settings)
     if not labels:
         print("No accounts yet. Start with: codex-swap adopt <label>")
         return 0
+    if fresh:
+        refresh_all(settings)
     active = store.active_label(settings)
-    print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} {'CRED':<5} RESET")
+    # 행을 먼저 모으고 폭을 잰 뒤에 찍는다. 고정폭이면 `~93% 5h` 처럼 긴 값이 칸을
+    # 넘쳐 뒤 열이 통째로 밀린다 — 낡음 나이를 붙이면서 실제로 그랬다.
+    printed: list[tuple[str, str, str, str, str]] = []
+    reset_of: dict[str, str] = {}
     stale_seen: list[str] = []
     seen_emails: dict[str, list[str]] = {}
     # 소진 판정에 쓸 재료. `list` 는 프로브를 돌리지 않으므로 **아는 것만으로** 판단한다.
@@ -306,13 +373,16 @@ def cmd_list(settings: config.Settings) -> int:
         # 낡은 값은 `~` 를 붙여 그대로 보여 준다 — 디스크만 읽으므로 비용은 그대로다.
         cached = cache.read(settings, label)
         stale = False
+        age = 0
         if cached is None:
             aged = cache.read_stale(settings, label)
             if aged is not None:
-                cached, stale = aged[0], True
+                cached, age, stale = aged[0], aged[1], True
         cred = "-"
         if cached is not None and "usedPercent" in cached:
             used = f"{'~' if stale else ''}{cached['usedPercent']}%"
+            if stale:
+                used = f"{used} {_age_text(age)}"
             reset = _reset_text(cached.get("resetsAt"))
             if stale:
                 stale_seen.append(label)
@@ -330,11 +400,23 @@ def cmd_list(settings: config.Settings) -> int:
         else:
             used, reset = "?", "-"
         mark = "*" if label == active else " "
-        print(f"{mark:<3} {label:<14} {email:<30} {used:<6} {cred:<5} {reset}")
+        printed.append((mark, label, email, used, cred))
+        reset_of[label] = reset
+
+    def _w(values: list[str], header: str, lo: int) -> int:
+        return max(lo, len(header), *(len(v) for v in values)) if values else lo
+
+    lw = _w([r[1] for r in printed], "LABEL", 6)
+    ew = _w([r[2] for r in printed], "EMAIL", 12)
+    uw = _w([r[3] for r in printed], "USED", 4)
+    cw = _w([r[4] for r in printed], "CRED", 4)
+    print(f"{'':<3} {'LABEL':<{lw}} {'EMAIL':<{ew}} {'USED':<{uw}} {'CRED':<{cw}} RESET")
+    for mark, label, email, used, cred in printed:
+        print(f"{mark:<3} {label:<{lw}} {email:<{ew}} {used:<{uw}} {cred:<{cw}} {reset_of[label]}")
     print()
     # 낡은 행이 있을 때만 범례를 낸다. 늘 떠 있는 안내는 곧 안 읽힌다.
     if stale_seen:
-        print("~ marks a stale cached value. To refresh: codex-swap status --fresh")
+        print("~ marks a stale cached value, with its age. To refresh: codex-swap list --fresh")
 
     # 같은 이메일이 두 라벨에 있으면 **진 쪽 사본은 갱신을 못 받고 썩는다.** 활성 판정은
     # 정렬 첫 일치가 이기므로(`store.active_label`) 나머지는 sync-back 대상이 아니다.
@@ -658,6 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("list", aliases=["ls"], help="stored accounts and cached usage")
+    p.add_argument("--fresh", action="store_true", help="probe every slot before printing")
     p.add_argument("--json", action="store_true", help="machine-readable output")
 
     p = sub.add_parser("status", help="active account and its usage")
@@ -727,7 +810,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "add":
                 return cmd_add(settings, args.label, force=args.force)
             case "list" | "ls":
-                return cmd_list_json(settings) if args.json else cmd_list(settings)
+                if args.json:
+                    if args.fresh:
+                        refresh_all(settings)
+                    return cmd_list_json(settings)
+                return cmd_list(settings, fresh=args.fresh)
             case "status":
                 return cmd_status(settings, fresh=args.fresh, as_json=args.json)
             case "use" | "switch":
