@@ -946,11 +946,19 @@ def test_list_shows_reset_credits(env, capsys) -> None:
 
 
 def test_list_credit_column_is_a_dash_when_unknown(env, capsys) -> None:
-    """0 과 "모른다" 는 다르다. 0 으로 채우면 없는 크레딧을 없다고 단정한다."""
-    cache.write(env, "a", {"usedPercent": 50, "resetsAt": None})
+    """0 과 "모른다" 는 다르다. 0 으로 채우면 없는 크레딧을 **없다고 단정**한다.
+
+    `resetsAt` 를 채워 두는 것이 중요하다 — RESET 열도 비면 `-` 라서, 그냥 "행에 `-` 가
+    있나" 로 보면 CRED 가 `0` 이어도 통과한다. 실제로 그렇게 뮤테이션을 놓쳤다.
+    """
+    import time
+
+    cache.write(env, "a", {"usedPercent": 50, "resetsAt": int(time.time()) + 9999})
     assert cli.main(["list"]) == 0
-    row = next(ln for ln in capsys.readouterr().out.splitlines() if " a " in ln)
-    assert "-" in row.split("50%")[1], row
+    out = capsys.readouterr().out
+    row = next(ln for ln in out.splitlines() if " a " in ln)
+    cred = row.split("50%")[1].split()[0]
+    assert cred == "-", f"CRED 칸이 {cred!r} 다: {row}"
 
 
 def test_status_shows_reset_credits(env, capsys, monkeypatch) -> None:
@@ -988,3 +996,17 @@ def test_list_is_quiet_when_something_is_still_usable(env, capsys) -> None:
     cache.write(env, "b", {"usedPercent": 40, "resetsAt": None})
     assert cli.main(["list"]) == 0
     assert "every account" not in capsys.readouterr().out
+
+
+def test_list_does_not_declare_exhaustion_it_cannot_see(env, capsys) -> None:
+    """`list` 는 프로브를 돌리지 않는다. **모르는 슬롯**이 있으면 단정하면 안 된다.
+
+    아는 것만 보고 "전부 소진" 이라고 말하면, 정작 멀쩡한 슬롯을 두고 사용자가 리셋을
+    기다린다. 모르는 쪽이 답일 수 있다.
+    """
+    cache.write(env, "a", {"usedPercent": 99, "resetsAt": None, "resetCredits": 1})
+    # b 는 한 번도 못 읽었다 — 캐시에 항목이 없다.
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "?" in out
+    assert "every account" not in out, out
