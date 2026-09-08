@@ -75,6 +75,12 @@ def _usage_line(u: Usage) -> str:
 
 
 def _usage_from_cache(d: dict[str, Any]) -> Usage:
+    """캐시 항목을 `Usage` 로 되돌린다.
+
+    **`cache.write` 가 저장하는 키와 여기가 읽는 키가 같아야 한다.** 하나가 빠지면 그
+    값은 캐시 히트일 때만 사라져서, 같은 계정이 경로에 따라 다른 말을 한다. 실제로
+    `resetCredits` 가 그랬다 — `list` 는 2 라는데 `status` 는 `-` 였다.
+    """
     return Usage(
         used_percent=int(d["usedPercent"]),
         email=d.get("email"),
@@ -82,6 +88,7 @@ def _usage_from_cache(d: dict[str, Any]) -> Usage:
         primary_percent=d.get("primaryPercent"),
         secondary_percent=d.get("secondaryPercent"),
         resets_at=d.get("resetsAt"),
+        reset_credits=d.get("resetCredits"),
         reached=bool(d.get("reached")),
     )
 
