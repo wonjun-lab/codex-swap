@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -281,6 +282,22 @@ def cmd_list_json(settings: config.Settings) -> int:
     return 0
 
 
+def _display_width(text: str) -> str | int:
+    """터미널에서 차지하는 칸 수. 한글은 두 칸이다.
+
+    `len()` 으로 재고 채우면 비-ASCII 이메일이 있는 행만 뒤 열이 밀린다. TUI 는 이미
+    표시 폭으로 계산하는데(`tui._width`) `list` 는 안 하고 있었다. 그쪽을 그대로 쓰지
+    않는 것은 `tui` 가 모듈 최상단에서 `curses` 를 들여오기 때문이다 — `cli` 는 그것
+    없이도 돌아야 한다.
+    """
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _pad_to(text: str, cols: int) -> str:
+    """표시 폭 기준으로 채운다."""
+    return text + " " * max(0, cols - _display_width(text))
+
+
 def _age_text(seconds: int) -> str:
     """낡음의 크기. `~` 하나로는 5 분 전과 5 일 전이 구별되지 않는다.
 
@@ -327,6 +344,16 @@ def refresh_all(settings: config.Settings) -> None:
         if result.outcome is not ProbeOutcome.OK or result.usage is None:
             continue
         u = result.usage
+        # **읽어 온 것이 정말 그 라벨의 계정인가.** 활성 라벨을 한 번 읽고 그 차례에
+        # 기본 홈을 여는 사이, 다른 `rotate` 가 전환을 끝내면 그 홈에는 이미 다른 계정이
+        # 들어 있다. 그대로 적으면 남의 사용량이 이 이름으로 캐시에 들어가고, `rotate` 는
+        # 그 캐시를 정책 입력으로 읽으므로 후보 선택이 통째로 틀어진다.
+        #
+        # 이메일을 안 주는 응답도 있으므로, **알 때만** 견준다. 모르는 것을 막으면
+        # 갱신이 통째로 멈춘다.
+        want = identity.email_of(store.slot_auth(settings, label))
+        if u.email is not None and want is not None and u.email != want:
+            continue
         cache.write(
             settings,
             label,
@@ -404,15 +431,28 @@ def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
         reset_of[label] = reset
 
     def _w(values: list[str], header: str, lo: int) -> int:
-        return max(lo, len(header), *(len(v) for v in values)) if values else lo
+        widths = [_display_width(v) for v in values]
+        return max(lo, _display_width(header), *widths) if widths else lo
 
     lw = _w([r[1] for r in printed], "LABEL", 6)
     ew = _w([r[2] for r in printed], "EMAIL", 12)
     uw = _w([r[3] for r in printed], "USED", 4)
     cw = _w([r[4] for r in printed], "CRED", 4)
-    print(f"{'':<3} {'LABEL':<{lw}} {'EMAIL':<{ew}} {'USED':<{uw}} {'CRED':<{cw}} RESET")
+
+    def _row(mark: str, label: str, email: str, used: str, cred: str, reset: str) -> str:
+        cells = [
+            _pad_to(mark, 3),
+            _pad_to(label, lw),
+            _pad_to(email, ew),
+            _pad_to(used, uw),
+            _pad_to(cred, cw),
+            reset,
+        ]
+        return " ".join(cells).rstrip()
+
+    print(_row("", "LABEL", "EMAIL", "USED", "CRED", "RESET"))
     for mark, label, email, used, cred in printed:
-        print(f"{mark:<3} {label:<{lw}} {email:<{ew}} {used:<{uw}} {cred:<{cw}} {reset_of[label]}")
+        print(_row(mark, label, email, used, cred, reset_of[label]))
     print()
     # 낡은 행이 있을 때만 범례를 낸다. 늘 떠 있는 안내는 곧 안 읽힌다.
     if stale_seen:
