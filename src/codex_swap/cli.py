@@ -69,7 +69,8 @@ def _usage_line(u: Usage) -> str:
     return (
         f"usage: {u.used_percent}% "
         f"(primary {_opt(u.primary_percent)}%, secondary {_opt(u.secondary_percent)}%) "
-        f"· plan {_opt(u.plan_type)} · resets {_reset_text(u.resets_at)}"
+        f"· plan {_opt(u.plan_type)} · credits {_opt(u.reset_credits)} "
+        f"· resets {_reset_text(u.resets_at)}"
     )
 
 
@@ -279,9 +280,13 @@ def cmd_list(settings: config.Settings) -> int:
         print("No accounts yet. Start with: codex-swap adopt <label>")
         return 0
     active = store.active_label(settings)
-    print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} RESET")
+    print(f"{'':<3} {'LABEL':<14} {'EMAIL':<30} {'USED':<6} {'CRED':<5} RESET")
     stale_seen: list[str] = []
     seen_emails: dict[str, list[str]] = {}
+    # 소진 판정에 쓸 재료. `list` 는 프로브를 돌리지 않으므로 **아는 것만으로** 판단한다.
+    known_pct: list[int] = []
+    resets: list[int] = []
+    credits_total = 0
     for label in labels:
         email = identity.email_of(store.slot_auth(settings, label)) or "?"
         if email != "?":
@@ -298,15 +303,27 @@ def cmd_list(settings: config.Settings) -> int:
             aged = cache.read_stale(settings, label)
             if aged is not None:
                 cached, stale = aged[0], True
+        cred = "-"
         if cached is not None and "usedPercent" in cached:
             used = f"{'~' if stale else ''}{cached['usedPercent']}%"
             reset = _reset_text(cached.get("resetsAt"))
             if stale:
                 stale_seen.append(label)
+            pct = cached.get("usedPercent")
+            if isinstance(pct, int):
+                known_pct.append(pct)
+            at = cached.get("resetsAt")
+            if isinstance(at, (int, float)) and not isinstance(at, bool):
+                resets.append(int(at))
+            # 0 과 "모른다" 는 다르다. 0 으로 채우면 없는 크레딧을 없다고 **단정**한다.
+            raw = cached.get("resetCredits")
+            if isinstance(raw, int) and not isinstance(raw, bool):
+                cred = str(raw)
+                credits_total += raw
         else:
             used, reset = "?", "-"
         mark = "*" if label == active else " "
-        print(f"{mark:<3} {label:<14} {email:<30} {used:<6} {reset}")
+        print(f"{mark:<3} {label:<14} {email:<30} {used:<6} {cred:<5} {reset}")
     print()
     # 낡은 행이 있을 때만 범례를 낸다. 늘 떠 있는 안내는 곧 안 읽힌다.
     if stale_seen:
@@ -330,6 +347,30 @@ def cmd_list(settings: config.Settings) -> int:
         f"ladder {ladder} · margin {settings.margin}%p · "
         f"cache {settings.cache_ttl}s · cooldown {settings.cooldown}s"
     )
+    # 전 계정이 사다리 끝을 넘었으면 자동 전환이 할 수 있는 일이 없다. 그 사실도, 언제
+    # 풀리는지도, 크레딧이 남았다는 것도 화면 어디에도 없었다 — `rotate` 는 침묵하고
+    # `--dry-run` 만 `ladder exhausted` 라고 답한다. 사용자는 99% 두 줄만 보고 무엇을
+    # 기다려야 하는지 모른다.
+    #
+    # 아는 값만으로 판단한다. `list` 는 프로브를 돌리지 않으므로 모르는 슬롯이 있으면
+    # 단정하지 않는다 — 그쪽이 멀쩡할 수 있다.
+    top = settings.ladder[-1] if settings.ladder else None
+    if (
+        top is not None
+        and known_pct
+        and len(known_pct) == len(labels)
+        and all(p >= top for p in known_pct)
+    ):
+        soonest = f" Earliest reset {_reset_text(min(resets))}." if resets else ""
+        spend = (
+            f" {credits_total} reset credit(s) left — spending one is the other way out."
+            if credits_total > 0
+            else ""
+        )
+        print(
+            f"note: every account is past {top}%, so there is nothing to switch to.{soonest}{spend}"
+        )
+
     # 위 줄이 방금 보여 준 값이 **저장한 값이 아닐 수 있다.** 그 사실을 바로 아래 붙인다.
     broken = config.file_config_error(settings.accounts_dir)
     if broken is not None:

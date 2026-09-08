@@ -926,3 +926,65 @@ def test_status_json_reports_a_failure_as_data(env, capsys, monkeypatch) -> None
     assert cli.main(["status", "--fresh", "--json"]) == 1
     doc = json.loads(capsys.readouterr().out)
     assert doc["ok"] is False and doc["usedPercent"] is None
+
+
+# ── 리셋 크레딧이 사람 눈에 닿는가 ─────────────────────────────────────────
+#
+# 실기기 검토에서 나온 것이다. TUI 에는 `CRED` 열이 있고 `--json` 에도 값이 있는데,
+# 사람이 가장 자주 쓰는 `list`·`status` 에만 없었다. 크레딧은 **소진됐을 때의 유일한
+# 탈출구**라, 하필 그것이 필요한 순간에 두 표면이 침묵한다.
+
+
+def test_list_shows_reset_credits(env, capsys) -> None:
+    cache.write(env, "a", {"usedPercent": 95, "resetsAt": None, "resetCredits": 2})
+    cache.write(env, "b", {"usedPercent": 40, "resetsAt": None, "resetCredits": 0})
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "CRED" in out, out
+    row_a = next(ln for ln in out.splitlines() if " a " in ln)
+    assert "2" in row_a.split("95%")[1], row_a
+
+
+def test_list_credit_column_is_a_dash_when_unknown(env, capsys) -> None:
+    """0 과 "모른다" 는 다르다. 0 으로 채우면 없는 크레딧을 없다고 단정한다."""
+    cache.write(env, "a", {"usedPercent": 50, "resetsAt": None})
+    assert cli.main(["list"]) == 0
+    row = next(ln for ln in capsys.readouterr().out.splitlines() if " a " in ln)
+    assert "-" in row.split("50%")[1], row
+
+
+def test_status_shows_reset_credits(env, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        _probe_recorder(ProbeResult.of(Usage(used_percent=96, reset_credits=1)), []),
+    )
+    assert cli.main(["status", "--fresh"]) == 0
+    assert "credits 1" in capsys.readouterr().out
+
+
+def test_list_says_what_to_do_when_every_account_is_spent(env, capsys) -> None:
+    """전 계정이 사다리 끝을 넘으면 자동 전환이 할 수 있는 일이 없다.
+
+    그 사실도, 언제 풀리는지도, 크레딧이 있다는 것도 화면 어디에도 없었다 — `rotate`
+    는 침묵하고 `--dry-run` 만 `ladder exhausted` 라고 답한다. 사용자는 표에 99% 두 줄만
+    보고 무엇을 기다려야 하는지 모른다.
+    """
+    import time
+
+    # 경계값을 피한다. `secs // 3600` 은 정확히 7200 초에서 내림으로 1 이 된다.
+    soon = int(time.time()) + 7200 + 600
+    cache.write(env, "a", {"usedPercent": 99, "resetsAt": soon + 90000, "resetCredits": 1})
+    cache.write(env, "b", {"usedPercent": 97, "resetsAt": soon, "resetCredits": 0})
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "every account" in out, out
+    assert "in 2h" in out, out  # 가장 이른 리셋
+    assert "credit" in out, out  # 남은 크레딧을 쓸 수 있다는 것
+
+
+def test_list_is_quiet_when_something_is_still_usable(env, capsys) -> None:
+    """늘 뜨는 경고는 곧 안 읽힌다."""
+    cache.write(env, "a", {"usedPercent": 99, "resetsAt": None})
+    cache.write(env, "b", {"usedPercent": 40, "resetsAt": None})
+    assert cli.main(["list"]) == 0
+    assert "every account" not in capsys.readouterr().out
