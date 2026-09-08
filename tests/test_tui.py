@@ -73,8 +73,10 @@ def test_the_cursor_moves_and_is_visible(env) -> None:
 
 
 def test_the_cursor_cannot_run_past_the_list(env) -> None:
+    """계정 다음에 메뉴가 이어지므로 클램프는 그 끝이다."""
     view = tui.build_view(env, cursor=99)
-    assert view.cursor == len(view.rows) - 1
+    assert view.cursor == tui.cursor_limit(view)
+    assert tui.selected_menu(view) == tui.MENU[-1][0]
 
 
 def test_an_empty_store_says_what_to_do(tmp_path, monkeypatch) -> None:
@@ -1267,3 +1269,73 @@ def test_every_column_is_left_aligned(env) -> None:
         assert ln[used_at] not in " ", f"USED 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
     cred_at = header.index("CRED")
     assert body[1][cred_at] == "2", body[1]
+
+
+# ── 방향키로 들어가는 길 ────────────────────────────────────────────────────
+#
+# 단축키만으로 화면을 옮기면 그 키를 외운 사람만 쓸 수 있다. 커서를 계정 아래 **메뉴**
+# 까지 내려 `enter` 로 들어가는 길을 함께 둔다. 그러면 `enter` 가 하던 "전환" 과 겹치므로
+# 전환은 `s` 로 옮긴다.
+
+
+def _view(env, cursor: int = 0) -> tui.View:
+    rows = (
+        tui.Row("a", "a@x", "58%", "-", True, percent=58),
+        tui.Row("b", "b@x", "70%", "-", False, percent=70),
+    )
+    return tui.View(rows=rows, cursor=cursor, settings=env, current_rung=70)
+
+
+def test_the_cursor_runs_past_the_accounts_into_a_menu(env) -> None:
+    view = _view(env)
+    assert tui.cursor_limit(view) == len(view.rows) + len(tui.MENU) - 1
+    # 계정 구간
+    assert tui.selected_row(_view(env, 0)).label == "a"
+    assert tui.selected_menu(_view(env, 0)) is None
+    # 메뉴 구간
+    assert tui.selected_row(_view(env, len(view.rows))) is None
+    assert tui.selected_menu(_view(env, len(view.rows))) == tui.MENU[0][0]
+
+
+def test_the_menu_is_drawn_and_the_cursor_shows_where_it_is(env) -> None:
+    lines = tui.render_lines(_view(env, cursor=2), width=140)
+    menu = [ln for ln in lines if any(t in ln for _, t in tui.MENU)]
+    assert len(menu) == len(tui.MENU), lines
+    marked = [ln for ln in menu if ln.startswith(" >")]
+    assert len(marked) == 1 and tui.MENU[0][1] in marked[0], menu
+    # 계정에 커서가 있을 때는 메뉴에 표시가 없다.
+    on_account = tui.render_lines(_view(env, cursor=0), width=140)
+    assert not [ln for ln in on_account if ln.startswith(" >") and "Policy" in ln]
+
+
+def test_enter_on_a_menu_item_goes_in(env) -> None:
+    after = tui.activate(_view(env, cursor=2))
+    assert after.mode == "policy"
+
+
+def test_enter_on_an_account_does_not_switch_but_says_what_does(env) -> None:
+    """전환은 `s` 다. 조용히 아무 일도 안 하면 사용자는 키가 죽은 줄 안다."""
+    before = _view(env, cursor=1)
+    after = tui.activate(before)
+    assert after.mode == "accounts"
+    assert "s" in after.message and "switch" in after.message.lower(), after.message
+
+
+def test_s_still_switches(env) -> None:
+    view = _view(env, cursor=1)
+    assert tui.selected_row(view) is not None
+    # `do_switch` 는 커서 행을 쓴다 — 그 계약이 살아 있어야 `s` 가 붙는다.
+    assert tui.selected_row(view).label == "b"
+
+
+def test_s_on_a_menu_row_is_refused_gently(env) -> None:
+    view = _view(env, cursor=2)
+    after = tui.do_switch(view)
+    assert after.mode == "accounts"
+    assert after.message, "아무 말 없이 무시하면 키가 죽은 줄 안다"
+
+
+def test_the_key_line_teaches_the_new_layout(env) -> None:
+    text, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=140)
+    assert "s switch" in text, text
+    assert "enter open" in text, text
