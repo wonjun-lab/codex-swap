@@ -1039,3 +1039,164 @@ def test_status_says_the_same_thing_from_cache_and_from_a_probe(env, capsys, mon
     cached = capsys.readouterr().out
 
     assert cached == fresh, f"캐시 경로가 다른 말을 한다\n--fresh:\n{fresh}\ncached:\n{cached}"
+
+
+# ── 비활성 계정은 갱신될 경로가 없었다 ─────────────────────────────────────
+#
+# 실기기에서 잡았다. 화면은 `~93%`, 실제는 12% 였다 — 그 계정의 주간 한도가 리셋됐는데
+# 캐시가 5 시간 전 값이었다. 세 경로가 모두 비활성 계정을 비껴간다:
+#   - `rotate` 는 활성이 첫 관문 아래면 **지름길로 끝나** 후보를 프로브하지 않는다
+#     (주중 대부분의 호출이 여기다 — 의도된 절제다)
+#   - `status --fresh` 는 **활성 계정만** 읽는다
+#   - `list` 는 프로브를 아예 안 한다 (의도)
+# 그래서 비활성 슬롯의 숫자는 며칠이고 굳는다.
+
+
+def test_list_shows_how_old_a_stale_reading_is(env, capsys) -> None:
+    """`~` 하나로는 5 분 전과 5 일 전이 구별되지 않는다.
+
+    그 둘은 신뢰도가 전혀 다르다 — 5 분 전 값은 사실상 지금 값이고, 5 일 전 값은
+    한도가 리셋됐을 수도 있는 값이다. 실제로 81%p 틀린 값을 `~` 하나로 보여줬다.
+    """
+    _cache_usage(env, "a", 93, age=5 * 3600)
+    assert cli.main(["list"]) == 0
+    row = next(ln for ln in capsys.readouterr().out.splitlines() if " a " in ln)
+    assert "~93%" in row and "5h" in row, row
+
+
+def test_list_fresh_reads_every_slot(env, capsys, monkeypatch) -> None:
+    """비활성 계정을 갱신하는 경로가 하나는 있어야 한다."""
+    seen: list[str] = []
+
+    def fake(codex_bin: str, home: str):
+        label = Path(home).name
+        seen.append(label)
+        return ProbeResult.of(Usage(used_percent=12 if label == "b" else 34))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", fake)
+    assert cli.main(["list", "--fresh"]) == 0
+    # 슬롯마다 **정확히 한 번**이다. `set()` 으로 보면 중복 호출을 못 본다.
+    assert sorted(seen) == [".codex", "b"], seen  # 활성은 기본 홈으로, 나머지는 슬롯으로
+    out = capsys.readouterr().out
+    assert "34%" in out and "12%" in out and "~" not in out, out
+
+
+def test_list_fresh_writes_what_it_read(env, capsys, monkeypatch) -> None:
+    """읽고 버리면 다음 `list` 가 다시 `?` 다."""
+    _cache_usage(env, "a", 93, age=99999)  # 낡은 값이 있어도 덮어써야 한다
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        lambda b, h: ProbeResult.of(
+            Usage(used_percent=12, plan_type="pro", resets_at=1789000000, reset_credits=3)
+        ),
+    )
+    assert cli.main(["list", "--fresh"]) == 0
+    for label in ("a", "b"):
+        entry = cache.read(env, label)
+        assert entry is not None, label
+        # 값과 딸린 필드까지 남아야 한다. `is not None` 만 보면 옛 값이 남아 있어도 통과한다.
+        assert entry["usedPercent"] == 12, (label, entry)
+        assert entry["planType"] == "pro" and entry["resetCredits"] == 3, (label, entry)
+
+
+def test_list_fresh_keeps_going_when_one_slot_fails(env, capsys, monkeypatch) -> None:
+    """한 계정이 죽었다고 나머지 숫자까지 잃으면 안 된다.
+
+    **실패하는 슬롯이 마지막이면 안 된다.** 그러면 `continue` 를 `break` 로 바꿔도
+    통과해서, 이 테스트가 지키려는 것을 지키지 못한다. 실패 **뒤에** 성공하는 슬롯이
+    있어야 계속 도는지가 드러난다.
+    """
+    _write_auth(store.slot_auth(env, "c"), "c@example.com")  # b 뒤에 하나 더
+
+    def flaky(codex_bin: str, home: str):
+        if Path(home).name == "b":
+            raise RuntimeError("boom")
+        return ProbeResult.of(Usage(used_percent=34 if Path(home).name == ".codex" else 56))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", flaky)
+    assert cli.main(["list", "--fresh"]) == 0
+    out = capsys.readouterr().out
+    assert "34%" in out, out  # 활성(a)
+    assert "56%" in out, out  # 실패한 b **뒤에** 오는 c 까지 읽었다
+    assert cache.read(env, "b") is None, "실패를 성공으로 적었다"
+
+
+def test_plain_list_still_does_not_probe(env, capsys, monkeypatch) -> None:
+    """`--fresh` 없이는 그대로 네트워크를 안 탄다. 매 호출이 싸야 한다.
+
+    프로브가 **던지게** 해서는 못 잡는다 — `refresh_all` 이 슬롯별 실패를 삼키므로,
+    `list` 가 실수로 그것을 불러도 조용히 지나가고 테스트는 통과한다. 호출 자체를
+    기록해서 **비었는지**를 본다.
+    """
+    calls: list[str] = []
+
+    def spy(codex_bin: str, home: str):
+        calls.append(home)
+        return ProbeResult.of(Usage(used_percent=1))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", spy)
+    assert cli.main(["list"]) == 0
+    assert calls == [], f"list 가 프로브했다: {calls}"
+
+
+def test_refresh_never_files_one_accounts_usage_under_another_label(env, monkeypatch) -> None:
+    """전환과 겹치면 다른 계정의 숫자를 남의 이름으로 적을 수 있었다.
+
+    `refresh_all` 은 활성 라벨을 **한 번 읽고**, 그 라벨의 차례에 기본 홈을 프로브한다.
+    그 사이에 다른 `rotate` 가 a -> b 전환을 끝내면 기본 홈은 이제 b 다. 그러면 b 의
+    사용량이 a 의 키로 캐시에 들어간다 — 그리고 `rotate` 는 그 캐시를 정책 입력으로
+    읽으므로(`_usage_of`) 후보 선택이 통째로 틀어진다.
+
+    프로브가 돌려주는 이메일이 그 라벨의 슬롯 이메일과 다르면 적지 않는다.
+    """
+
+    def switched_underneath(codex_bin: str, home: str):
+        # a 를 읽으려고 기본 홈을 열었는데, 그 사이 전환이 일어나 b 가 들어 있다.
+        if Path(home).name == ".codex":
+            return ProbeResult.of(Usage(used_percent=7, email="b@example.com"))
+        return ProbeResult.of(Usage(used_percent=50, email="b@example.com"))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", switched_underneath)
+    cli.refresh_all(env)
+    assert cache.read(env, "a") is None, "b 의 사용량이 a 이름으로 들어갔다"
+    assert (cache.read(env, "b") or {}).get("usedPercent") == 50
+
+
+def test_refresh_writes_when_the_identity_matches(env, monkeypatch) -> None:
+    """정상 경로는 그대로다. 신원 검사가 멀쩡한 갱신을 막으면 안 된다."""
+
+    def honest(codex_bin: str, home: str):
+        email = "a@example.com" if Path(home).name == ".codex" else "b@example.com"
+        return ProbeResult.of(Usage(used_percent=42, email=email))
+
+    monkeypatch.setattr("codex_swap.core.probe.probe", honest)
+    cli.refresh_all(env)
+    assert (cache.read(env, "a") or {}).get("usedPercent") == 42
+    assert (cache.read(env, "b") or {}).get("usedPercent") == 42
+
+
+def test_refresh_still_writes_when_the_probe_says_nothing_about_identity(env, monkeypatch):
+    """이메일을 안 주는 응답도 있다. 그때까지 막으면 갱신이 통째로 멈춘다."""
+    monkeypatch.setattr(
+        "codex_swap.core.probe.probe",
+        lambda b, h: ProbeResult.of(Usage(used_percent=42)),  # email=None
+    )
+    cli.refresh_all(env)
+    assert (cache.read(env, "a") or {}).get("usedPercent") == 42
+
+
+def test_list_columns_survive_a_wide_character_email(env, capsys) -> None:
+    """한글 이메일은 글자 수보다 **터미널 폭**이 크다.
+
+    `len()` 으로 칸을 재고 채우면 그 행만 뒤 열이 밀린다. TUI 는 이미 표시 폭으로
+    계산하는데(`tui._width`) `list` 는 안 하고 있었다.
+    """
+    _write_auth(store.slot_auth(env, "c"), "가나@example.com")
+    for label in ("a", "b", "c"):
+        _cache_usage(env, label, 42)
+    assert cli.main(["list"]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "@example.com" in ln]
+    assert len(lines) == 3, lines
+    # 각 행에서 사용량 값이 **몇 번째 칸에서** 시작하는가. 글자 수가 아니라 표시 폭이다.
+    starts = {cli._display_width(ln[: ln.index("42%")]) for ln in lines}
+    assert len(starts) == 1, f"USED 열이 행마다 다른 칸에서 시작한다: {starts}\n" + "\n".join(lines)
