@@ -474,6 +474,14 @@ BAR_COLS = 24
 95 가 같은 칸으로 뭉쳐 관문 표시가 뜻을 잃는다.
 """
 
+_USED_COLS = 5
+"""사용량 칸의 폭. `~100%` 가 상한이라 그 이상은 필요 없다.
+
+값을 오른쪽으로 붙였던 적이 있다 — 자릿수가 세로로 맞는 이점이 있지만, 계정이 두셋뿐인
+화면에서 그 이득은 작고 **한 열만 반대 방향으로 보이는** 대가는 매번 치른다. 칸을 값에
+맞춰 좁히면 죽은 공백도 같이 사라져서, 왼쪽 정렬로도 사용량과 바가 붙어 보인다.
+"""
+
 _LABEL_COLS = 14
 """라벨 칸의 기본 폭."""
 
@@ -515,7 +523,7 @@ def _overhead(*, with_bar: bool, with_reset: bool) -> int:
     # 쿠폰은 리셋과 **같은 티어**다. 넷 다 부가 정보이고, 둘 중 하나만 남기면 그 경계에서
     # 화면이 어정쩡해진다 — 폭이 모자라면 두 열을 같이 접는다.
     tail = _CREDIT_COLS + g + _RESET_COLS + g if with_reset else 0
-    return 3 + g + g + 6 + (BAR_COLS + g if with_bar else 0) + tail
+    return 3 + g + g + _USED_COLS + (BAR_COLS + g if with_bar else 0) + tail
 
 
 _BAR_MIN_WIDTH = _overhead(with_bar=True, with_reset=True) + _LABEL_MIN + _EMAIL_MIN
@@ -778,12 +786,12 @@ def render_screen(
 
     columns = (
         f"   {_cell('LABEL', label_cols)}{_GUTTER}"
-        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', 6, right=True)}"
+        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', _USED_COLS)}"
     )
     if with_bar:
         columns += f"{_GUTTER}{_cell('', BAR_COLS)}"
     if with_reset:
-        columns += f"{_GUTTER}{_cell('CRED', _CREDIT_COLS, right=True)}{_GUTTER}RESET"
+        columns += f"{_GUTTER}{_cell('CRED', _CREDIT_COLS)}{_GUTTER}RESET"
     header = [*head, (columns.rstrip() if not with_reset else columns, _DIM)]
 
     # ── 뷰포트 ──
@@ -794,11 +802,13 @@ def render_screen(
     axis_lines: list[tuple[str, Style]] = []
     if with_bar and any(r.percent is not None for r in view.rows):
         axis, labels = ladder_axis(s.ladder, view.current_rung)
-        pad = f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * 6}{_GUTTER}"
+        pad = (
+            f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * _USED_COLS}{_GUTTER}"
+        )
         axis_lines = [
-            # 축은 목록에 속한 행이 아니라 **바 전체에 딸린 눈금**이다. 빈 줄 없이 붙이면
-            # 마지막 계정의 한 줄처럼 읽혀서, 그 계정에만 해당하는 표시로 오해된다.
-            ("", _PLAIN),
+            # 축은 바로 위 바들의 눈금이다. 한 줄 띄웠던 적이 있는데 — 마지막 계정의 한
+            # 줄로 오해될까 봐 — 실제로 놓고 보니 떨어진 쪽이 더 어색했다. 붙어 있어야
+            # 그 관계가 보인다.
             (f"{pad}{axis}", _DIM),
             (f"{pad}{labels}{_GUTTER}{AXIS_TICK_CURRENT} = current gate", _DIM),
         ]
@@ -836,14 +846,14 @@ def render_screen(
         line = (
             f" {cursor}{mark}{_cell(row.label, label_cols, ellipsis=True)}{_GUTTER}"
             f"{_cell(row.email, email_cols, ellipsis=True)}{_GUTTER}"
-            f"{_cell(row.used, 6, right=True)}"
+            f"{_cell(row.used, _USED_COLS)}"
         )
         if with_bar:
             line += f"{_GUTTER}{usage_bar(row.percent, view.current_rung)}"
         if with_reset:
             credits = "-" if row.credits is None else str(row.credits)
             line += (
-                f"{_GUTTER}{_cell(credits, _CREDIT_COLS, right=True)}"
+                f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
                 f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
             ).rstrip()
         # **행 전체에 bold 를 걸지 않는다.** 이 터미널에서 bold 글자는 더 굵고 넓게
