@@ -122,9 +122,27 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 # 조작법은 **(키, 설명) 짝**으로 둔다. 문자열로 적어 두면 키가 어디부터 어디까지인지
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
+MENU: tuple[tuple[str, str], ...] = (
+    ("policy", "Policy settings"),
+    ("refresh", "Refresh usage"),
+    ("adopt", "Adopt the account in use"),
+    ("auto", "Toggle automatic switching"),
+    ("quit", "Quit"),
+)
+"""커서로 내려가 `enter` 로 들어가는 항목들.
+
+단축키만 두면 그 키를 외운 사람만 쓸 수 있다. 처음 여는 사람은 화면에 보이는 것을
+따라간다 — 그 길이 없으면 조작법 줄을 읽고 키를 외우는 것 말고는 방법이 없다.
+
+`(동작 이름, 표시 문자열)` 이다. 동작을 문자열로 두는 것은 `_loop` 이 키 처리와 같은
+분기로 흘려보내기 위해서다 — 같은 일을 두 벌로 구현하면 한쪽만 고쳐지는 날이 온다.
+"""
+
+
 ACCOUNT_KEYS = (
     ("^v", "move"),
-    ("enter", "switch"),
+    ("enter", "open"),
+    ("s", "switch"),
     ("r", "usage"),
     ("a", "adopt"),
     ("p", "policy"),
@@ -320,7 +338,8 @@ def build_view(
 
     return View(
         rows=tuple(rows),
-        cursor=min(max(cursor, 0), max(len(rows) - 1, 0)),
+        # 커서는 계정을 지나 메뉴까지 간다. 계정이 0 개여도 메뉴는 있다.
+        cursor=min(max(cursor, 0), max(len(rows) + len(MENU) - 1, 0)),
         settings=settings,
         message=message,
         auto_off=settings.off_switch.exists(),
@@ -474,6 +493,14 @@ BAR_COLS = 24
 95 가 같은 칸으로 뭉쳐 관문 표시가 뜻을 잃는다.
 """
 
+_USED_COLS = 5
+"""사용량 칸의 폭. `~100%` 가 상한이라 그 이상은 필요 없다.
+
+값을 오른쪽으로 붙였던 적이 있다 — 자릿수가 세로로 맞는 이점이 있지만, 계정이 두셋뿐인
+화면에서 그 이득은 작고 **한 열만 반대 방향으로 보이는** 대가는 매번 치른다. 칸을 값에
+맞춰 좁히면 죽은 공백도 같이 사라져서, 왼쪽 정렬로도 사용량과 바가 붙어 보인다.
+"""
+
 _LABEL_COLS = 14
 """라벨 칸의 기본 폭."""
 
@@ -515,7 +542,7 @@ def _overhead(*, with_bar: bool, with_reset: bool) -> int:
     # 쿠폰은 리셋과 **같은 티어**다. 넷 다 부가 정보이고, 둘 중 하나만 남기면 그 경계에서
     # 화면이 어정쩡해진다 — 폭이 모자라면 두 열을 같이 접는다.
     tail = _CREDIT_COLS + g + _RESET_COLS + g if with_reset else 0
-    return 3 + g + g + 6 + (BAR_COLS + g if with_bar else 0) + tail
+    return 3 + g + g + _USED_COLS + (BAR_COLS + g if with_bar else 0) + tail
 
 
 _BAR_MIN_WIDTH = _overhead(with_bar=True, with_reset=True) + _LABEL_MIN + _EMAIL_MIN
@@ -650,6 +677,26 @@ def ladder_axis(ladder: Sequence[int], rung: int | None) -> tuple[str, str]:
     return "".join(axis), "".join(labels)
 
 
+def cursor_limit(view: View) -> int:
+    """커서가 갈 수 있는 마지막 자리. 계정 다음에 메뉴가 이어진다."""
+    return max(len(view.rows) + len(MENU) - 1, 0)
+
+
+def selected_row(view: View) -> Row | None:
+    """커서가 계정 위에 있으면 그 행. 메뉴 위면 None."""
+    if 0 <= view.cursor < len(view.rows):
+        return view.rows[view.cursor]
+    return None
+
+
+def selected_menu(view: View) -> str | None:
+    """커서가 메뉴 위에 있으면 그 동작 이름. 계정 위면 None."""
+    i = view.cursor - len(view.rows)
+    if 0 <= i < len(MENU):
+        return MENU[i][0]
+    return None
+
+
 def _row_tone(row: Row, view: View) -> str:
     """행의 색. 임의 구간이 아니라 **사다리**에 묶는다.
 
@@ -778,12 +825,12 @@ def render_screen(
 
     columns = (
         f"   {_cell('LABEL', label_cols)}{_GUTTER}"
-        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', 6, right=True)}"
+        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', _USED_COLS)}"
     )
     if with_bar:
         columns += f"{_GUTTER}{_cell('', BAR_COLS)}"
     if with_reset:
-        columns += f"{_GUTTER}{_cell('CRED', _CREDIT_COLS, right=True)}{_GUTTER}RESET"
+        columns += f"{_GUTTER}{_cell('CRED', _CREDIT_COLS)}{_GUTTER}RESET"
     header = [*head, (columns.rstrip() if not with_reset else columns, _DIM)]
 
     # ── 뷰포트 ──
@@ -794,11 +841,13 @@ def render_screen(
     axis_lines: list[tuple[str, Style]] = []
     if with_bar and any(r.percent is not None for r in view.rows):
         axis, labels = ladder_axis(s.ladder, view.current_rung)
-        pad = f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * 6}{_GUTTER}"
+        pad = (
+            f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * _USED_COLS}{_GUTTER}"
+        )
         axis_lines = [
-            # 축은 목록에 속한 행이 아니라 **바 전체에 딸린 눈금**이다. 빈 줄 없이 붙이면
-            # 마지막 계정의 한 줄처럼 읽혀서, 그 계정에만 해당하는 표시로 오해된다.
-            ("", _PLAIN),
+            # 축은 바로 위 바들의 눈금이다. 한 줄 띄웠던 적이 있는데 — 마지막 계정의 한
+            # 줄로 오해될까 봐 — 실제로 놓고 보니 떨어진 쪽이 더 어색했다. 붙어 있어야
+            # 그 관계가 보인다.
             (f"{pad}{axis}", _DIM),
             (f"{pad}{labels}{_GUTTER}{AXIS_TICK_CURRENT} = current gate", _DIM),
         ]
@@ -821,7 +870,8 @@ def render_screen(
         # 스크롤 표시가 붙을 수 있으므로 두 줄을 미리 뗀다.
         if len(rows) > budget:
             budget = max(budget - 2, 1)
-            start = min(max(0, view.cursor - budget // 2), len(rows) - budget)
+            at = min(view.cursor, len(rows) - 1)
+            start = min(max(0, at - budget // 2), len(rows) - budget)
             rows = rows[start : start + budget]
 
     hidden_above = start
@@ -831,19 +881,19 @@ def render_screen(
     if hidden_above:
         body.append((f"   ^ {hidden_above} more", _DIM))
     for i, row in enumerate(rows, start=start):
-        cursor = ">" if i == view.cursor else " "
+        cursor = ">" if i == view.cursor and selected_row(view) is not None else " "
         mark = "*" if row.active else " "
         line = (
             f" {cursor}{mark}{_cell(row.label, label_cols, ellipsis=True)}{_GUTTER}"
             f"{_cell(row.email, email_cols, ellipsis=True)}{_GUTTER}"
-            f"{_cell(row.used, 6, right=True)}"
+            f"{_cell(row.used, _USED_COLS)}"
         )
         if with_bar:
             line += f"{_GUTTER}{usage_bar(row.percent, view.current_rung)}"
         if with_reset:
             credits = "-" if row.credits is None else str(row.credits)
             line += (
-                f"{_GUTTER}{_cell(credits, _CREDIT_COLS, right=True)}"
+                f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
                 f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
             ).rstrip()
         # **행 전체에 bold 를 걸지 않는다.** 이 터미널에서 bold 글자는 더 굵고 넓게
@@ -854,7 +904,7 @@ def render_screen(
         spans = []
         # 커서는 `>` 한 글자에만 색을 준다. 이 표시가 눈에 안 띄면 enter 가 **어느 행**을
         # 전환하는지 확신할 수 없다 — 자격증명을 바꾸는 키라 그 불확실함의 대가가 크다.
-        if i == view.cursor:
+        if i == view.cursor and selected_row(view) is not None:
             spans.append((1, 2, _KEY_STYLE))
         # 활성 행은 `*` 와 라벨을 굵게. 행의 색은 유지한다 — 여기서 tone 을 떨어뜨리면
         # 하필 소진된(danger) 계정이 활성일 때 그 경고색이 라벨에서만 사라진다.
@@ -864,6 +914,19 @@ def render_screen(
     if hidden_below:
         body.append((f"   v {hidden_below} more", _DIM))
     body += axis_lines
+
+    # 메뉴. 커서가 계정 구간을 지나면 여기로 이어진다.
+    menu_lines: list[tuple[str, Style]] = [("", _PLAIN)]
+    for i, (_, title) in enumerate(MENU):
+        picked = view.cursor - len(view.rows) == i
+        line = (
+            _clip(f" {'>' if picked else ' '} {title}", width)
+            if width
+            else f" {'>' if picked else ' '} {title}"
+        )
+        spans = ((1, 2, _KEY_STYLE),) if picked else ()
+        menu_lines.append((line, Style("plain" if picked else "dim", spans=spans)))
+    body += menu_lines
 
     # 최종 클램프. 아주 짧은 화면에서는 스크롤 표시까지 합한 바닥(머리말 3 + 표시 2 +
     # 행 1 + 메시지 2 = 8)이 화면보다 클 수 있다. 그때는 **본문**을 자른다 — 꼬리말을
@@ -942,7 +1005,10 @@ def do_switch(view: View) -> View:
     """
     if not view.rows:
         return replace(view, message="No accounts yet")
-    target = view.rows[view.cursor]
+    target = selected_row(view)
+    if target is None:
+        # 커서가 메뉴 위다. 조용히 무시하면 키가 죽은 줄 안다.
+        return replace(view, message="Move to an account first, then press s")
     try:
         current = store.active_label(view.settings)
     except OSError as exc:
@@ -1072,7 +1138,8 @@ def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
         msg = f"Could not read usage for {', '.join(failed)} (r to retry)"
     else:
         msg = f"Probe failed: {', '.join(failed)}"
-    select = view.rows[view.cursor].label if view.rows else None
+    picked = selected_row(view)
+    select = picked.label if picked is not None else None
     return build_view(s, select=select, message=msg, carry=_carry(view))
 
 
@@ -1090,10 +1157,35 @@ def auto_probe_targets(view: View, attempted: Collection[str] = ()) -> tuple[str
     return tuple(r.label for r in view.rows if not r.known and r.label not in seen)
 
 
+def activate(view: View) -> View:
+    """`enter`. **순수하게 끝낼 수 있는 것만** 여기서 한다.
+
+    계정 위에서는 전환하지 않는다. 전환은 `s` 다 — 그렇게 가른 이유는 `enter` 를
+    "들어간다" 하나로 두기 위해서다. 한 키가 자리에 따라 "화면을 연다" 와 "자격증명을
+    바꾼다" 를 오가면, 커서가 어디 있는지 잘못 본 순간의 대가가 너무 크다. 다만 조용히
+    아무 일도 안 하면 키가 죽은 줄 아니 무엇을 눌러야 하는지 말해 준다.
+
+    `refresh`·`adopt`·`quit` 는 프로브·프롬프트·루프 종료가 걸려 순수 함수로 끝낼 수
+    없다. `_loop` 이 **이 함수를 부르기 전에** 가로챈다 — 분기를 두 벌로 두지 않으려고
+    양쪽 다 `selected_menu` 하나를 본다.
+    """
+    action = selected_menu(view)
+    if action is None:
+        return replace(view, message="Press s to switch to this account")
+    if action == "policy":
+        return replace(
+            view, mode="policy", policy_cursor=0, saved_settings=view.settings, message=""
+        )
+    if action == "auto":
+        return do_toggle_auto(view)
+    return view
+
+
 def do_toggle_auto(view: View) -> View:
     """자동 전환 on/off. off-switch 파일 하나가 그 스위치다 — bash 와 같은 파일이다."""
     sw = view.settings.off_switch
-    select = view.rows[view.cursor].label if view.rows else None
+    picked = selected_row(view)
+    select = picked.label if picked is not None else None
     try:
         if sw.exists():
             sw.unlink()
@@ -1416,7 +1508,8 @@ def apply_probe_result(view: View, message: str) -> View:
     """
     if view.mode != "accounts":
         return replace(view, message=message)
-    here = view.rows[view.cursor].label if view.rows else None
+    picked = selected_row(view)
+    here = picked.label if picked is not None else None
     return build_view(view.settings, select=here, message=message, carry=_carry(view))
 
 
@@ -1535,10 +1628,26 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
         elif key == curses.KEY_DOWN:
             view = build_view(
                 settings,
-                cursor=min(max(len(view.rows) - 1, 0), view.cursor + 1),
+                cursor=min(cursor_limit(view), view.cursor + 1),
                 carry=_carry(view),
             )
         elif key in (curses.KEY_ENTER, 10, 13):
+            # `enter` 는 **들어간다** 하나다. 순수하게 끝나는 것은 `activate` 가 하고,
+            # 프로브·프롬프트·종료가 걸린 것만 여기서 가로챈다 — 분기를 두 벌로 두지
+            # 않으려고 양쪽 다 `selected_menu` 하나를 본다.
+            action = selected_menu(view)
+            if action == "quit":
+                return
+            if action == "refresh":
+                attempted.clear()
+                if not prober.start(settings, [r.label for r in view.rows]):
+                    view = replace(view, message="Already probing")
+            elif action == "adopt":
+                view = do_adopt(view, _prompt(stdscr, "Slot name: "))
+            else:
+                view = activate(view)
+            curses.flushinp()
+        elif key in (ord("s"), ord("S")):
             # 전환은 캐시를 파일째 비운다. `carry` 가 직전 숫자를 이어받지만 그것도
             # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 배경에서 채운다.
             view = do_switch(view)

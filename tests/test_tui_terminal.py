@@ -269,3 +269,45 @@ def test_a_colourless_terminal_still_works(tmp_path: Path, term: str) -> None:
     s.cache("master", 58)
     screen = s.run([b"q"])
     assert screen.exit_code == 0
+
+
+# ── 회귀 5: 방향키로 들어가는 길 ────────────────────────────────────────────
+#
+# 키 배치를 바꿨다 — `enter` 는 "들어간다", 전환은 `s`. `_loop` 은 `pragma: no cover` 라
+# 단위 테스트가 닿지 않으므로 여기서 실제 키를 눌러 본다.
+
+
+def test_enter_no_longer_switches(session: Session) -> None:
+    """가장 위험한 회귀다. `enter` 가 아직 전환하면 자격증명이 의도 없이 바뀐다."""
+    screen = session.run([b"\n", b"q"])
+    assert screen.exit_code == 0
+    assert "Press s to switch" in screen.text, screen.text
+    # 활성 계정이 그대로다 — `*` 가 master 줄에 있어야 한다.
+    assert "*master" in screen.text.replace(" *master", "*master"), screen.row("master")
+
+
+def test_s_switches(session: Session) -> None:
+    screen = session.run([b"\x1bOB", b"s", b"q"])  # 아래로 한 칸 → shared → s
+    assert screen.exit_code == 0
+    assert "Switched to shared" in screen.text, screen.text
+
+
+def test_arrowing_into_the_menu_and_entering_opens_the_policy_screen(session: Session) -> None:
+    """계정을 지나 메뉴 첫 항목까지 내려가 `enter`."""
+    down = [b"\x1bOB"] * 2  # 계정 2 개를 지나면 메뉴 첫 항목
+    screen = session.run([*down, b"\n"])
+    assert "codex-swap · policy" in screen.text, screen.text
+
+
+def test_the_menu_quit_item_ends_the_session(session: Session) -> None:
+    down = [b"\x1bOB"] * (2 + 4)  # 계정 2 + 메뉴 마지막(Quit) 까지
+    screen = session.run([*down, b"\n"], total=25.0)
+    assert screen.exit_code == 0
+
+
+def test_s_on_the_menu_does_not_switch(session: Session) -> None:
+    """커서가 메뉴에 있을 때 `s` 는 아무것도 바꾸지 않고 말해 준다."""
+    screen = session.run([b"\x1bOB", b"\x1bOB", b"s", b"q"])
+    assert screen.exit_code == 0
+    assert "Move to an account first" in screen.text, screen.text
+    assert "Switched to" not in screen.text, screen.text

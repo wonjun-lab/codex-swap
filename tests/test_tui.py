@@ -73,8 +73,10 @@ def test_the_cursor_moves_and_is_visible(env) -> None:
 
 
 def test_the_cursor_cannot_run_past_the_list(env) -> None:
+    """계정 다음에 메뉴가 이어지므로 클램프는 그 끝이다."""
     view = tui.build_view(env, cursor=99)
-    assert view.cursor == len(view.rows) - 1
+    assert view.cursor == tui.cursor_limit(view)
+    assert tui.selected_menu(view) == tui.MENU[-1][0]
 
 
 def test_an_empty_store_says_what_to_do(tmp_path, monkeypatch) -> None:
@@ -1004,26 +1006,6 @@ def test_the_last_gate_number_still_fits(env) -> None:
         assert str(step) in labels, (step, labels)
 
 
-def test_the_axis_is_set_apart_from_the_last_account(env) -> None:
-    """축은 목록의 행이 아니라 **바 전체에 딸린 눈금**이다.
-
-    빈 줄 없이 붙이면 마지막 계정의 한 줄처럼 읽혀서, 그 계정에만 해당하는 표시로
-    오해된다 — 실제로는 모든 행에 같이 걸리는 축이다.
-    """
-    rows = (
-        tui.Row("a", "a@x", "58%", "-", True, percent=58),
-        tui.Row("b", "b@x", "70%", "-", False, percent=70),
-    )
-    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    lines = tui.render_lines(view, width=140)
-    axis_at = next(i for i, ln in enumerate(lines) if tui.AXIS_TICK_CURRENT in ln)
-    assert lines[axis_at - 1].strip() == "", lines[axis_at - 2 : axis_at + 1]
-    assert "b@x" in lines[axis_at - 2], "빈 줄이 목록 안쪽으로 들어갔다"
-
-
-# ── 칼럼 간격 ───────────────────────────────────────────────────────────────
-
-
 def test_columns_are_separated_by_the_same_gutter(env) -> None:
     """한 칸이면 `USED`·바·`RESET` 이 서로 붙어 읽힌다."""
     rows = (tui.Row("a", "a@x", "70%", "09-13 02:00", True, percent=70, credits=1),)
@@ -1031,29 +1013,29 @@ def test_columns_are_separated_by_the_same_gutter(env) -> None:
     body = next(line for line in tui.render_lines(view, width=140) if line.startswith(" >"))
     bar = tui.usage_bar(70, 70)
     assert f"{tui._GUTTER}{bar}{tui._GUTTER}" in body, body
-    # 사용량은 오른쪽으로 붙으므로 값 바로 뒤가 곧 간격이다. 왼쪽으로 붙이던 때는 짧은
-    # 값 뒤의 죽은 공백이 간격에 더해져 이 열만 다섯 칸 떨어져 보였다.
-    assert f"70%{tui._GUTTER}{bar}" in body, "사용량 열과 다음 열 사이 간격이 다르다"
+    # 사용량 칸은 `~100%` 상한에 맞춘 5 칸이라, `70%` 뒤의 남는 자리는 두 칸이다.
+    # 그 뒤에 간격이 붙는다. 칸을 넓게 잡으면 이 열만 멀어 보인다.
+    assert f"70%  {tui._GUTTER}{bar}" in body, f"사용량 열과 다음 열 사이 간격이 다르다: {body!r}"
 
 
-def test_numbers_line_up_on_their_last_digit(env) -> None:
-    """`58%` 와 `~70%` 를 왼쪽으로 붙이면 낡음 표시 한 글자가 두 숫자를 어긋내 놓는다.
+def test_the_used_column_does_not_leave_dead_space(env) -> None:
+    """자릿수 정렬(오른쪽 붙임)을 **되돌린 자리**다.
 
-    표에서 위아래로 읽는 열은 사용량 하나뿐이라, 그 어긋남의 대가가 가장 크다.
+    한때 이 열만 오른쪽으로 붙였다. `58%` 와 `~70%` 의 `%` 가 세로로 맞는 이점이 있었지만,
+    표에서 한 열만 반대 방향이라 어긋나 보였다. 계정이 두셋뿐인 화면에서 자릿수 정렬의
+    이득은 작고 그 인상은 매번 치른다.
+
+    대신 칸을 값의 상한(`~100%` = 5)에 맞춰 좁혔다. 왼쪽 정렬로도 죽은 공백이 남지
+    않으므로, 오른쪽 붙임이 풀려던 문제가 애초에 생기지 않는다.
     """
     rows = (
         tui.Row("a", "a@x", "58%", "-", True, percent=58),
-        tui.Row("b", "b@x", "~70%", "-", False, percent=70, stale=True),
-        tui.Row("c", "c@x", "?", "-", False, known=False),
+        tui.Row("b", "b@x", "~100%", "-", False, percent=100, stale=True),
     )
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    lines = [ln for ln in tui.render_lines(view, width=140) if ln.startswith((" >", "  "))]
-    body = [ln for ln in lines if any(ln.lstrip(" >*").startswith(x) for x in "abc")]
-    assert len(body) == 3, body
-    assert body[0].index("58%") + 3 == body[1].index("~70%") + 4 == body[2].index("?") + 1
-
-
-# ── 리셋 쿠폰 ───────────────────────────────────────────────────────────────
+    body = [ln for ln in tui.render_lines(view, width=140) if "@x" in ln]
+    # 가장 긴 값이 칸을 꽉 채운다 = 칸이 그보다 넓지 않다.
+    assert "~100%" + tui._GUTTER in body[1], body[1]
 
 
 def test_the_coupon_count_is_shown_and_carried(env) -> None:
@@ -1242,3 +1224,118 @@ def test_a_finished_probe_does_refresh_the_account_screen(env) -> None:
     assert next(r for r in after.rows if r.label == "master").used == "77%"
     # 커서는 지킨다. 조회가 끝날 때마다 커서가 튀면 enter 가 엉뚱한 계정을 고른다.
     assert after.rows[after.cursor].label == before.rows[1].label
+
+
+# ── 축은 바에 붙는다 ────────────────────────────────────────────────────────
+
+
+def test_the_axis_sits_directly_under_the_bars(env) -> None:
+    """빈 줄로 떼어 놓으면 표와 축이 별개의 것처럼 읽힌다.
+
+    앞서는 반대로 판단했다 — 축이 마지막 계정의 한 줄로 오해될까 봐 한 줄 띄웠다.
+    실제로 놓고 보니 떨어진 쪽이 더 어색했다. 축은 바로 위 바들의 눈금이고, 붙어 있어야
+    그 관계가 보인다.
+    """
+    rows = (
+        tui.Row("a", "a@x", "58%", "-", True, percent=58),
+        tui.Row("b", "b@x", "70%", "-", False, percent=70),
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    lines = tui.render_lines(view, width=140)
+    axis_at = next(i for i, ln in enumerate(lines) if tui.AXIS_TICK_CURRENT in ln)
+    assert "b@x" in lines[axis_at - 1], lines[axis_at - 2 : axis_at + 1]
+
+
+# ── 열 정렬은 한 방향이다 ──────────────────────────────────────────────────
+
+
+def test_every_column_is_left_aligned(env) -> None:
+    """숫자만 오른쪽으로 붙이면 한 열만 반대로 보인다.
+
+    자릿수 정렬이라는 이점이 있지만, 계정이 두셋뿐인 화면에서 그 이득은 작고 어긋나
+    보이는 대가는 매번 치른다. 칸을 값에 맞춰 좁히면 죽은 공백도 같이 사라진다.
+    """
+    rows = (
+        tui.Row("a", "a@x", "58%", "-", True, percent=58),
+        tui.Row("b", "b@x", "~100%", "-", False, percent=100, stale=True, credits=2),
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
+    lines = tui.render_lines(view, width=140)
+    header = next(ln for ln in lines if "USED" in ln)
+    body = [ln for ln in lines if ln.startswith((" >", "  ")) and "@x" in ln]
+    # 값이 각 칸의 **왼쪽 끝**에서 시작한다 = 머리말과 같은 열에서 시작한다.
+    used_at = header.index("USED")
+    for ln in body:
+        assert ln[used_at] not in " ", f"USED 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
+    cred_at = header.index("CRED")
+    assert body[1][cred_at] == "2", body[1]
+
+
+# ── 방향키로 들어가는 길 ────────────────────────────────────────────────────
+#
+# 단축키만으로 화면을 옮기면 그 키를 외운 사람만 쓸 수 있다. 커서를 계정 아래 **메뉴**
+# 까지 내려 `enter` 로 들어가는 길을 함께 둔다. 그러면 `enter` 가 하던 "전환" 과 겹치므로
+# 전환은 `s` 로 옮긴다.
+
+
+def _view(env, cursor: int = 0) -> tui.View:
+    rows = (
+        tui.Row("a", "a@x", "58%", "-", True, percent=58),
+        tui.Row("b", "b@x", "70%", "-", False, percent=70),
+    )
+    return tui.View(rows=rows, cursor=cursor, settings=env, current_rung=70)
+
+
+def test_the_cursor_runs_past_the_accounts_into_a_menu(env) -> None:
+    view = _view(env)
+    assert tui.cursor_limit(view) == len(view.rows) + len(tui.MENU) - 1
+    # 계정 구간
+    assert tui.selected_row(_view(env, 0)).label == "a"
+    assert tui.selected_menu(_view(env, 0)) is None
+    # 메뉴 구간
+    assert tui.selected_row(_view(env, len(view.rows))) is None
+    assert tui.selected_menu(_view(env, len(view.rows))) == tui.MENU[0][0]
+
+
+def test_the_menu_is_drawn_and_the_cursor_shows_where_it_is(env) -> None:
+    lines = tui.render_lines(_view(env, cursor=2), width=140)
+    menu = [ln for ln in lines if any(t in ln for _, t in tui.MENU)]
+    assert len(menu) == len(tui.MENU), lines
+    marked = [ln for ln in menu if ln.startswith(" >")]
+    assert len(marked) == 1 and tui.MENU[0][1] in marked[0], menu
+    # 계정에 커서가 있을 때는 메뉴에 표시가 없다.
+    on_account = tui.render_lines(_view(env, cursor=0), width=140)
+    assert not [ln for ln in on_account if ln.startswith(" >") and "Policy" in ln]
+
+
+def test_enter_on_a_menu_item_goes_in(env) -> None:
+    after = tui.activate(_view(env, cursor=2))
+    assert after.mode == "policy"
+
+
+def test_enter_on_an_account_does_not_switch_but_says_what_does(env) -> None:
+    """전환은 `s` 다. 조용히 아무 일도 안 하면 사용자는 키가 죽은 줄 안다."""
+    before = _view(env, cursor=1)
+    after = tui.activate(before)
+    assert after.mode == "accounts"
+    assert "s" in after.message and "switch" in after.message.lower(), after.message
+
+
+def test_s_still_switches(env) -> None:
+    view = _view(env, cursor=1)
+    assert tui.selected_row(view) is not None
+    # `do_switch` 는 커서 행을 쓴다 — 그 계약이 살아 있어야 `s` 가 붙는다.
+    assert tui.selected_row(view).label == "b"
+
+
+def test_s_on_a_menu_row_is_refused_gently(env) -> None:
+    view = _view(env, cursor=2)
+    after = tui.do_switch(view)
+    assert after.mode == "accounts"
+    assert after.message, "아무 말 없이 무시하면 키가 죽은 줄 안다"
+
+
+def test_the_key_line_teaches_the_new_layout(env) -> None:
+    text, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=140)
+    assert "s switch" in text, text
+    assert "enter open" in text, text
