@@ -1010,3 +1010,32 @@ def test_list_does_not_declare_exhaustion_it_cannot_see(env, capsys) -> None:
     out = capsys.readouterr().out
     assert "?" in out
     assert "every account" not in out, out
+
+
+def test_status_says_the_same_thing_from_cache_and_from_a_probe(env, capsys, monkeypatch) -> None:
+    """같은 계정인데 캐시 경로와 `--fresh` 경로가 다른 말을 하면 안 된다.
+
+    실기기에서 잡았다: `list` 는 크레딧 2 라는데 `status` 는 `-` 였다. `cache.write` 는
+    `resetCredits` 를 저장하는데 `_usage_from_cache` 가 그것을 **읽지 않아서**, 캐시
+    히트일 때만 값이 사라졌다. 표시를 하나 더할 때 그 값이 오는 두 경로를 다 보지 않으면
+    이런 것이 남는다.
+
+    필드 하나를 콕 집어 보는 대신 두 경로의 출력을 통째로 견준다 — 다음에 필드를 더할
+    때도 같은 실수를 잡는다.
+    """
+    usage = Usage(
+        used_percent=77,
+        plan_type="pro",
+        primary_percent=77,
+        resets_at=1789000000,
+        reset_credits=2,
+    )
+    monkeypatch.setattr("codex_swap.core.probe.probe", _probe_recorder(ProbeResult.of(usage), []))
+
+    assert cli.main(["status", "--fresh"]) == 0
+    fresh = capsys.readouterr().out
+
+    assert cli.main(["status"]) == 0  # 이제 캐시가 채워져 있다
+    cached = capsys.readouterr().out
+
+    assert cached == fresh, f"캐시 경로가 다른 말을 한다\n--fresh:\n{fresh}\ncached:\n{cached}"
