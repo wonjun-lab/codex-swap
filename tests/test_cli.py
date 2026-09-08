@@ -733,3 +733,106 @@ def test_adopt_says_the_plain_thing_when_codex_home_is_not_involved(env, capsys)
     assert cli.main(["adopt", "fresh"]) == 1
     err = capsys.readouterr().err
     assert "not logged in" in err and "CODEX_ACCOUNT_DEFAULT_HOME" not in err, err
+
+
+# ── 슬롯 수명주기: 이름 바꾸기 · 다시 로그인 · 지우기 확인 ─────────────────
+#
+# 셋 다 "없어서 도구가 고장 나지는 않지만, 없으면 파괴적인 우회로밖에 없는" 자리다.
+
+
+def test_rename_moves_the_slot_and_keeps_the_credentials(env, capsys) -> None:
+    """이름을 바꾸려면 지금까지 `use` -> `adopt` -> `remove` 를 거쳐야 했다.
+
+    비활성 계정은 그 우회로도 안 되고 손으로 `mv` 하는 수밖에 없었다. 파괴적 명령을
+    이름 바꾸기의 필수 단계로 두면 안 된다.
+    """
+    assert cli.main(["rename", "b", "personal"]) == 0
+    assert identity.email_of(store.slot_auth(env, "personal")) == "b@example.com"
+    assert not store.slot_dir(env, "b").exists()
+    assert "personal" in capsys.readouterr().out
+
+
+def test_rename_refuses_to_land_on_an_existing_label(env, capsys) -> None:
+    """덮어쓰면 그 계정의 보관본이 사라진다 — `adopt` 와 같은 종류의 손실이다."""
+    assert cli.main(["rename", "b", "a"]) == 1
+    assert identity.email_of(store.slot_auth(env, "a")) == "a@example.com"
+    assert identity.email_of(store.slot_auth(env, "b")) == "b@example.com"
+    assert "already exists" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["../evil", ".hidden", "a/b", ""])
+def test_rename_validates_both_names(env, capsys, bad: str) -> None:
+    assert cli.main(["rename", "a", bad]) == 1
+    assert cli.main(["rename", bad, "fresh"]) == 1
+    assert store.slot_dir(env, "a").is_dir()
+
+
+def test_rename_forgets_the_cached_usage(env) -> None:
+    """캐시는 라벨로 색인된다. 옛 이름에 남으면 `remove` 때와 같은 오염이 생긴다."""
+    _cache_usage(env, "b", 40)
+    assert cli.main(["rename", "b", "personal"]) == 0
+    assert cache.read_stale(env, "b") is None
+
+
+def test_rename_keeps_working_for_the_active_account(env) -> None:
+    """활성 판정은 이메일로 하므로 이름이 바뀌어도 표식과 실제가 어긋나지 않는다."""
+    assert cli.main(["rename", "a", "primary"]) == 0
+    assert store.active_label(env) == "primary"
+
+
+def test_add_force_replaces_a_rotten_slot_without_removing_it_first(env, capsys) -> None:
+    """오래 안 쓴 슬롯은 토큰이 만료된다. 고치려면 `remove` 를 **먼저** 해야 했다.
+
+    즉 되돌릴 수 없는 삭제를 하고 나서, 실패할 수 있는 브라우저 로그인을 시도하는
+    순서였다. 로그인이 실패하면 아무것도 남지 않는다.
+    """
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def runner(argv, env_):
+        calls.append((argv, env_))
+        _write_auth(store.slot_auth(env, "b"), "renewed@example.com")
+        return 0
+
+    assert cli.cmd_add(env, "b", force=True, runner=runner) == 0
+    assert len(calls) == 1
+    assert identity.email_of(store.slot_auth(env, "b")) == "renewed@example.com"
+
+
+def test_add_without_force_still_refuses_an_existing_label(env, capsys) -> None:
+    assert cli.main(["add", "b"]) == 1
+    err = capsys.readouterr().err
+    assert "already exists" in err and "--force" in err, err
+
+
+def test_remove_asks_before_deleting_when_a_person_is_watching(env, capsys, monkeypatch) -> None:
+    """자격증명 삭제는 되돌릴 수 없다. 사람이 보고 있으면 한 번 묻는다."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert cli.main(["remove", "b"]) == 1
+    assert store.slot_auth(env, "b").is_file(), "거절했는데 지웠다"
+    assert "b@example.com" in capsys.readouterr().out
+
+
+def test_remove_proceeds_when_you_say_yes(env, capsys, monkeypatch) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert cli.main(["remove", "b"]) == 0
+    assert not store.slot_dir(env, "b").exists()
+
+
+def test_remove_yes_skips_the_question(env, capsys, monkeypatch) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda _: (_ for _ in ()).throw(AssertionError("--yes 인데 물었다"))
+    )
+    assert cli.main(["remove", "--yes", "b"]) == 0
+    assert not store.slot_dir(env, "b").exists()
+
+
+def test_remove_does_not_ask_a_script(env, capsys, monkeypatch) -> None:
+    """파이프 뒤에서 물으면 영영 안 끝난다. 물을 수 없으면 묻지 않는다."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(
+        "builtins.input", lambda _: (_ for _ in ()).throw(AssertionError("tty 가 아닌데 물었다"))
+    )
+    assert cli.main(["remove", "b"]) == 0
