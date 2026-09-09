@@ -217,6 +217,13 @@ def load(environ: dict[str, str] | None = None) -> Settings:
     훅 · `codex-swap` 직접 호출)에서 **새로** 유효해진다. 그건 이관이 아니라 동작
     변경이다 (설계문 §6.1.1).
     """
+    # **인자는 덮어쓰기가 아니라 병합이다.** `load({})` 는 격리가 아니라 무동작이고,
+    # `load({"X": "1"})` 은 그 값을 **프로세스에 영구히** 남긴다. 테스트가 이것을 격리로
+    # 믿었다가 개발자 기기의 `~/.codex/accounts/config.json` 을 읽었다 — 사다리를 바꿔 둔
+    # 기기에서 코드는 그대로인데 테스트가 빨개졌다.
+    #
+    # 시그니처를 그대로 두는 것은 호출부가 테스트 둘뿐이고, 진짜 격리는 `tests/conftest.py`
+    # 의 autouse 픽스처가 하기 때문이다. 여기서 할 일은 그 함정을 적어 두는 것이다.
     if environ is not None:
         os.environ.update(environ)
 

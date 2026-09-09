@@ -1670,20 +1670,32 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             continue
 
         if view.mode == "policy":
-            if key == 27:  # esc — 편집을 버린다
-                view = build_view(
-                    config.load(),
-                    cursor=view.cursor,
-                    message="Left without saving",
-                    carry=_carry(view),
-                )
+            if key == 27:  # esc — 편집을 버린다 (남아 있으면 한 번 묻는다)
+                asked = leave_policy(view)
+                if asked.mode == "policy":
+                    view = asked  # 아직 안 나간다 — 확인을 물었다
+                else:
+                    view = build_view(
+                        config.load(),
+                        cursor=view.cursor,
+                        message="Left without saving",
+                        carry=_carry(view),
+                    )
             elif key == curses.KEY_UP:
-                view = replace(view, policy_cursor=max(0, view.policy_cursor - 1), message="")
+                # 커서를 옮기면 "버릴까요" 가 풀린다. 물어본 것을 잊고 나중에 누른 esc 가
+                # 곧바로 버리면 묻는 의미가 없다.
+                view = replace(
+                    view,
+                    policy_cursor=max(0, view.policy_cursor - 1),
+                    message="",
+                    discard_armed=False,
+                )
             elif key == curses.KEY_DOWN:
                 view = replace(
                     view,
                     policy_cursor=min(len(POLICY_FIELDS) - 1, view.policy_cursor + 1),
                     message="",
+                    discard_armed=False,
                 )
             elif key == curses.KEY_LEFT:
                 view = adjust_policy(view, -1)

@@ -127,7 +127,11 @@ def test_a_typed_ladder_shows_up_on_the_policy_screen(session: Session) -> None:
 
 
 def test_esc_leaves_the_policy_screen_without_saving(session: Session) -> None:
-    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b", b"q"])
+    """편집이 남아 있으면 **한 번 묻고**, 두 번째 esc 에 버린다.
+
+    한 번에 버리던 때는 그것이 조용해서, 사용자가 "닫기" 로 읽고 저장이 됐다고 믿었다.
+    """
+    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b", b"\x1b", b"q"])
     assert screen.exit_code == 0
     assert "Left without saving" in screen.text
     assert not (session.accounts / "config.json").exists(), "esc 인데 저장됐다"
@@ -311,3 +315,42 @@ def test_s_on_the_menu_does_not_switch(session: Session) -> None:
     assert screen.exit_code == 0
     assert "Move to an account first" in screen.text, screen.text
     assert "Switched to" not in screen.text, screen.text
+
+
+# ── 회귀 6: 프롬프트가 화면 맨 아래에 떴다 ──────────────────────────────────
+
+
+def test_the_prompt_sits_right_under_the_content(session: Session) -> None:
+    """터미널이 크고 내용이 짧으면 입력줄이 표에서 한참 떨어진 곳에 떴다.
+
+    방금 누른 키와 그 반응이 화면 양 끝에 갈라져 있으면 무엇을 묻는 것인지 읽히지
+    않는다. `_paint` 가 그린 줄 수를 돌려주고 그 바로 아래에 그린다.
+    """
+    screen = session.run([b"a"], rows=40, settle=0.8)
+    filled = [i for i, ln in enumerate(screen.lines) if ln.strip()]
+    prompt_at = next(i for i, ln in enumerate(screen.lines) if "Keep " in ln)
+    body_end = max(i for i in filled if i != prompt_at)
+    assert prompt_at - body_end <= 2, (
+        f"프롬프트가 내용에서 {prompt_at - body_end} 줄 떨어져 있다\n" + screen.text
+    )
+    assert prompt_at < 39, "터미널 맨 아래에 그렸다"
+
+
+def test_the_prompt_says_which_account_it_will_keep(session: Session) -> None:
+    """`Slot name:` 만으로는 무엇에 이름을 붙이는지 화면 어디에도 없다."""
+    screen = session.run([b"a"], settle=0.8)
+    assert "Keep a@example.com as:" in screen.text, screen.text
+
+
+def test_esc_asks_before_discarding_an_edit(session: Session) -> None:
+    """편집이 사라지는 것이 조용하면 사용자는 저장이 됐다고 믿는다."""
+    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b"])
+    assert "Unsaved changes" in screen.text, screen.text
+    assert "codex-swap · policy" in screen.text, "물어보지도 않고 나갔다"
+    assert "33,66,88" in screen.text, "편집이 사라졌다"
+
+
+def test_esc_leaves_at_once_when_nothing_was_edited(session: Session) -> None:
+    screen = session.run([b"p", b"\x1b", b"q"])
+    assert screen.exit_code == 0
+    assert "Unsaved changes" not in screen.text, "잃을 것이 없는데 물었다"
