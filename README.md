@@ -6,15 +6,20 @@ toward the limit. No logging out and back in every time you want a different acc
 ```
 codex-swap    gate 70% · margin 5%p
 
-   LABEL     EMAIL                     USED                            CRED  RESET
- >*work      account.name@gmail.com     58%  ██████████████▒▒▒┆▒▒▒▒▒▒     1  09-13 02:00 (in 5h)
-   personal  other.name@gmail.com       72%  █████████████████╪▒▒▒▒▒▒     0  09-14 07:00 (in 1d)
-   spare     third.name@gmail.com         ?  ────────────────────────     -  -
+   LABEL     EMAIL                   USED                             CRED  RESET
+ >*work      account.name@gmail.com  58%    ██████████████▒▒▒┆▒▒▒▒▒▒  1     09-13 02:00 (in 5h)
+   personal  other.name@gmail.com    72%    █████████████████╪▒▒▒▒▒▒  0     09-14 07:00 (in 1d)
+   spare     third.name@gmail.com    ?      ────────────────────────  -     -
+                                                        ┴    ┻  ┴  ┴
+                                                        50   70 85 95  ┻ = current gate
 
-                                                         ┴    ┻  ┴  ┴
-                                                         50   70 85 95  ┻ = current gate
+   Policy settings
+   Refresh usage
+   Adopt the account in use
+   Toggle automatic switching
+   Quit
 
-  ^v move   enter switch   r usage   a adopt   p policy   o auto   q quit
+  ^v move   enter open   s switch   r usage   a adopt   p policy   o auto   q quit
   Auto switch: on   (o to turn off)
 ```
 
@@ -22,6 +27,10 @@ codex-swap    gate 70% · margin 5%p
 cross next and `╪` means you already crossed it. `CRED` is how many usage-reset credits
 the account has left — when an account is exhausted and still has a credit, spending it
 is an alternative to switching.
+
+The cursor runs past the accounts into the menu underneath, and `enter` opens whatever it
+is on. Switching is `s`, not `enter`: one key that means "open a screen" in one place and
+"replace my credentials" in another is a key you eventually press by mistake.
 
 ## What you need
 
@@ -73,7 +82,8 @@ Then run it with no arguments to get the TUI:
 codex-swap
 ```
 
-`enter` switches, `r` refreshes usage, `p` edits the policy.
+`s` switches to the account under the cursor, `r` refreshes usage, `p` edits the policy.
+Or move down to the menu and press `enter` — every shortcut has an entry there.
 
 ## Wiring up automatic switching
 
@@ -170,7 +180,7 @@ never written there).
 | Shown | Meaning |
 | --- | --- |
 | `58%` | Fresh reading |
-| `~58%` | Cached value past its TTL (5 min by default). Correct, but maybe not current |
+| `~58% 5h` | Cached value past its TTL (5 min by default), and how old it is |
 | `?` | Never read successfully |
 
 If `?` persists, find out why:
@@ -183,8 +193,14 @@ codex-swap status --fresh
 credentials are no longer valid. Check `codex --version` and `codex login status` first.
 If discovery is the problem, point `CODEX_ACCOUNT_BIN` straight at the binary.
 
-`list` **never touches the network** — it only reads the cache. For fresh numbers use
-`status --fresh` or `r` in the TUI.
+`list` **never touches the network** — it only reads the cache. `codex-swap list --fresh`
+probes every slot and stores what it reads; `status --fresh` only reads the active account,
+and `r` in the TUI reads them all.
+
+Watch the age next to `~`. Nothing refreshes an idle account on its own: `rotate` stops
+early while the active account is below the first rung, which is most of the time, so a
+slot you are not using can sit at a reading from days ago — long enough for its window to
+have reset underneath it.
 
 ## Policy
 
@@ -205,7 +221,7 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `codex-swap` (no arguments) | TUI: list, usage bars and policy editor on one screen |
 | `codex-swap adopt <label>` | Store the account you are logged in as under `<label>` |
 | `codex-swap add <label>` | Log in to a new slot (opens a browser) |
-| `codex-swap list` | Stored accounts and cached usage (no probing) |
+| `codex-swap list [--fresh]` | Stored accounts and cached usage. `--fresh` probes every slot |
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
 | `codex-swap use <label>` | Switch by hand |
 | `codex-swap rotate [--dry-run]` | Run the policy |
