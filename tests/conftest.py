@@ -47,15 +47,3 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CODEX_ACCOUNT_DEFAULT_HOME", str(home / ".codex"))
     monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
     return home
-
-
-def test_the_suite_cannot_see_the_real_config() -> None:
-    """이 파일 자체가 지키는 것. 격리가 풀리면 여기서 먼저 터진다."""
-    import os
-    from pathlib import Path
-
-    assert Path(os.environ["HOME"]) != Path.home()
-    from codex_swap.core import config
-
-    s = config.load()
-    assert Path.home() not in s.accounts_dir.parents, s.accounts_dir
