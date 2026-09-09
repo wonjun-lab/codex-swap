@@ -252,7 +252,7 @@ def test_auto_switching_being_off_is_not_whispered(tmp_path: Path) -> None:
 def test_only_the_key_glyphs_are_coloured(session: Session) -> None:
     """설명까지 강조하면 눈이 어디를 눌러야 하는지 못 찾고 줄 전체를 읽게 된다."""
     screen = session.run([b"q"])
-    keys = screen.attrs_of("^v")
+    keys = screen.attrs_of("↑↓")
     assert "1" in keys and "36" in keys, keys
     assert "36" not in screen.attrs_of("move"), "설명까지 색을 입혔다"
 

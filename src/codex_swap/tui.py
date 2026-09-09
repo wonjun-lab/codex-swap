@@ -95,6 +95,13 @@ class View:
     rung_provisional: bool = False
     """관문이 낡은 값에서 나온 추정인가. 참이면 `~` 를 붙여 표시한다."""
 
+    discard_armed: bool = False
+    """`esc` 를 한 번 눌러 "버릴까요" 를 물어 둔 상태.
+
+    편집이 사라지는 것이 조용하면 사용자는 저장이 됐다고 믿는다. 되돌릴 방법이 없는
+    동작이라 한 번은 묻는다. 다른 일을 하면 풀린다 — 물어본 것을 잊고 나중에 누른
+    `esc` 가 곧바로 버리면, 묻는 의미가 없다."""
+
     cooldown_left: int | None = None
     """쿨다운이 걸려 있으면 남은 초. 화면이 "왜 안 바뀌는가" 에 답하는 자리다."""
 
@@ -117,8 +124,17 @@ POLICY_FIELDS = (
 
 LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 
-# 조작법은 ASCII 로 적는다. `↑↓` 는 East Asian Ambiguous 라 터미널마다 한 칸으로도 두
-# 칸으로도 그려져, 폭 계산이 맞아도 실제 화면이 어긋난다.
+# 방향키는 방향키 글자로 적는다. `^v`·`<>` 는 방향키를 뜻하는데 그렇게 안 읽힌다 —
+# 산술 기호로 읽힌다.
+#
+# 그 글자들은 **East Asian Ambiguous** 라 터미널마다 한 칸으로도 두 칸으로도 그려진다.
+# 구간 강조는 `_paint` 가 `_width(line[:start])` 로 칸을 계산해 덧칠하므로, 앞에
+# Ambiguous 글자가 있으면 계산과 실제가 갈려 강조가 옆으로 밀린다. 방향키를 뜻하는
+# 글자는 전부 Ambiguous 라 글자를 바꿔서는 못 피한다.
+#
+# 그래서 **맨 뒤에 둔다.** 뒤에 계산할 구간이 없으면 문제가 성립하지 않고, 앞의 구간들은
+# 전부 ASCII 만 지나므로 정확하다. 순서를 바꿀 때 이 제약을 함께 봐야 한다.
+#
 # 조작법은 **(키, 설명) 짝**으로 둔다. 문자열로 적어 두면 키가 어디부터 어디까지인지
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
@@ -140,7 +156,6 @@ MENU: tuple[tuple[str, str], ...] = (
 
 
 ACCOUNT_KEYS = (
-    ("^v", "move"),
     ("enter", "open"),
     ("s", "switch"),
     ("r", "usage"),
@@ -148,6 +163,7 @@ ACCOUNT_KEYS = (
     ("p", "policy"),
     ("o", "auto"),
     ("q", "quit"),
+    ("↑↓", "move"),
 )
 AUTO_ON_LINES = ("  Auto switch: on   (o to turn off)", "  Auto switch: on", "  Auto: on", "  ON")
 AUTO_OFF_LINES = (
@@ -163,12 +179,12 @@ STALE_LEGENDS = (
 )
 
 POLICY_KEYS = (
-    ("^v", "move"),
-    ("<>", "adjust"),
     ("e", "type"),
     ("s", "save"),
     ("esc", "cancel"),
     ("q", "quit"),
+    ("↑↓", "move"),
+    ("←→", "adjust"),
 )
 
 _TICK_MS = 120
@@ -463,7 +479,11 @@ def keys_line(
         text, spans = _assemble_keys(pairs, joiner, labels=labels)
         if width is None or _width(text) <= width:
             return text, spans
-    return _assemble_keys(pairs[-1:], "  ", labels=False)
+    # 마지막 한 칸에는 **나가는 키**를 남긴다. 자리로 고르면(옛 `pairs[-1:]`) 순서를
+    # 바꾸는 순간 엉뚱한 키가 남는다 — 화살표를 뒤로 옮기면서 실제로 그럴 뻔했다.
+    # 화면에서 못 나가는 것이 조작법을 못 읽는 것보다 나쁘다.
+    last = next((pair for pair in pairs if pair[0] == "q"), pairs[-1])
+    return _assemble_keys([last], "  ", labels=False)
 
 
 BAR_FILL = "█"
@@ -1221,7 +1241,7 @@ def adjust_policy(view: View, delta: int) -> View:
 
     step = {"margin": 1, "cooldown": 60, "cache_ttl": 60, "check_interval": 10}[key]
     value = max(0, getattr(s, key) + delta * step)
-    return replace(view, settings=replace(s, **{key: value}), message="")
+    return replace(view, discard_armed=False, settings=replace(s, **{key: value}), message="")
 
 
 def edit_policy(view: View, raw: str | None) -> View:
@@ -1235,13 +1255,17 @@ def edit_policy(view: View, raw: str | None) -> View:
     없는 값은 이것뿐이다.
     """
     if not raw or not raw.strip():
-        return replace(view, message="")
+        return replace(view, discard_armed=False, message="")
     key = POLICY_FIELDS[view.policy_cursor][0]
     title = POLICY_FIELDS[view.policy_cursor][1]
     if key == "ladder":
         rungs = config.parse_ladder(raw)
         if not rungs:
-            return replace(view, message=f"{title}: could not read numbers (example: 50,70,85,95)")
+            return replace(
+                view,
+                discard_armed=False,
+                message=f"{title}: could not read numbers (example: 50,70,85,95)",
+            )
         # 정렬해 둔다. 정책은 앞에서부터 훑어 첫 상회 칸을 관문으로 잡으므로(`rung_for`),
         # 순서가 뒤엉킨 사다리는 조용히 엉뚱한 칸을 고른다.
         return replace(
@@ -1250,12 +1274,39 @@ def edit_policy(view: View, raw: str | None) -> View:
     try:
         value = config.parse_int(raw)
     except config.ConfigError:
-        return replace(view, message=f"{title}: not an integer ({raw.strip()!r})")
+        return replace(
+            view, discard_armed=False, message=f"{title}: not an integer ({raw.strip()!r})"
+        )
     if value < 0:
         # 음수는 `config` 가 받지만(bash 패리티) 이 값들에 뜻이 없다. 저장하면 쿨다운이
         # 영원히 안 걸리는 식으로 조용히 이상해진다.
-        return replace(view, message=f"{title}: cannot be negative")
-    return replace(view, settings=replace(view.settings, **{key: value}), message="")
+        return replace(view, discard_armed=False, message=f"{title}: cannot be negative")
+    return replace(
+        view, discard_armed=False, settings=replace(view.settings, **{key: value}), message=""
+    )
+
+
+def leave_policy(view: View) -> View:
+    """`esc`. 저장하지 않고 정책 화면을 떠난다.
+
+    **편집이 남아 있으면 한 번 묻는다.** 화면에 `*` 로 미저장 표시는 있었지만 `esc` 는
+    아무 말 없이 버렸다 — 사용자는 그것을 "닫기" 로 읽고 저장이 됐다고 믿는다. 되돌릴
+    방법이 없는 동작이라 한 번은 물어야 한다.
+
+    잃을 것이 없으면 묻지 않는다. 늘 묻는 확인은 곧 반사적으로 넘겨져서, 정작 필요한
+    순간에도 안 읽힌다.
+    """
+    saved = view.saved_settings
+    dirty = saved is not None and any(
+        getattr(view.settings, key) != getattr(saved, key) for key, _, _ in POLICY_FIELDS
+    )
+    if dirty and not view.discard_armed:
+        return replace(
+            view,
+            discard_armed=True,
+            message="Unsaved changes — s to save, esc again to discard",
+        )
+    return replace(view, mode="accounts", discard_armed=False, message="")
 
 
 def save_policy(view: View) -> View:
@@ -1339,17 +1390,25 @@ def _attr_of(style: Style, colored: bool) -> int:  # pragma: no cover - curses �
     return attr
 
 
-def _paint(stdscr, view: View, colored: bool = False) -> None:  # pragma: no cover - 터미널 필요
+def _paint(stdscr, view: View, colored: bool = False) -> int:  # pragma: no cover - 터미널 필요
+    """화면을 그리고 **그린 줄 수**를 돌려준다.
+
+    줄 수를 돌려주는 것은 `_prompt` 때문이다. 프롬프트를 터미널 맨 아래에 그리면, 내용이
+    짧고 창이 큰 경우 입력줄이 표에서 한참 떨어진 곳에 뜬다 — 방금 누른 키와 그 반응이
+    화면 양 끝에 갈라져 있으면 무엇을 묻는 것인지 읽히지 않는다.
+    """
     stdscr.erase()
     height, width = stdscr.getmaxyx()
     if height < 2 or width < 2:
         stdscr.refresh()
-        return
+        return 0
     # 루프는 마지막 행 마지막 칸에 쓰면 curses 가 에러를 내므로 한 줄을 비워 둔다.
     room = max(width - 1, 0)
+    drawn = 0
     for i, (line, style) in enumerate(render_screen(view, height=height - 1, width=room)):
         if i >= height - 1:
             break
+        drawn = i + 1
         with contextlib.suppress(curses.error):
             stdscr.addnstr(i, 0, _clip(line, room), room, _attr_of(style, colored))
         # 구간을 **덧칠**한다. 줄을 조각으로 쪼개 이어 붙이지 않는 이유는, 그러면 폭
@@ -1368,6 +1427,7 @@ def _paint(stdscr, view: View, colored: bool = False) -> None:  # pragma: no cov
                     _attr_of(span_style, colored),
                 )
     stdscr.refresh()
+    return drawn
 
 
 def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
@@ -1381,8 +1441,23 @@ def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
         fn(*args)
 
 
-def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 필요
+def _adopt_label(view: View) -> str:
+    """`a` 가 물을 문구. **어느 계정을 보관하는지**를 이름에 넣는다.
+
+    `Slot name:` 만 있으면 무엇에 이름을 붙이는지가 화면 어디에도 없다 — 그 순간 사용자가
+    아는 것은 "메뉴에서 Adopt 를 골랐다" 뿐이고, 활성 계정이 무엇인지는 표의 `*` 를 다시
+    찾아야 안다.
+    """
+    who = view.active_email or "the account in use"
+    return f"  Keep {who} as: "
+
+
+def _prompt(stdscr, label: str, row: int | None = None) -> str | None:  # pragma: no cover
     """한 줄 입력. 취소하거나 비면 None.
+
+    `row` 는 **내용 바로 아래**다. 터미널 맨 아래에 그리면, 내용이 짧고 창이 큰 경우
+    입력줄이 표에서 한참 떨어진 곳에 뜬다 — 방금 누른 키와 그 반응이 화면 양 끝에
+    갈라져 있으면 무엇을 묻는 것인지 읽히지 않는다.
 
     **루프가 걸어 둔 논블로킹 타임아웃을 끄고 읽는다.** 켜진 채로 `getstr` 를 부르면
     `wgetch` 가 타임아웃마다 ERR 을 돌려줘서 사용자가 다 치기 전에 반쪽만 읽고 끝난다 —
@@ -1390,6 +1465,7 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     넣으면서 `stdscr.timeout()` 이 생겼고, 그때 이 함수를 같이 보지 않았다.
     """
     height, width = stdscr.getmaxyx()
+    at = height - 1 if row is None else min(max(row, 0), height - 1)
     # **한 문장씩 따로 감싼다.** 한 `suppress` 에 몰아 넣으면 앞 문장이 던지는 순간
     # 뒤가 통째로 건너뛰어진다. 실제로 `curs_set(1)` 이 없는 터미널(vt100)에서 바로
     # 다음 줄인 타임아웃 해제가 실행되지 않아, `getstr` 가 논블로킹으로 남아 입력을
@@ -1398,9 +1474,9 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     _try(curses.curs_set, 1)
     _try(stdscr.timeout, -1)
     try:
-        stdscr.addnstr(height - 1, 0, _clip(label, width - 1), max(width - 1, 0))
+        stdscr.addnstr(at, 0, _clip(label, width - 1), max(width - 1, 0))
         stdscr.clrtoeol()
-        raw = stdscr.getstr(height - 1, min(_width(label), max(width - 1, 0)), 64)
+        raw = stdscr.getstr(at, min(_width(label), max(width - 1, 0)), 64)
     except (curses.error, KeyboardInterrupt):
         return None
     finally:
@@ -1571,7 +1647,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             view = apply_probe_result(view, done)
             # 조회 중에 전환·등록이 있었으면 새 슬롯이 비어 있을 수 있다.
             kick(auto_probe_targets(view, attempted))
-        _paint(stdscr, probing_note(refresh_clock(view), prober.labels), colored)
+        drawn = _paint(stdscr, probing_note(refresh_clock(view), prober.labels), colored)
         started = time.monotonic()
         key = stdscr.getch()
 
@@ -1615,7 +1691,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 view = adjust_policy(view, +1)
             elif key in (ord("e"), ord("E")):
                 title = POLICY_FIELDS[view.policy_cursor][1]
-                view = edit_policy(view, _prompt(stdscr, f"{title} = "))
+                view = edit_policy(view, _prompt(stdscr, f"  {title} = ", drawn))
                 curses.flushinp()
             elif key in (ord("s"), ord("S")):
                 view = save_policy(view)
@@ -1643,7 +1719,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 if not prober.start(settings, [r.label for r in view.rows]):
                     view = replace(view, message="Already probing")
             elif action == "adopt":
-                view = do_adopt(view, _prompt(stdscr, "Slot name: "))
+                view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
             else:
                 view = activate(view)
             curses.flushinp()
@@ -1663,7 +1739,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             view = do_toggle_auto(view)
             curses.flushinp()
         elif key in (ord("a"), ord("A")):
-            view = do_adopt(view, _prompt(stdscr, "Slot name: "))
+            view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
             curses.flushinp()
         elif key in (ord("p"), ord("P")):
             view = replace(

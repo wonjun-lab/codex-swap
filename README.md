@@ -19,7 +19,7 @@ codex-swap    gate 70% · margin 5%p
    Toggle automatic switching
    Quit
 
-  ^v move   enter open   s switch   r usage   a adopt   p policy   o auto   q quit
+  enter open   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
   Auto switch: on   (o to turn off)
 ```
 
