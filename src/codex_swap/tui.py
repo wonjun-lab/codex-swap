@@ -938,6 +938,8 @@ def render_screen(
     hidden_below = len(view.rows) - (start + len(rows))
 
     body: list[tuple[str, Style]] = []
+    cursor_at: int | None = None
+    """커서가 `body` 의 몇 번째 줄인가. 없으면 `None`(행도 메뉴도 안 골린 상태)."""
     if hidden_above:
         body.append((f"{_INDENT}^ {hidden_above} more", _DIM))
     for i, row in enumerate(rows, start=start):
@@ -970,6 +972,12 @@ def render_screen(
         # 전환하는지 확신할 수 없다 — 자격증명을 바꾸는 키라 그 불확실함의 대가가 크다.
         if i == view.cursor and selected_row(view) is not None:
             spans.append((1, 2, _KEY_STYLE))
+            # 커서가 몇 번째 줄인지 **여기서** 적어 둔다. 짧은 화면에서 본문을 자를 때
+            # 쓰는데, 예전에는 그 자리에서 `ln.startswith(" >")` 로 화면 글자를 뒤져
+            # 되찾았다. 이미 아는 것을 텍스트에서 알아내는 셈이고, 빗나가면 예외가 아니라
+            # 조용히 가운데 줄로 떨어져 스크롤이 커서를 놓친다 — 꼬리말 들여쓰기를 한 칸
+            # 옮겼을 때 `" >"` 가 우연히 유지돼서 안 깨졌을 뿐이다.
+            cursor_at = len(body)
         # 활성 행은 `*` 와 라벨을 굵게. 행의 색은 유지한다 — 여기서 tone 을 떨어뜨리면
         # 하필 소진된(danger) 계정이 활성일 때 그 경고색이 라벨에서만 사라진다.
         if row.active:
@@ -980,9 +988,12 @@ def render_screen(
     body += axis_lines
 
     # 메뉴. 커서가 계정 구간을 지나면 여기로 이어진다.
+    menu_at = len(body)
     menu_lines: list[tuple[str, Style]] = [("", _PLAIN)]
     for i, (_, title) in enumerate(MENU):
         picked = view.cursor - len(view.rows) == i
+        if picked:
+            cursor_at = menu_at + len(menu_lines)
         line = (
             _clip(f" {'>' if picked else ' '} {title}", width)
             if width
@@ -1000,11 +1011,16 @@ def render_screen(
         if over > 0:
             keep_n = max(len(body) - over, 1)
             # 커서가 있는 줄을 남긴다. 표시줄이 먼저 밀려나는 것이 자연스럽다.
-            cursor_at = next(
-                (i for i, (ln, _) in enumerate(body) if ln.startswith(" >")), len(body) // 2
-            )
-            lo = min(max(0, cursor_at - keep_n // 2), max(0, len(body) - keep_n))
+            at = len(body) // 2 if cursor_at is None else cursor_at
+            lo = min(max(0, at - keep_n // 2), max(0, len(body) - keep_n))
             body = body[lo : lo + keep_n]
+            # 자르고 남은 빈 줄은 뗀다. 메뉴는 앞에 빈 줄을 하나 두고 시작하는데, 메뉴
+            # 항목이 통째로 잘려 나가면 **그 빈 줄만 남아** 꼬리말의 빈 줄과 겹쳐 두 줄이
+            # 빈다. 화면이 짧아서 자른 상황에 빈 줄을 두 개 쓰는 셈이다.
+            while body and not body[0][0].strip():
+                body = body[1:]
+            while body and not body[-1][0].strip():
+                body = body[:-1]
 
         # 그래도 넘치면(머리말 3 + 행 1 + 메시지 2 = 6 이 바닥) 머리말을 앞에서 줄인다.
         # 제목과 빈 줄보다 "무엇이 잘못됐나" 가 먼저다.
