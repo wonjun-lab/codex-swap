@@ -731,7 +731,11 @@ def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
 
 
 def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
-    """축이 빠지면 사다리가 화면 어디에도 안 남는다. 그때는 머리말이 대신 든다."""
+    """축이 빠지면 사다리가 화면 어디에도 안 남는다. 그때는 머리말이 대신 든다.
+
+    **관문도 함께 든다.** 사다리만 적던 때는 넓은 화면이 두 번(머리말·축) 알려 주던
+    "지금 넘어야 하는 칸" 이 좁은 화면에서 0 번이 됐다.
+    """
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
 
@@ -740,7 +744,8 @@ def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
     assert any("█" in line for line in wide) and any("┻" in line for line in wide)
     assert not any("█" in line for line in narrow)
     assert "gate 70%" in wide[0]
-    assert "ladder 50,70,85,95" in narrow[0]
+    assert "50,70,85,95" in narrow[0], "좁아지면 사다리가 화면에서 사라진다"
+    assert "gate 70%" in narrow[0], "좁아지면 어느 눈금이 관문인지 사라진다"
 
 
 def test_a_truncated_email_says_that_it_is_truncated(env) -> None:

@@ -765,18 +765,24 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
     """머리말. 사다리 전체보다 **지금 넘어야 하는 칸**이 행동을 정한다.
 
     `show_ladder` 는 바가 빠졌을 때다. 그때는 축도 없으므로 사다리 전체를 여기 적지
-    않으면 화면 어디에도 남지 않는다.
+    않으면 화면 어디에도 남지 않는다. **다만 사다리만 적으면 넷 중 어느 것을 지금 넘어야
+    하는지가 사라진다** — 넓은 화면은 `gate` 와 축의 `┻` 로 두 번 알려 주는데 좁히면 그
+    횟수가 0 이 됐다. 폭에 따라 달라져야 하는 것은 표현이지 정보가 아니다. 그래서 좁을
+    때는 둘을 한 줄에 함께 적는다.
 
     좁으면 **뒤에서부터 버린다.** 우선순위는 관문 → 쿨다운 → 마진이다 — 관문은 무엇을
     넘어야 하는지, 쿨다운은 언제 풀리는지이고, 마진은 그 둘을 안 뒤에나 필요하다.
     자르지 않고 버리는 것은 `마진 5%` 처럼 반쯤 남은 값이 틀린 정보이기 때문이다.
     """
     s = view.settings
-    ladder = f"ladder {','.join(map(str, s.ladder))}"
-    if show_ladder or view.current_rung is None:
-        gate = ladder
+    ladder = ",".join(map(str, s.ladder))
+    now = f"gate {'~' if view.rung_provisional else ''}{view.current_rung}%"
+    if view.current_rung is None:
+        gate = f"ladder {ladder}"
+    elif show_ladder:
+        gate = f"{now} of {ladder}"
     else:
-        gate = f"gate {'~' if view.rung_provisional else ''}{view.current_rung}%"
+        gate = now
     parts = [gate]
     if view.cooldown_left is not None:
         parts.append(f"cooldown {_duration(view.cooldown_left)} left")
