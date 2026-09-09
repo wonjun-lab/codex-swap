@@ -731,7 +731,11 @@ def test_no_line_ever_exceeds_the_terminal_width(env, width: int) -> None:
 
 
 def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
-    """축이 빠지면 사다리가 화면 어디에도 안 남는다. 그때는 머리말이 대신 든다."""
+    """축이 빠지면 사다리가 화면 어디에도 안 남는다. 그때는 머리말이 대신 든다.
+
+    **관문도 함께 든다.** 사다리만 적던 때는 넓은 화면이 두 번(머리말·축) 알려 주던
+    "지금 넘어야 하는 칸" 이 좁은 화면에서 0 번이 됐다.
+    """
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
 
@@ -740,7 +744,8 @@ def test_a_narrow_terminal_drops_the_bar_but_keeps_the_ladder(env) -> None:
     assert any("█" in line for line in wide) and any("┻" in line for line in wide)
     assert not any("█" in line for line in narrow)
     assert "gate 70%" in wide[0]
-    assert "ladder 50,70,85,95" in narrow[0]
+    assert "50,70,85,95" in narrow[0], "좁아지면 사다리가 화면에서 사라진다"
+    assert "gate 70%" in narrow[0], "좁아지면 어느 눈금이 관문인지 사라진다"
 
 
 def test_a_truncated_email_says_that_it_is_truncated(env) -> None:
@@ -1093,6 +1098,8 @@ def test_the_keys_survive_every_width_even_when_labels_do_not() -> None:
     narrow, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=30)
     assert "move" not in narrow, narrow
     assert [narrow[a:b] for a, b, _ in spans] == [key for key, _ in tui.ACCOUNT_KEYS]
+    # 마지막 한 칸에 남는 것은 **나가는 키**다. 자리가 아니라 이름으로 고른다 —
+    # 순서를 바꿔도 엉뚱한 키가 남지 않아야 한다.
     tiny, tiny_spans = tui.keys_line(tui.ACCOUNT_KEYS, width=4)
     assert tiny.strip() == "q" and [tiny[a:b] for a, b, _ in tiny_spans] == ["q"]
 
@@ -1113,20 +1120,16 @@ def test_the_span_offsets_are_character_indices_not_columns(env) -> None:
 def test_the_account_screen_carries_the_key_spans(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    keys = next(
-        st for text, st in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
-    )
+    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter open" in text)
     assert keys.spans and keys.tone == "dim"
 
 
 def test_the_policy_screen_carries_them_too(env) -> None:
     view = tui.replace(tui.build_view(env), mode="policy")
-    keys = next(
-        st for text, st in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
-    )
+    keys = next(st for text, st in tui.render_screen(view, width=140) if "e type" in text)
     assert keys.spans
-    assert "e type" in next(
-        text for text, _ in tui.render_screen(view, width=140) if text.lstrip().startswith("^v")
+    assert "←→ adjust" in next(
+        text for text, _ in tui.render_screen(view, width=140) if "e type" in text
     )
 
 
@@ -1339,3 +1342,88 @@ def test_the_key_line_teaches_the_new_layout(env) -> None:
     text, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=140)
     assert "s switch" in text, text
     assert "enter open" in text, text
+
+
+# ── 방향키는 방향키로 보여야 한다 ──────────────────────────────────────────
+
+
+def test_the_move_and_adjust_keys_are_drawn_as_arrows(env) -> None:
+    """`^v` 와 `<>` 는 방향키를 뜻하는데 그렇게 안 읽힌다 — 산술 기호로 읽힌다."""
+    account, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
+    policy, _ = tui.keys_line(tui.POLICY_KEYS, width=200)
+    assert "↑↓ move" in account, account
+    assert "↑↓ move" in policy, policy
+    assert "←→ adjust" in policy, policy
+    assert "^v" not in account and "<>" not in policy
+
+
+def test_the_arrow_entry_is_last_so_nothing_after_it_can_shift(env) -> None:
+    """화살표 글자는 East Asian **Ambiguous** 라 터미널마다 한 칸도 두 칸도 된다.
+
+    **강조 위치는 이제 이 규칙이 지키는 것이 아니다.** `_paint` 가 조각을 이어 그려
+    ncurses 가 칸을 옮기므로 우리 쪽 계산이 없다 — 그쪽은 `test_tui_paint.py` 가 잰다.
+    한동안 `_width(line[:start])` 로 계산하던 때에는 이 규칙으로 막았는데, 방향키 항목이
+    **둘**이 되자 뒤엣것이 두 칸 밀렸다. 항목이 하나일 때만 성립하는 방어였다.
+
+    남은 이유는 줄 **길이**다. 길이는 여전히 `_width` 로 재므로, Ambiguous 를 두 칸으로
+    그리는 터미널에서는 우리가 잰 것보다 줄이 길어져 끝이 넘칠 수 있다. 그때 밀려나는
+    것이 `q quit` 이면 화면에서 나가는 법이 사라진다. 그래서 화살표가 맨 뒤다.
+    """
+    for pairs in (tui.ACCOUNT_KEYS, tui.POLICY_KEYS):
+        arrows = [i for i, (k, _) in enumerate(pairs) if not k.isascii()]
+        assert arrows, f"화살표 항목이 없다: {pairs}"
+        assert arrows == list(range(len(pairs) - len(arrows), len(pairs))), pairs
+        ascii_keys = [k for k, _ in pairs if k.isascii()]
+        assert "q" in ascii_keys, "나가는 키가 ASCII 가 아니면 맨 뒤 규칙의 뜻이 없다"
+
+
+# ── esc 가 편집을 조용히 버리던 것 ─────────────────────────────────────────
+
+
+def _edited(env) -> tui.View:
+    view = tui.View(rows=(), cursor=0, settings=env, mode="policy", saved_settings=env)
+    return tui.edit_policy(replace_view(view), "33,66,88")
+
+
+def replace_view(view: tui.View) -> tui.View:
+    from dataclasses import replace
+
+    return replace(view, policy_cursor=0)
+
+
+def test_esc_with_unsaved_edits_asks_before_throwing_them_away(env) -> None:
+    """편집이 사라지는 것이 조용하면, 사용자는 저장이 됐다고 믿는다.
+
+    화면에 `*` 로 미저장 표시는 있었지만 `esc` 는 아무 말 없이 버렸다. 되돌릴 방법이
+    없는 동작이라 한 번은 물어야 한다.
+    """
+    view = _edited(env)
+    assert view.settings.ladder == (33, 66, 88)
+    after = tui.leave_policy(view)
+    assert after.mode == "policy", "물어보지도 않고 나갔다"
+    assert after.discard_armed is True
+    assert "unsaved" in after.message.lower(), after.message
+    assert after.settings.ladder == (33, 66, 88), "편집이 사라졌다"
+
+
+def test_a_second_esc_discards(env) -> None:
+    after = tui.leave_policy(tui.leave_policy(_edited(env)))
+    assert after.mode == "accounts"
+
+
+def test_esc_leaves_at_once_when_nothing_was_edited(env) -> None:
+    """묻는 것은 잃을 것이 있을 때만이다. 늘 물으면 곧 반사적으로 넘긴다."""
+    view = tui.View(rows=(), cursor=0, settings=env, mode="policy", saved_settings=env)
+    after = tui.leave_policy(view)
+    assert after.mode == "accounts"
+    assert after.discard_armed is False
+
+
+def test_moving_the_cursor_disarms_the_pending_discard(env) -> None:
+    """물어본 뒤 사용자가 다른 일을 했으면, 그 다음 esc 는 다시 물어야 한다."""
+    from dataclasses import replace
+
+    armed = tui.leave_policy(_edited(env))
+    moved = replace(armed, policy_cursor=1, discard_armed=False, message="")
+    after = tui.leave_policy(moved)
+    assert after.mode == "policy", "다시 묻지 않고 버렸다"

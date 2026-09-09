@@ -19,8 +19,8 @@ codex-swap    gate 70% · margin 5%p
    Toggle automatic switching
    Quit
 
-  ^v move   enter open   s switch   r usage   a adopt   p policy   o auto   q quit
-  Auto switch: on   (o to turn off)
+   enter open   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
+   Auto switch: on   (o to turn off)
 ```
 
 `*` is the account in use, `>` is the cursor. On a bar, `┆` is the gate you have to

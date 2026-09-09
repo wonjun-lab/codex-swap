@@ -127,7 +127,11 @@ def test_a_typed_ladder_shows_up_on_the_policy_screen(session: Session) -> None:
 
 
 def test_esc_leaves_the_policy_screen_without_saving(session: Session) -> None:
-    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b", b"q"])
+    """편집이 남아 있으면 **한 번 묻고**, 두 번째 esc 에 버린다.
+
+    한 번에 버리던 때는 그것이 조용해서, 사용자가 "닫기" 로 읽고 저장이 됐다고 믿었다.
+    """
+    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b", b"\x1b", b"q"])
     assert screen.exit_code == 0
     assert "Left without saving" in screen.text
     assert not (session.accounts / "config.json").exists(), "esc 인데 저장됐다"
@@ -170,13 +174,24 @@ def test_a_finished_probe_does_not_eject_you_from_the_policy_screen(tmp_path: Pa
     s.activate("a@example.com")
     s.cache("master", 58)  # 조회 대상을 하나로 줄여 대기 시간을 예측 가능하게
     s.slot("shared", "b@example.com")  # 캐시 없음 → 화면을 열면 조회가 돈다
-    # 조회가 **편집 도중에** 끝나도록 늦춘다. 자연 속도에 맡기면 빠른 기기에서 조회가
-    # 먼저 끝나 이 검사가 공허하게 통과한다.
-    s.delay(2.0)
+
+    # 조회가 **마지막 키보다 늦게** 끝나도록 늦춘다. 두 가지를 동시에 만족해야 한다:
+    #
+    # - 화면을 연 뒤까지 살아 있어야 한다. 자연 속도에 맡기면 빠른 기기에서 조회가 먼저
+    #   끝나 "정책 화면에서 안 튕긴다" 를 아무것도 안 본 채 통과한다.
+    # - **마지막 키보다는 늦어야 한다.** 값을 넣는 순간 `message` 가 비므로, 조회가 그
+    #   전에 끝나면 `Usage refreshed` 는 떴다가 지워진다. 그러면 아래 가드가 "조회가 안
+    #   끝났다" 로 오진한다 — 끝났는데 흔적이 지워졌을 뿐이다.
+    #
+    # 키 전달에 걸리는 시간은 `settle` 곱하기 키 수에 그리기를 더한 값이다. 넉넉히 두 배
+    # 이상 잡는다.
+    # 2.0 초였을 때 macOS 러너에서 정확히 이 순서가 뒤집혀 60 초를 기다리다 실패했다.
+    s.delay(8.0)
 
     # 조회가 **끝난 뒤**에 캡처해야 한다. 조용해졌다고 끊으면 아직 도는 중에 찍혀서
     # 검사가 아무것도 안 본 채 통과한다 — 실제로 그래서 뮤테이션을 놓쳤다.
-    screen = s.run([b"p", b"e", b"33,66,88\n"], settle=1.0, total=60.0, wait_for="Usage refreshed")
+    screen = s.run([b"p", b"e", b"33,66,88\n"], settle=0.6, total=90.0, wait_for="Usage refreshed")
+    assert s.events.exists(), "프로브가 아예 안 돌았다 — 스텁·환경 문제다"
     assert "Usage refreshed" in screen.text, "조회가 안 끝났다 — 검사가 성립하지 않는다"
     assert "codex-swap · policy" in screen.text, "정책 화면에서 튀어나갔다"
     assert "33,66,88" in screen.text, "미저장 편집이 날아갔다"
@@ -252,7 +267,7 @@ def test_auto_switching_being_off_is_not_whispered(tmp_path: Path) -> None:
 def test_only_the_key_glyphs_are_coloured(session: Session) -> None:
     """설명까지 강조하면 눈이 어디를 눌러야 하는지 못 찾고 줄 전체를 읽게 된다."""
     screen = session.run([b"q"])
-    keys = screen.attrs_of("^v")
+    keys = screen.attrs_of("↑↓")
     assert "1" in keys and "36" in keys, keys
     assert "36" not in screen.attrs_of("move"), "설명까지 색을 입혔다"
 
@@ -311,3 +326,42 @@ def test_s_on_the_menu_does_not_switch(session: Session) -> None:
     assert screen.exit_code == 0
     assert "Move to an account first" in screen.text, screen.text
     assert "Switched to" not in screen.text, screen.text
+
+
+# ── 회귀 6: 프롬프트가 화면 맨 아래에 떴다 ──────────────────────────────────
+
+
+def test_the_prompt_sits_right_under_the_content(session: Session) -> None:
+    """터미널이 크고 내용이 짧으면 입력줄이 표에서 한참 떨어진 곳에 떴다.
+
+    방금 누른 키와 그 반응이 화면 양 끝에 갈라져 있으면 무엇을 묻는 것인지 읽히지
+    않는다. `_paint` 가 그린 줄 수를 돌려주고 그 바로 아래에 그린다.
+    """
+    screen = session.run([b"a"], rows=40, settle=0.8)
+    filled = [i for i, ln in enumerate(screen.lines) if ln.strip()]
+    prompt_at = next(i for i, ln in enumerate(screen.lines) if "Keep " in ln)
+    body_end = max(i for i in filled if i != prompt_at)
+    assert prompt_at - body_end <= 2, (
+        f"프롬프트가 내용에서 {prompt_at - body_end} 줄 떨어져 있다\n" + screen.text
+    )
+    assert prompt_at < 39, "터미널 맨 아래에 그렸다"
+
+
+def test_the_prompt_says_which_account_it_will_keep(session: Session) -> None:
+    """`Slot name:` 만으로는 무엇에 이름을 붙이는지 화면 어디에도 없다."""
+    screen = session.run([b"a"], settle=0.8)
+    assert "Keep a@example.com as:" in screen.text, screen.text
+
+
+def test_esc_asks_before_discarding_an_edit(session: Session) -> None:
+    """편집이 사라지는 것이 조용하면 사용자는 저장이 됐다고 믿는다."""
+    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b"])
+    assert "Unsaved changes" in screen.text, screen.text
+    assert "codex-swap · policy" in screen.text, "물어보지도 않고 나갔다"
+    assert "33,66,88" in screen.text, "편집이 사라졌다"
+
+
+def test_esc_leaves_at_once_when_nothing_was_edited(session: Session) -> None:
+    screen = session.run([b"p", b"\x1b", b"q"])
+    assert screen.exit_code == 0
+    assert "Unsaved changes" not in screen.text, "잃을 것이 없는데 물었다"

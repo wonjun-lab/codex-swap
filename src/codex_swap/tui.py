@@ -95,6 +95,13 @@ class View:
     rung_provisional: bool = False
     """관문이 낡은 값에서 나온 추정인가. 참이면 `~` 를 붙여 표시한다."""
 
+    discard_armed: bool = False
+    """`esc` 를 한 번 눌러 "버릴까요" 를 물어 둔 상태.
+
+    편집이 사라지는 것이 조용하면 사용자는 저장이 됐다고 믿는다. 되돌릴 방법이 없는
+    동작이라 한 번은 묻는다. 다른 일을 하면 풀린다 — 물어본 것을 잊고 나중에 누른
+    `esc` 가 곧바로 버리면, 묻는 의미가 없다."""
+
     cooldown_left: int | None = None
     """쿨다운이 걸려 있으면 남은 초. 화면이 "왜 안 바뀌는가" 에 답하는 자리다."""
 
@@ -117,8 +124,21 @@ POLICY_FIELDS = (
 
 LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 
-# 조작법은 ASCII 로 적는다. `↑↓` 는 East Asian Ambiguous 라 터미널마다 한 칸으로도 두
-# 칸으로도 그려져, 폭 계산이 맞아도 실제 화면이 어긋난다.
+# 방향키는 방향키 글자로 적는다. `^v`·`<>` 는 방향키를 뜻하는데 그렇게 안 읽힌다 —
+# 산술 기호로 읽힌다.
+#
+# 그 글자들은 **East Asian Ambiguous** 라 터미널마다 한 칸으로도 두 칸으로도 그려진다.
+# 방향키를 뜻하는 글자는 전부 Ambiguous 라 글자를 바꿔서는 못 피한다.
+#
+# 강조 위치는 이제 문제가 아니다. `_paint` 가 조각을 이어 그려 ncurses 가 커서를 옮기므로
+# 우리 쪽 칸 계산이 없다. 한동안은 `_width(line[:start])` 로 계산해 덧칠했고, 그래서
+# 방향키 항목이 **둘**이 되는 순간 뒤엣것(`←→`)이 두 칸 밀렸다 — "맨 뒤에 둔다" 규칙만으로는
+# 항목이 하나일 때만 막힌다.
+#
+# 그래도 맨 뒤에 둔다. 줄 **길이**는 여전히 `_width` 로 재기 때문이다. Ambiguous 를 두 칸으로
+# 그리는 터미널에서는 우리가 잰 것보다 줄이 길어져 끝이 넘칠 수 있는데, 그때 밀려나는 것이
+# `q quit` 이 아니라 `↑↓ move` 여야 한다. 화면에서 나가는 법이 먼저다.
+#
 # 조작법은 **(키, 설명) 짝**으로 둔다. 문자열로 적어 두면 키가 어디부터 어디까지인지
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
@@ -140,7 +160,6 @@ MENU: tuple[tuple[str, str], ...] = (
 
 
 ACCOUNT_KEYS = (
-    ("^v", "move"),
     ("enter", "open"),
     ("s", "switch"),
     ("r", "usage"),
@@ -148,27 +167,29 @@ ACCOUNT_KEYS = (
     ("p", "policy"),
     ("o", "auto"),
     ("q", "quit"),
+    ("↑↓", "move"),
 )
-AUTO_ON_LINES = ("  Auto switch: on   (o to turn off)", "  Auto switch: on", "  Auto: on", "  ON")
+AUTO_ON_LINES = ("Auto switch: on   (o to turn off)", "Auto switch: on", "Auto: on", "ON")
 AUTO_OFF_LINES = (
-    "  Auto switch: off   (o to turn on)",
-    "  Auto switch: off",
-    "  Auto: off",
-    "  OFF",
+    "Auto switch: off   (o to turn on)",
+    "Auto switch: off",
+    "Auto: off",
+    "OFF",
 )
 STALE_LEGENDS = (
-    "  ~ marks a stale cached value (r to refresh)",
-    "  ~ = stale (r to refresh)",
-    "  ~ = stale",
+    "~ marks a stale cached value (r to refresh)",
+    "~ = stale (r to refresh)",
+    "~ = stale",
 )
+"""판마다 **들여쓰기를 적지 않는다.** `_help_line` 이 `_INDENT` 로 붙인다."""
 
 POLICY_KEYS = (
-    ("^v", "move"),
-    ("<>", "adjust"),
     ("e", "type"),
     ("s", "save"),
     ("esc", "cancel"),
     ("q", "quit"),
+    ("↑↓", "move"),
+    ("←→", "adjust"),
 )
 
 _TICK_MS = 120
@@ -227,17 +248,42 @@ def _cell(text: str, cols: int, *, ellipsis: bool = False, right: bool = False) 
     return pad(_clip(text, cols - 1) + "…", cols)
 
 
+_INDENT = "   "
+"""화면의 왼쪽 기준선. 세 칸인 것은 계정 행이 ` >*` 뒤에 라벨을 놓기 때문이다.
+
+꼬리말·메시지만 두 칸이던 때가 있었다. 한 칸이라 결함으로는 안 보이는데, 표·메뉴·축이
+전부 같은 열에서 시작하는 화면에서 **조작법과 경고만 그 왼쪽으로 튀어나와** 왼쪽 끝이
+두 개가 됐다. 눈은 그 어긋남을 읽지는 못하고 어수선함으로만 느낀다.
+
+0 열은 제목 한 줄에만 준다. 나머지는 전부 이 상수를 지난다.
+"""
+
+
+def _note(text: str, width: int | None) -> str:
+    """꼬리말·메시지 한 줄. 기준선에 맞추고, 넘치면 잘렸다는 것을 보인다.
+
+    자르지 않던 때는 폭이 좁을 때 그리기 단계가 **말없이** 잘라서 문장의 뒤쪽이 통째로
+    사라졌다. 하필 이 줄이 전환 결과와 실패 사유를 알리는 유일한 줄이라, 잘린 줄 모르고
+    "아무 일도 안 일어났다" 로 읽힌다.
+    """
+    if width is None:
+        return f"{_INDENT}{text}"
+    return f"{_INDENT}{_cell(text, max(width - len(_INDENT), 0), ellipsis=True)}".rstrip()
+
+
 def _help_line(*variants: str, width: int | None) -> str:
     """들어가는 것 중 가장 자세한 판을 고른다.
 
     긴 줄을 그냥 자르면 뒤쪽 키가 통째로 사라진다 — 40 칸에서 실제로 `r` 에서 잘렸다.
     자르는 대신 판을 바꾸면 **무엇이 빠졌는지가 보인다.** 마지막 판은 어떤 폭에서도
     쓰이므로 가장 짧아야 한다.
+
+    들여쓰기는 여기서 붙인다. 판마다 적어 두면 한 판만 어긋나도 그 폭에서만 줄이 밀린다.
     """
     for variant in variants:
-        if width is None or _width(variant) <= width:
-            return variant
-    return variants[-1]
+        if width is None or _width(variant) + len(_INDENT) <= width:
+            return f"{_INDENT}{variant}"
+    return f"{_INDENT}{variants[-1]}"
 
 
 # ── 상태 읽기 ────────────────────────────────────────────────────────────────
@@ -437,7 +483,7 @@ def _assemble_keys(
     pairs: Sequence[tuple[str, str]], joiner: str, *, labels: bool
 ) -> tuple[str, tuple[tuple[int, int, Style], ...]]:
     """조작법 한 줄과 **키 글자의 구간**. 텍스트를 만들면서 구간을 함께 기록한다."""
-    text = "  "
+    text = _INDENT
     spans = []
     for i, (key, label) in enumerate(pairs):
         if i:
@@ -463,7 +509,11 @@ def keys_line(
         text, spans = _assemble_keys(pairs, joiner, labels=labels)
         if width is None or _width(text) <= width:
             return text, spans
-    return _assemble_keys(pairs[-1:], "  ", labels=False)
+    # 마지막 한 칸에는 **나가는 키**를 남긴다. 자리로 고르면(옛 `pairs[-1:]`) 순서를
+    # 바꾸는 순간 엉뚱한 키가 남는다 — 화살표를 뒤로 옮기면서 실제로 그럴 뻔했다.
+    # 화면에서 못 나가는 것이 조작법을 못 읽는 것보다 나쁘다.
+    last = next((pair for pair in pairs if pair[0] == "q"), pairs[-1])
+    return _assemble_keys([last], "  ", labels=False)
 
 
 BAR_FILL = "█"
@@ -719,18 +769,24 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
     """머리말. 사다리 전체보다 **지금 넘어야 하는 칸**이 행동을 정한다.
 
     `show_ladder` 는 바가 빠졌을 때다. 그때는 축도 없으므로 사다리 전체를 여기 적지
-    않으면 화면 어디에도 남지 않는다.
+    않으면 화면 어디에도 남지 않는다. **다만 사다리만 적으면 넷 중 어느 것을 지금 넘어야
+    하는지가 사라진다** — 넓은 화면은 `gate` 와 축의 `┻` 로 두 번 알려 주는데 좁히면 그
+    횟수가 0 이 됐다. 폭에 따라 달라져야 하는 것은 표현이지 정보가 아니다. 그래서 좁을
+    때는 둘을 한 줄에 함께 적는다.
 
     좁으면 **뒤에서부터 버린다.** 우선순위는 관문 → 쿨다운 → 마진이다 — 관문은 무엇을
     넘어야 하는지, 쿨다운은 언제 풀리는지이고, 마진은 그 둘을 안 뒤에나 필요하다.
     자르지 않고 버리는 것은 `마진 5%` 처럼 반쯤 남은 값이 틀린 정보이기 때문이다.
     """
     s = view.settings
-    ladder = f"ladder {','.join(map(str, s.ladder))}"
-    if show_ladder or view.current_rung is None:
-        gate = ladder
+    ladder = ",".join(map(str, s.ladder))
+    now = f"gate {'~' if view.rung_provisional else ''}{view.current_rung}%"
+    if view.current_rung is None:
+        gate = f"ladder {ladder}"
+    elif show_ladder:
+        gate = f"{now} of {ladder}"
     else:
-        gate = f"gate {'~' if view.rung_provisional else ''}{view.current_rung}%"
+        gate = now
     parts = [gate]
     if view.cooldown_left is not None:
         parts.append(f"cooldown {_duration(view.cooldown_left)} left")
@@ -804,27 +860,30 @@ def render_screen(
         who = view.active_email or "unknown account"
         keep.append(
             (
-                f"  Warning: active ({who}) is not in any slot. Switching will not keep it",
+                _note(
+                    f"Warning: active ({who}) is not in any slot. Switching will not keep it",
+                    width,
+                ),
                 Style("warn"),
             )
         )
     if view.message:
-        keep.append((f"  {view.message}", _PLAIN))
+        keep.append((_note(view.message, width), _PLAIN))
 
     if not view.rows:
         # 빈 화면에서도 메시지가 보여야 한다 — 등록 실패가 여기서 나온다. 다만 조작법은
         # 이 화면에 실제로 있는 키만 적는다.
         empty = [
-            ("  No accounts yet.", _PLAIN),
+            (_note("No accounts yet.", width), _PLAIN),
             ("", _PLAIN),
-            ("  a  adopt the account you are logged in as   q  quit", _DIM),
+            (_note("a  adopt the account you are logged in as   q  quit", width), _DIM),
         ]
         if view.message:
-            empty += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
+            empty += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
         return head + empty
 
     columns = (
-        f"   {_cell('LABEL', label_cols)}{_GUTTER}"
+        f"{_INDENT}{_cell('LABEL', label_cols)}{_GUTTER}"
         f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', _USED_COLS)}"
     )
     if with_bar:
@@ -842,7 +901,8 @@ def render_screen(
     if with_bar and any(r.percent is not None for r in view.rows):
         axis, labels = ladder_axis(s.ladder, view.current_rung)
         pad = (
-            f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * _USED_COLS}{_GUTTER}"
+            f"{_INDENT}{' ' * label_cols}{_GUTTER}"
+            f"{' ' * email_cols}{_GUTTER}{' ' * _USED_COLS}{_GUTTER}"
         )
         axis_lines = [
             # 축은 바로 위 바들의 눈금이다. 한 줄 띄웠던 적이 있는데 — 마지막 계정의 한
@@ -878,8 +938,10 @@ def render_screen(
     hidden_below = len(view.rows) - (start + len(rows))
 
     body: list[tuple[str, Style]] = []
+    cursor_at: int | None = None
+    """커서가 `body` 의 몇 번째 줄인가. 없으면 `None`(행도 메뉴도 안 골린 상태)."""
     if hidden_above:
-        body.append((f"   ^ {hidden_above} more", _DIM))
+        body.append((f"{_INDENT}^ {hidden_above} more", _DIM))
     for i, row in enumerate(rows, start=start):
         cursor = ">" if i == view.cursor and selected_row(view) is not None else " "
         mark = "*" if row.active else " "
@@ -895,7 +957,11 @@ def render_screen(
             line += (
                 f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
                 f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
-            ).rstrip()
+            )
+        # 마지막 칸의 채움은 지운다. 머리말은 이미 그렇게 하는데 행만 남겨 두었더니,
+        # 리셋 열이 빠지는 좁은 폭에서 행마다 눈에 안 보이는 꼬리가 붙었다. 행에는 색이
+        # 걸려 있어서 그 꼬리까지 칠해진다.
+        line = line.rstrip()
         # **행 전체에 bold 를 걸지 않는다.** 이 터미널에서 bold 글자는 더 굵고 넓게
         # 그려져서, 같은 문자열인 바가 활성 행에서만 길어 보인다 — 실제로 두 행의
         # 문자열·폭·열 위치가 전부 같은데도 "아래 바가 더 짧다" 로 읽혔다.
@@ -906,19 +972,28 @@ def render_screen(
         # 전환하는지 확신할 수 없다 — 자격증명을 바꾸는 키라 그 불확실함의 대가가 크다.
         if i == view.cursor and selected_row(view) is not None:
             spans.append((1, 2, _KEY_STYLE))
+            # 커서가 몇 번째 줄인지 **여기서** 적어 둔다. 짧은 화면에서 본문을 자를 때
+            # 쓰는데, 예전에는 그 자리에서 `ln.startswith(" >")` 로 화면 글자를 뒤져
+            # 되찾았다. 이미 아는 것을 텍스트에서 알아내는 셈이고, 빗나가면 예외가 아니라
+            # 조용히 가운데 줄로 떨어져 스크롤이 커서를 놓친다 — 꼬리말 들여쓰기를 한 칸
+            # 옮겼을 때 `" >"` 가 우연히 유지돼서 안 깨졌을 뿐이다.
+            cursor_at = len(body)
         # 활성 행은 `*` 와 라벨을 굵게. 행의 색은 유지한다 — 여기서 tone 을 떨어뜨리면
         # 하필 소진된(danger) 계정이 활성일 때 그 경고색이 라벨에서만 사라진다.
         if row.active:
             spans.append((2, 3 + len(row.label), Style(tone, bold=True)))
         body.append((line, Style(tone, spans=tuple(spans))))
     if hidden_below:
-        body.append((f"   v {hidden_below} more", _DIM))
+        body.append((f"{_INDENT}v {hidden_below} more", _DIM))
     body += axis_lines
 
     # 메뉴. 커서가 계정 구간을 지나면 여기로 이어진다.
+    menu_at = len(body)
     menu_lines: list[tuple[str, Style]] = [("", _PLAIN)]
     for i, (_, title) in enumerate(MENU):
         picked = view.cursor - len(view.rows) == i
+        if picked:
+            cursor_at = menu_at + len(menu_lines)
         line = (
             _clip(f" {'>' if picked else ' '} {title}", width)
             if width
@@ -936,11 +1011,16 @@ def render_screen(
         if over > 0:
             keep_n = max(len(body) - over, 1)
             # 커서가 있는 줄을 남긴다. 표시줄이 먼저 밀려나는 것이 자연스럽다.
-            cursor_at = next(
-                (i for i, (ln, _) in enumerate(body) if ln.startswith(" >")), len(body) // 2
-            )
-            lo = min(max(0, cursor_at - keep_n // 2), max(0, len(body) - keep_n))
+            at = len(body) // 2 if cursor_at is None else cursor_at
+            lo = min(max(0, at - keep_n // 2), max(0, len(body) - keep_n))
             body = body[lo : lo + keep_n]
+            # 자르고 남은 빈 줄은 뗀다. 메뉴는 앞에 빈 줄을 하나 두고 시작하는데, 메뉴
+            # 항목이 통째로 잘려 나가면 **그 빈 줄만 남아** 꼬리말의 빈 줄과 겹쳐 두 줄이
+            # 빈다. 화면이 짧아서 자른 상황에 빈 줄을 두 개 쓰는 셈이다.
+            while body and not body[0][0].strip():
+                body = body[1:]
+            while body and not body[-1][0].strip():
+                body = body[:-1]
 
         # 그래도 넘치면(머리말 3 + 행 1 + 메시지 2 = 6 이 바닥) 머리말을 앞에서 줄인다.
         # 제목과 빈 줄보다 "무엇이 잘못됐나" 가 먼저다.
@@ -967,16 +1047,16 @@ def _render_policy(
         selected = i == view.policy_cursor
         out.append((f" {cursor} {_pad(title, 14)} {value}{edited}", Style(bold=selected)))
         if selected:
-            out.append((f"     {why}", _DIM))
+            out.append((_note(f"  {why}", width), _DIM))
     keys_text, keys_spans = keys_line(POLICY_KEYS, width=width)
     out += [
         ("", _PLAIN),
         (keys_text, Style("dim", spans=keys_spans)),
-        ("  s saves; automatic switching follows these values from then on", _DIM),
-        (f"  Saved to: {s.accounts_dir / config.CONFIG_NAME}", _DIM),
+        (_note("s saves; automatic switching follows these values from then on", width), _DIM),
+        (_note(f"Saved to: {s.accounts_dir / config.CONFIG_NAME}", width), _DIM),
     ]
     if view.message:
-        out += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
+        out += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
     if height is not None and len(out) > height:
         # 메시지가 있으면 그것부터 지킨다.
         keep = out[-2:] if view.message else []
@@ -1221,7 +1301,7 @@ def adjust_policy(view: View, delta: int) -> View:
 
     step = {"margin": 1, "cooldown": 60, "cache_ttl": 60, "check_interval": 10}[key]
     value = max(0, getattr(s, key) + delta * step)
-    return replace(view, settings=replace(s, **{key: value}), message="")
+    return replace(view, discard_armed=False, settings=replace(s, **{key: value}), message="")
 
 
 def edit_policy(view: View, raw: str | None) -> View:
@@ -1235,13 +1315,17 @@ def edit_policy(view: View, raw: str | None) -> View:
     없는 값은 이것뿐이다.
     """
     if not raw or not raw.strip():
-        return replace(view, message="")
+        return replace(view, discard_armed=False, message="")
     key = POLICY_FIELDS[view.policy_cursor][0]
     title = POLICY_FIELDS[view.policy_cursor][1]
     if key == "ladder":
         rungs = config.parse_ladder(raw)
         if not rungs:
-            return replace(view, message=f"{title}: could not read numbers (example: 50,70,85,95)")
+            return replace(
+                view,
+                discard_armed=False,
+                message=f"{title}: could not read numbers (example: 50,70,85,95)",
+            )
         # 정렬해 둔다. 정책은 앞에서부터 훑어 첫 상회 칸을 관문으로 잡으므로(`rung_for`),
         # 순서가 뒤엉킨 사다리는 조용히 엉뚱한 칸을 고른다.
         return replace(
@@ -1250,12 +1334,39 @@ def edit_policy(view: View, raw: str | None) -> View:
     try:
         value = config.parse_int(raw)
     except config.ConfigError:
-        return replace(view, message=f"{title}: not an integer ({raw.strip()!r})")
+        return replace(
+            view, discard_armed=False, message=f"{title}: not an integer ({raw.strip()!r})"
+        )
     if value < 0:
         # 음수는 `config` 가 받지만(bash 패리티) 이 값들에 뜻이 없다. 저장하면 쿨다운이
         # 영원히 안 걸리는 식으로 조용히 이상해진다.
-        return replace(view, message=f"{title}: cannot be negative")
-    return replace(view, settings=replace(view.settings, **{key: value}), message="")
+        return replace(view, discard_armed=False, message=f"{title}: cannot be negative")
+    return replace(
+        view, discard_armed=False, settings=replace(view.settings, **{key: value}), message=""
+    )
+
+
+def leave_policy(view: View) -> View:
+    """`esc`. 저장하지 않고 정책 화면을 떠난다.
+
+    **편집이 남아 있으면 한 번 묻는다.** 화면에 `*` 로 미저장 표시는 있었지만 `esc` 는
+    아무 말 없이 버렸다 — 사용자는 그것을 "닫기" 로 읽고 저장이 됐다고 믿는다. 되돌릴
+    방법이 없는 동작이라 한 번은 물어야 한다.
+
+    잃을 것이 없으면 묻지 않는다. 늘 묻는 확인은 곧 반사적으로 넘겨져서, 정작 필요한
+    순간에도 안 읽힌다.
+    """
+    saved = view.saved_settings
+    dirty = saved is not None and any(
+        getattr(view.settings, key) != getattr(saved, key) for key, _, _ in POLICY_FIELDS
+    )
+    if dirty and not view.discard_armed:
+        return replace(
+            view,
+            discard_armed=True,
+            message="Unsaved changes — s to save, esc again to discard",
+        )
+    return replace(view, mode="accounts", discard_armed=False, message="")
 
 
 def save_policy(view: View) -> View:
@@ -1339,35 +1450,73 @@ def _attr_of(style: Style, colored: bool) -> int:  # pragma: no cover - curses �
     return attr
 
 
-def _paint(stdscr, view: View, colored: bool = False) -> None:  # pragma: no cover - 터미널 필요
+def segments(
+    line: str, spans: Sequence[tuple[int, int, Style]], room: int
+) -> list[tuple[str, Style | None]]:
+    """줄을 `(글자, 구간 속성)` 조각으로 쪼갠다. 속성이 `None` 이면 줄의 기본 속성이다.
+
+    **이어 붙이면 반드시 `_clip(line, room)` 과 같아야 한다.** 그것이 이 함수의 계약이고,
+    깨지면 화면의 글자가 깨진다 — 색이 아니라 글자다. 그래서 순수 함수로 빼서 잰다.
+
+    구간은 **문자** 인덱스라 잘린 뒤의 길이로 다시 재야 한다. 자르는 것은 표시 폭 기준
+    (`_clip`)이고 인덱스는 문자 기준이라 둘이 같지 않다 — 한글이 섞이면 어긋난다.
+    """
+    text = _clip(line, room)
+    out: list[tuple[str, Style | None]] = []
+    at = 0
+    for start, end, span_style in spans:
+        start, end = min(start, len(text)), min(end, len(text))
+        if start >= end:
+            continue
+        if start > at:
+            out.append((text[at:start], None))
+        out.append((text[start:end], span_style))
+        at = end
+    if at < len(text):
+        out.append((text[at:], None))
+    return out
+
+
+def _paint(stdscr, view: View, colored: bool = False) -> int:  # pragma: no cover - 터미널 필요
+    """화면을 그리고 **그린 줄 수**를 돌려준다.
+
+    줄 수를 돌려주는 것은 `_prompt` 때문이다. 프롬프트를 터미널 맨 아래에 그리면, 내용이
+    짧고 창이 큰 경우 입력줄이 표에서 한참 떨어진 곳에 뜬다 — 방금 누른 키와 그 반응이
+    화면 양 끝에 갈라져 있으면 무엇을 묻는 것인지 읽히지 않는다.
+    """
     stdscr.erase()
     height, width = stdscr.getmaxyx()
     if height < 2 or width < 2:
         stdscr.refresh()
-        return
+        return 0
     # 루프는 마지막 행 마지막 칸에 쓰면 curses 가 에러를 내므로 한 줄을 비워 둔다.
     room = max(width - 1, 0)
+    drawn = 0
     for i, (line, style) in enumerate(render_screen(view, height=height - 1, width=room)):
         if i >= height - 1:
             break
+        drawn = i + 1
+        base = _attr_of(style, colored)
+        # 줄 전체를 먼저 한 번 긋는다. 아래 조각 그리기가 도중에 실패해도 **글자는**
+        # 남아 있게 하는 그물이다. 색이 틀린 것과 글자가 사라진 것은 대가가 다르다.
         with contextlib.suppress(curses.error):
-            stdscr.addnstr(i, 0, _clip(line, room), room, _attr_of(style, colored))
-        # 구간을 **덧칠**한다. 줄을 조각으로 쪼개 이어 붙이지 않는 이유는, 그러면 폭
-        # 계산이 조각마다 필요해지고 한 조각이 틀리면 뒤가 전부 밀리기 때문이다.
-        for start, end, span_style in style.spans:
-            # `spans` 는 문자 인덱스다. 칸으로 옮기는 계산은 여기 한 곳에만 둔다.
-            col = _width(line[:start])
-            if col >= room:
-                break
-            with contextlib.suppress(curses.error):
-                stdscr.addnstr(
-                    i,
-                    col,
-                    _clip(line[start:end], room - col),
-                    room - col,
-                    _attr_of(span_style, colored),
-                )
+            stdscr.addnstr(i, 0, _clip(line, room), room, base)
+        if not style.spans:
+            continue
+        # 구간은 **이어서** 그린다. 예전에는 `_width(line[:start])` 로 칸을 계산해 덧칠했다.
+        # 그 계산은 East Asian **Ambiguous** 글자를 한 칸으로 세는데, CJK 터미널은 두 칸으로
+        # 그린다. 그래서 앞에 화살표가 있는 구간은 왼쪽으로 밀렸다 — 정책 화면의 `←→` 가
+        # 실제로 두 칸 밀려 `move` 위에 색이 얹혔다. 방향키 항목이 둘이 되는 순간 "화살표를
+        # 맨 뒤에 둔다" 규칙만으로는 못 막는다.
+        #
+        # 이어서 그리면 칸을 우리가 세지 않는다. ncurses 가 자기 `wcwidth` 로 커서를 옮기고,
+        # 그 판단이 곧 실제로 그려지는 폭이다. 계산이 없으면 어긋날 것도 없다.
+        with contextlib.suppress(curses.error):
+            stdscr.move(i, 0)
+            for chunk, span_style in segments(line, style.spans, room):
+                stdscr.addstr(chunk, base if span_style is None else _attr_of(span_style, colored))
     stdscr.refresh()
+    return drawn
 
 
 def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
@@ -1381,8 +1530,23 @@ def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
         fn(*args)
 
 
-def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 필요
+def _adopt_label(view: View) -> str:
+    """`a` 가 물을 문구. **어느 계정을 보관하는지**를 이름에 넣는다.
+
+    `Slot name:` 만 있으면 무엇에 이름을 붙이는지가 화면 어디에도 없다 — 그 순간 사용자가
+    아는 것은 "메뉴에서 Adopt 를 골랐다" 뿐이고, 활성 계정이 무엇인지는 표의 `*` 를 다시
+    찾아야 안다.
+    """
+    who = view.active_email or "the account in use"
+    return f"  Keep {who} as: "
+
+
+def _prompt(stdscr, label: str, row: int | None = None) -> str | None:  # pragma: no cover
     """한 줄 입력. 취소하거나 비면 None.
+
+    `row` 는 **내용 바로 아래**다. 터미널 맨 아래에 그리면, 내용이 짧고 창이 큰 경우
+    입력줄이 표에서 한참 떨어진 곳에 뜬다 — 방금 누른 키와 그 반응이 화면 양 끝에
+    갈라져 있으면 무엇을 묻는 것인지 읽히지 않는다.
 
     **루프가 걸어 둔 논블로킹 타임아웃을 끄고 읽는다.** 켜진 채로 `getstr` 를 부르면
     `wgetch` 가 타임아웃마다 ERR 을 돌려줘서 사용자가 다 치기 전에 반쪽만 읽고 끝난다 —
@@ -1390,6 +1554,7 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     넣으면서 `stdscr.timeout()` 이 생겼고, 그때 이 함수를 같이 보지 않았다.
     """
     height, width = stdscr.getmaxyx()
+    at = height - 1 if row is None else min(max(row, 0), height - 1)
     # **한 문장씩 따로 감싼다.** 한 `suppress` 에 몰아 넣으면 앞 문장이 던지는 순간
     # 뒤가 통째로 건너뛰어진다. 실제로 `curs_set(1)` 이 없는 터미널(vt100)에서 바로
     # 다음 줄인 타임아웃 해제가 실행되지 않아, `getstr` 가 논블로킹으로 남아 입력을
@@ -1398,9 +1563,9 @@ def _prompt(stdscr, label: str) -> str | None:  # pragma: no cover - 터미널 �
     _try(curses.curs_set, 1)
     _try(stdscr.timeout, -1)
     try:
-        stdscr.addnstr(height - 1, 0, _clip(label, width - 1), max(width - 1, 0))
+        stdscr.addnstr(at, 0, _clip(label, width - 1), max(width - 1, 0))
         stdscr.clrtoeol()
-        raw = stdscr.getstr(height - 1, min(_width(label), max(width - 1, 0)), 64)
+        raw = stdscr.getstr(at, min(_width(label), max(width - 1, 0)), 64)
     except (curses.error, KeyboardInterrupt):
         return None
     finally:
@@ -1571,7 +1736,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             view = apply_probe_result(view, done)
             # 조회 중에 전환·등록이 있었으면 새 슬롯이 비어 있을 수 있다.
             kick(auto_probe_targets(view, attempted))
-        _paint(stdscr, probing_note(refresh_clock(view), prober.labels), colored)
+        drawn = _paint(stdscr, probing_note(refresh_clock(view), prober.labels), colored)
         started = time.monotonic()
         key = stdscr.getch()
 
@@ -1594,20 +1759,32 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             continue
 
         if view.mode == "policy":
-            if key == 27:  # esc — 편집을 버린다
-                view = build_view(
-                    config.load(),
-                    cursor=view.cursor,
-                    message="Left without saving",
-                    carry=_carry(view),
-                )
+            if key == 27:  # esc — 편집을 버린다 (남아 있으면 한 번 묻는다)
+                asked = leave_policy(view)
+                if asked.mode == "policy":
+                    view = asked  # 아직 안 나간다 — 확인을 물었다
+                else:
+                    view = build_view(
+                        config.load(),
+                        cursor=view.cursor,
+                        message="Left without saving",
+                        carry=_carry(view),
+                    )
             elif key == curses.KEY_UP:
-                view = replace(view, policy_cursor=max(0, view.policy_cursor - 1), message="")
+                # 커서를 옮기면 "버릴까요" 가 풀린다. 물어본 것을 잊고 나중에 누른 esc 가
+                # 곧바로 버리면 묻는 의미가 없다.
+                view = replace(
+                    view,
+                    policy_cursor=max(0, view.policy_cursor - 1),
+                    message="",
+                    discard_armed=False,
+                )
             elif key == curses.KEY_DOWN:
                 view = replace(
                     view,
                     policy_cursor=min(len(POLICY_FIELDS) - 1, view.policy_cursor + 1),
                     message="",
+                    discard_armed=False,
                 )
             elif key == curses.KEY_LEFT:
                 view = adjust_policy(view, -1)
@@ -1615,7 +1792,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 view = adjust_policy(view, +1)
             elif key in (ord("e"), ord("E")):
                 title = POLICY_FIELDS[view.policy_cursor][1]
-                view = edit_policy(view, _prompt(stdscr, f"{title} = "))
+                view = edit_policy(view, _prompt(stdscr, f"  {title} = ", drawn))
                 curses.flushinp()
             elif key in (ord("s"), ord("S")):
                 view = save_policy(view)
@@ -1643,7 +1820,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 if not prober.start(settings, [r.label for r in view.rows]):
                     view = replace(view, message="Already probing")
             elif action == "adopt":
-                view = do_adopt(view, _prompt(stdscr, "Slot name: "))
+                view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
             else:
                 view = activate(view)
             curses.flushinp()
@@ -1663,7 +1840,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             view = do_toggle_auto(view)
             curses.flushinp()
         elif key in (ord("a"), ord("A")):
-            view = do_adopt(view, _prompt(stdscr, "Slot name: "))
+            view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
             curses.flushinp()
         elif key in (ord("p"), ord("P")):
             view = replace(
