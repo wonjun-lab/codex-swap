@@ -1360,22 +1360,21 @@ def test_the_move_and_adjust_keys_are_drawn_as_arrows(env) -> None:
 def test_the_arrow_entry_is_last_so_nothing_after_it_can_shift(env) -> None:
     """화살표 글자는 East Asian **Ambiguous** 라 터미널마다 한 칸도 두 칸도 된다.
 
-    구간 강조는 `_paint` 가 `_width(line[:start])` 로 칸을 계산해 덧칠한다. 그 앞에
-    Ambiguous 글자가 있으면 계산과 실제가 갈려 강조가 옆으로 밀린다.
+    **강조 위치는 이제 이 규칙이 지키는 것이 아니다.** `_paint` 가 조각을 이어 그려
+    ncurses 가 칸을 옮기므로 우리 쪽 계산이 없다 — 그쪽은 `test_tui_paint.py` 가 잰다.
+    한동안 `_width(line[:start])` 로 계산하던 때에는 이 규칙으로 막았는데, 방향키 항목이
+    **둘**이 되자 뒤엣것이 두 칸 밀렸다. 항목이 하나일 때만 성립하는 방어였다.
 
-    글자를 바꿀 수는 없다 — 방향키를 뜻하는 글자는 전부 Ambiguous 다. 대신 **맨 뒤에**
-    두면 그 뒤에 계산할 구간이 없어서 문제가 성립하지 않는다. 앞의 구간들은 전부
-    ASCII 만 지나므로 정확하다.
+    남은 이유는 줄 **길이**다. 길이는 여전히 `_width` 로 재므로, Ambiguous 를 두 칸으로
+    그리는 터미널에서는 우리가 잰 것보다 줄이 길어져 끝이 넘칠 수 있다. 그때 밀려나는
+    것이 `q quit` 이면 화면에서 나가는 법이 사라진다. 그래서 화살표가 맨 뒤다.
     """
     for pairs in (tui.ACCOUNT_KEYS, tui.POLICY_KEYS):
-        assert pairs[-1][0] == "↑↓" or pairs[-1][0] == "←→", pairs[-1]
         arrows = [i for i, (k, _) in enumerate(pairs) if not k.isascii()]
+        assert arrows, f"화살표 항목이 없다: {pairs}"
         assert arrows == list(range(len(pairs) - len(arrows), len(pairs))), pairs
-
-    text, spans = tui.keys_line(tui.ACCOUNT_KEYS, width=200)
-    first_arrow = min(i for i, ch in enumerate(text) if not ch.isascii())
-    for start, _, _ in spans[:-1]:
-        assert start < first_arrow, "화살표 뒤에 강조 구간이 있다 — 밀릴 수 있다"
+        ascii_keys = [k for k, _ in pairs if k.isascii()]
+        assert "q" in ascii_keys, "나가는 키가 ASCII 가 아니면 맨 뒤 규칙의 뜻이 없다"
 
 
 # ── esc 가 편집을 조용히 버리던 것 ─────────────────────────────────────────

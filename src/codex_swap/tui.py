@@ -128,12 +128,16 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 # 산술 기호로 읽힌다.
 #
 # 그 글자들은 **East Asian Ambiguous** 라 터미널마다 한 칸으로도 두 칸으로도 그려진다.
-# 구간 강조는 `_paint` 가 `_width(line[:start])` 로 칸을 계산해 덧칠하므로, 앞에
-# Ambiguous 글자가 있으면 계산과 실제가 갈려 강조가 옆으로 밀린다. 방향키를 뜻하는
-# 글자는 전부 Ambiguous 라 글자를 바꿔서는 못 피한다.
+# 방향키를 뜻하는 글자는 전부 Ambiguous 라 글자를 바꿔서는 못 피한다.
 #
-# 그래서 **맨 뒤에 둔다.** 뒤에 계산할 구간이 없으면 문제가 성립하지 않고, 앞의 구간들은
-# 전부 ASCII 만 지나므로 정확하다. 순서를 바꿀 때 이 제약을 함께 봐야 한다.
+# 강조 위치는 이제 문제가 아니다. `_paint` 가 조각을 이어 그려 ncurses 가 커서를 옮기므로
+# 우리 쪽 칸 계산이 없다. 한동안은 `_width(line[:start])` 로 계산해 덧칠했고, 그래서
+# 방향키 항목이 **둘**이 되는 순간 뒤엣것(`←→`)이 두 칸 밀렸다 — "맨 뒤에 둔다" 규칙만으로는
+# 항목이 하나일 때만 막힌다.
+#
+# 그래도 맨 뒤에 둔다. 줄 **길이**는 여전히 `_width` 로 재기 때문이다. Ambiguous 를 두 칸으로
+# 그리는 터미널에서는 우리가 잰 것보다 줄이 길어져 끝이 넘칠 수 있는데, 그때 밀려나는 것이
+# `q quit` 이 아니라 `↑↓ move` 여야 한다. 화면에서 나가는 법이 먼저다.
 #
 # 조작법은 **(키, 설명) 짝**으로 둔다. 문자열로 적어 두면 키가 어디부터 어디까지인지
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
@@ -1430,6 +1434,33 @@ def _attr_of(style: Style, colored: bool) -> int:  # pragma: no cover - curses �
     return attr
 
 
+def segments(
+    line: str, spans: Sequence[tuple[int, int, Style]], room: int
+) -> list[tuple[str, Style | None]]:
+    """줄을 `(글자, 구간 속성)` 조각으로 쪼갠다. 속성이 `None` 이면 줄의 기본 속성이다.
+
+    **이어 붙이면 반드시 `_clip(line, room)` 과 같아야 한다.** 그것이 이 함수의 계약이고,
+    깨지면 화면의 글자가 깨진다 — 색이 아니라 글자다. 그래서 순수 함수로 빼서 잰다.
+
+    구간은 **문자** 인덱스라 잘린 뒤의 길이로 다시 재야 한다. 자르는 것은 표시 폭 기준
+    (`_clip`)이고 인덱스는 문자 기준이라 둘이 같지 않다 — 한글이 섞이면 어긋난다.
+    """
+    text = _clip(line, room)
+    out: list[tuple[str, Style | None]] = []
+    at = 0
+    for start, end, span_style in spans:
+        start, end = min(start, len(text)), min(end, len(text))
+        if start >= end:
+            continue
+        if start > at:
+            out.append((text[at:start], None))
+        out.append((text[start:end], span_style))
+        at = end
+    if at < len(text):
+        out.append((text[at:], None))
+    return out
+
+
 def _paint(stdscr, view: View, colored: bool = False) -> int:  # pragma: no cover - 터미널 필요
     """화면을 그리고 **그린 줄 수**를 돌려준다.
 
@@ -1449,23 +1480,25 @@ def _paint(stdscr, view: View, colored: bool = False) -> int:  # pragma: no cove
         if i >= height - 1:
             break
         drawn = i + 1
+        base = _attr_of(style, colored)
+        # 줄 전체를 먼저 한 번 긋는다. 아래 조각 그리기가 도중에 실패해도 **글자는**
+        # 남아 있게 하는 그물이다. 색이 틀린 것과 글자가 사라진 것은 대가가 다르다.
         with contextlib.suppress(curses.error):
-            stdscr.addnstr(i, 0, _clip(line, room), room, _attr_of(style, colored))
-        # 구간을 **덧칠**한다. 줄을 조각으로 쪼개 이어 붙이지 않는 이유는, 그러면 폭
-        # 계산이 조각마다 필요해지고 한 조각이 틀리면 뒤가 전부 밀리기 때문이다.
-        for start, end, span_style in style.spans:
-            # `spans` 는 문자 인덱스다. 칸으로 옮기는 계산은 여기 한 곳에만 둔다.
-            col = _width(line[:start])
-            if col >= room:
-                break
-            with contextlib.suppress(curses.error):
-                stdscr.addnstr(
-                    i,
-                    col,
-                    _clip(line[start:end], room - col),
-                    room - col,
-                    _attr_of(span_style, colored),
-                )
+            stdscr.addnstr(i, 0, _clip(line, room), room, base)
+        if not style.spans:
+            continue
+        # 구간은 **이어서** 그린다. 예전에는 `_width(line[:start])` 로 칸을 계산해 덧칠했다.
+        # 그 계산은 East Asian **Ambiguous** 글자를 한 칸으로 세는데, CJK 터미널은 두 칸으로
+        # 그린다. 그래서 앞에 화살표가 있는 구간은 왼쪽으로 밀렸다 — 정책 화면의 `←→` 가
+        # 실제로 두 칸 밀려 `move` 위에 색이 얹혔다. 방향키 항목이 둘이 되는 순간 "화살표를
+        # 맨 뒤에 둔다" 규칙만으로는 못 막는다.
+        #
+        # 이어서 그리면 칸을 우리가 세지 않는다. ncurses 가 자기 `wcwidth` 로 커서를 옮기고,
+        # 그 판단이 곧 실제로 그려지는 폭이다. 계산이 없으면 어긋날 것도 없다.
+        with contextlib.suppress(curses.error):
+            stdscr.move(i, 0)
+            for chunk, span_style in segments(line, style.spans, room):
+                stdscr.addstr(chunk, base if span_style is None else _attr_of(span_style, colored))
     stdscr.refresh()
     return drawn
 
