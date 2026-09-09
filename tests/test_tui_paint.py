@@ -175,6 +175,10 @@ class WideAmbiguousScreen:
             if self.x + width > self.cols:
                 raise _curses.error("addstr: 화면 끝")
             self.text[self.y][self.x] = ch
+            # 넓은 글자의 **뒤 칸**은 빈 문자열로 둔다. 공백으로 두면 줄을 되읽을 때
+            # 글자 사이에 없던 칸이 끼어 화면과 다른 문자열이 나온다.
+            for k in range(1, width):
+                self.text[self.y][self.x + k] = ""
             for k in range(width):
                 self.attr[self.y][self.x + k] = attr
             self.x += width
@@ -197,7 +201,7 @@ class WideAmbiguousScreen:
         return "".join(
             self.text[y][x]
             for x in range(self.cols)
-            if self.attr[y][x] & attr_bit and self.text[y][x] != " "
+            if self.attr[y][x] & attr_bit and self.text[y][x] not in ("", " ")
         )
 
 
@@ -214,6 +218,18 @@ def test_the_accent_lands_on_the_arrow_keys_even_when_ambiguous_is_two_cells(
     tui._paint(screen, view)
 
     row = screen.row_with("adjust")
+
+    # **글자가 먼저다.** 엉뚱한 칸에 덧칠하면 `←→` 자체는 굵게 남지만 그 자리에 있던
+    # 글자를 덮어쓴다. 강조 위치만 보면 그 피해가 안 보인다 — 실제로 이 검사 없이는
+    # 옛 방식으로 되돌리는 뮤테이션이 살아남았다.
+    want = next(
+        text for text, _ in tui.render_screen(view, height=23, width=119) if "adjust" in text
+    )
+    assert screen.row_text(row) == want.rstrip(), (
+        f"그린 글자가 `render_screen` 과 다르다\n  그린 것: {screen.row_text(row)!r}\n"
+        f"  기대:    {want.rstrip()!r}"
+    )
+
     expected = "".join(key for key, _ in tui.POLICY_KEYS)
     assert screen.marked(row, _curses.A_BOLD) == expected, (
         f"강조가 키 글자에서 벗어났다\n  줄: {screen.row_text(row)!r}\n"
