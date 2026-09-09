@@ -45,5 +45,10 @@ def _isolated_home(tmp_path_factory, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_ACCOUNT_DEFAULT_HOME", str(home / ".codex"))
+    # 마지막 줄은 오늘 기준 **중복**이다 — `config.load` 가 `default_home / "accounts"` 로
+    # 접으므로 위 두 줄만으로도 격리된다(뮤테이션으로 확인: 이 줄을 지워도 아무 테스트도
+    # 빨개지지 않는다). 그래도 남긴다. 픽스처가 지켜야 할 것은 "격리" 지 "`config.load` 의
+    # 현재 파생 규칙" 이 아니고, 그 규칙이 바뀌는 날 조용히 새면 증상은 또 엉뚱한 곳에서
+    # 나온다. 값이 셋 다 명시돼 있으면 그 결합이 끊긴다.
     monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
     return home
