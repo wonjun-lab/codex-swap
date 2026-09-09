@@ -165,18 +165,19 @@ ACCOUNT_KEYS = (
     ("q", "quit"),
     ("↑↓", "move"),
 )
-AUTO_ON_LINES = ("  Auto switch: on   (o to turn off)", "  Auto switch: on", "  Auto: on", "  ON")
+AUTO_ON_LINES = ("Auto switch: on   (o to turn off)", "Auto switch: on", "Auto: on", "ON")
 AUTO_OFF_LINES = (
-    "  Auto switch: off   (o to turn on)",
-    "  Auto switch: off",
-    "  Auto: off",
-    "  OFF",
+    "Auto switch: off   (o to turn on)",
+    "Auto switch: off",
+    "Auto: off",
+    "OFF",
 )
 STALE_LEGENDS = (
-    "  ~ marks a stale cached value (r to refresh)",
-    "  ~ = stale (r to refresh)",
-    "  ~ = stale",
+    "~ marks a stale cached value (r to refresh)",
+    "~ = stale (r to refresh)",
+    "~ = stale",
 )
+"""판마다 **들여쓰기를 적지 않는다.** `_help_line` 이 `_INDENT` 로 붙인다."""
 
 POLICY_KEYS = (
     ("e", "type"),
@@ -243,17 +244,42 @@ def _cell(text: str, cols: int, *, ellipsis: bool = False, right: bool = False) 
     return pad(_clip(text, cols - 1) + "…", cols)
 
 
+_INDENT = "   "
+"""화면의 왼쪽 기준선. 세 칸인 것은 계정 행이 ` >*` 뒤에 라벨을 놓기 때문이다.
+
+꼬리말·메시지만 두 칸이던 때가 있었다. 한 칸이라 결함으로는 안 보이는데, 표·메뉴·축이
+전부 같은 열에서 시작하는 화면에서 **조작법과 경고만 그 왼쪽으로 튀어나와** 왼쪽 끝이
+두 개가 됐다. 눈은 그 어긋남을 읽지는 못하고 어수선함으로만 느낀다.
+
+0 열은 제목 한 줄에만 준다. 나머지는 전부 이 상수를 지난다.
+"""
+
+
+def _note(text: str, width: int | None) -> str:
+    """꼬리말·메시지 한 줄. 기준선에 맞추고, 넘치면 잘렸다는 것을 보인다.
+
+    자르지 않던 때는 폭이 좁을 때 그리기 단계가 **말없이** 잘라서 문장의 뒤쪽이 통째로
+    사라졌다. 하필 이 줄이 전환 결과와 실패 사유를 알리는 유일한 줄이라, 잘린 줄 모르고
+    "아무 일도 안 일어났다" 로 읽힌다.
+    """
+    if width is None:
+        return f"{_INDENT}{text}"
+    return f"{_INDENT}{_cell(text, max(width - len(_INDENT), 0), ellipsis=True)}".rstrip()
+
+
 def _help_line(*variants: str, width: int | None) -> str:
     """들어가는 것 중 가장 자세한 판을 고른다.
 
     긴 줄을 그냥 자르면 뒤쪽 키가 통째로 사라진다 — 40 칸에서 실제로 `r` 에서 잘렸다.
     자르는 대신 판을 바꾸면 **무엇이 빠졌는지가 보인다.** 마지막 판은 어떤 폭에서도
     쓰이므로 가장 짧아야 한다.
+
+    들여쓰기는 여기서 붙인다. 판마다 적어 두면 한 판만 어긋나도 그 폭에서만 줄이 밀린다.
     """
     for variant in variants:
-        if width is None or _width(variant) <= width:
-            return variant
-    return variants[-1]
+        if width is None or _width(variant) + len(_INDENT) <= width:
+            return f"{_INDENT}{variant}"
+    return f"{_INDENT}{variants[-1]}"
 
 
 # ── 상태 읽기 ────────────────────────────────────────────────────────────────
@@ -453,7 +479,7 @@ def _assemble_keys(
     pairs: Sequence[tuple[str, str]], joiner: str, *, labels: bool
 ) -> tuple[str, tuple[tuple[int, int, Style], ...]]:
     """조작법 한 줄과 **키 글자의 구간**. 텍스트를 만들면서 구간을 함께 기록한다."""
-    text = "  "
+    text = _INDENT
     spans = []
     for i, (key, label) in enumerate(pairs):
         if i:
@@ -824,27 +850,30 @@ def render_screen(
         who = view.active_email or "unknown account"
         keep.append(
             (
-                f"  Warning: active ({who}) is not in any slot. Switching will not keep it",
+                _note(
+                    f"Warning: active ({who}) is not in any slot. Switching will not keep it",
+                    width,
+                ),
                 Style("warn"),
             )
         )
     if view.message:
-        keep.append((f"  {view.message}", _PLAIN))
+        keep.append((_note(view.message, width), _PLAIN))
 
     if not view.rows:
         # 빈 화면에서도 메시지가 보여야 한다 — 등록 실패가 여기서 나온다. 다만 조작법은
         # 이 화면에 실제로 있는 키만 적는다.
         empty = [
-            ("  No accounts yet.", _PLAIN),
+            (_note("No accounts yet.", width), _PLAIN),
             ("", _PLAIN),
-            ("  a  adopt the account you are logged in as   q  quit", _DIM),
+            (_note("a  adopt the account you are logged in as   q  quit", width), _DIM),
         ]
         if view.message:
-            empty += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
+            empty += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
         return head + empty
 
     columns = (
-        f"   {_cell('LABEL', label_cols)}{_GUTTER}"
+        f"{_INDENT}{_cell('LABEL', label_cols)}{_GUTTER}"
         f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', _USED_COLS)}"
     )
     if with_bar:
@@ -862,7 +891,8 @@ def render_screen(
     if with_bar and any(r.percent is not None for r in view.rows):
         axis, labels = ladder_axis(s.ladder, view.current_rung)
         pad = (
-            f"   {' ' * label_cols}{_GUTTER}{' ' * email_cols}{_GUTTER}{' ' * _USED_COLS}{_GUTTER}"
+            f"{_INDENT}{' ' * label_cols}{_GUTTER}"
+            f"{' ' * email_cols}{_GUTTER}{' ' * _USED_COLS}{_GUTTER}"
         )
         axis_lines = [
             # 축은 바로 위 바들의 눈금이다. 한 줄 띄웠던 적이 있는데 — 마지막 계정의 한
@@ -899,7 +929,7 @@ def render_screen(
 
     body: list[tuple[str, Style]] = []
     if hidden_above:
-        body.append((f"   ^ {hidden_above} more", _DIM))
+        body.append((f"{_INDENT}^ {hidden_above} more", _DIM))
     for i, row in enumerate(rows, start=start):
         cursor = ">" if i == view.cursor and selected_row(view) is not None else " "
         mark = "*" if row.active else " "
@@ -915,7 +945,11 @@ def render_screen(
             line += (
                 f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
                 f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
-            ).rstrip()
+            )
+        # 마지막 칸의 채움은 지운다. 머리말은 이미 그렇게 하는데 행만 남겨 두었더니,
+        # 리셋 열이 빠지는 좁은 폭에서 행마다 눈에 안 보이는 꼬리가 붙었다. 행에는 색이
+        # 걸려 있어서 그 꼬리까지 칠해진다.
+        line = line.rstrip()
         # **행 전체에 bold 를 걸지 않는다.** 이 터미널에서 bold 글자는 더 굵고 넓게
         # 그려져서, 같은 문자열인 바가 활성 행에서만 길어 보인다 — 실제로 두 행의
         # 문자열·폭·열 위치가 전부 같은데도 "아래 바가 더 짧다" 로 읽혔다.
@@ -932,7 +966,7 @@ def render_screen(
             spans.append((2, 3 + len(row.label), Style(tone, bold=True)))
         body.append((line, Style(tone, spans=tuple(spans))))
     if hidden_below:
-        body.append((f"   v {hidden_below} more", _DIM))
+        body.append((f"{_INDENT}v {hidden_below} more", _DIM))
     body += axis_lines
 
     # 메뉴. 커서가 계정 구간을 지나면 여기로 이어진다.
@@ -987,16 +1021,16 @@ def _render_policy(
         selected = i == view.policy_cursor
         out.append((f" {cursor} {_pad(title, 14)} {value}{edited}", Style(bold=selected)))
         if selected:
-            out.append((f"     {why}", _DIM))
+            out.append((_note(f"  {why}", width), _DIM))
     keys_text, keys_spans = keys_line(POLICY_KEYS, width=width)
     out += [
         ("", _PLAIN),
         (keys_text, Style("dim", spans=keys_spans)),
-        ("  s saves; automatic switching follows these values from then on", _DIM),
-        (f"  Saved to: {s.accounts_dir / config.CONFIG_NAME}", _DIM),
+        (_note("s saves; automatic switching follows these values from then on", width), _DIM),
+        (_note(f"Saved to: {s.accounts_dir / config.CONFIG_NAME}", width), _DIM),
     ]
     if view.message:
-        out += [("", _PLAIN), (f"  {view.message}", _PLAIN)]
+        out += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
     if height is not None and len(out) > height:
         # 메시지가 있으면 그것부터 지킨다.
         keep = out[-2:] if view.message else []
