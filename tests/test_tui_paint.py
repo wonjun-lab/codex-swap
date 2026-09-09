@@ -12,6 +12,7 @@ Ambiguous 글자를 한 칸으로 세는데 CJK 터미널은 두 칸으로 그�
 
 from __future__ import annotations
 
+import curses as _curses
 import sys
 import unicodedata
 from pathlib import Path
@@ -129,3 +130,92 @@ def test_extreme_terminal_sizes_still_quit_cleanly(session: Session, cols: int, 
     screen = session.run([b"q"], cols=cols, rows=rows)
     assert screen.exit_code == 0, screen.text
     assert "Traceback" not in screen.text, screen.text
+
+
+# ── Ambiguous 를 두 칸으로 그리는 터미널 ─────────────────────────────────────
+
+
+class WideAmbiguousScreen:
+    """CJK 터미널을 흉내내는 가짜 화면.
+
+    pty 하네스로는 이 결함을 못 잡는다 — 그 렌더러도 Ambiguous 를 한 칸으로 세기 때문에
+    `_paint` 의 계산과 늘 일치한다. glibc 의 `wcwidth` 도 로케일과 무관하게 1 을 주므로
+    실제 ncurses 로도 재현되지 않는다. **틀리게 그리는 터미널이 있어야 차이가 보인다.**
+
+    그래서 여기서는 `addstr` 이 커서를 두 칸씩 미는 화면을 만든다. `_paint` 가 칸을
+    직접 계산하면 그 계산과 이 화면이 갈리고, ncurses 에게 맡기면(= 이 가짜 화면의
+    커서를 따르면) 갈릴 것이 없다.
+    """
+
+    def __init__(self, rows: int, cols: int) -> None:
+        self.rows, self.cols = rows, cols
+        self.erase()
+
+    @staticmethod
+    def _cells(ch: str) -> int:
+        return 2 if unicodedata.east_asian_width(ch) in "WFA" else 1
+
+    def erase(self) -> None:
+        self.text = [[" "] * self.cols for _ in range(self.rows)]
+        self.attr = [[0] * self.cols for _ in range(self.rows)]
+        self.y = self.x = 0
+
+    def getmaxyx(self) -> tuple[int, int]:
+        return self.rows, self.cols
+
+    def move(self, y: int, x: int) -> None:
+        self.y, self.x = y, x
+
+    def refresh(self) -> None:
+        pass
+
+    def addstr(self, text: str, attr: int = 0) -> None:
+        for ch in text:
+            width = self._cells(ch)
+            if self.x + width > self.cols:
+                raise _curses.error("addstr: 화면 끝")
+            self.text[self.y][self.x] = ch
+            for k in range(width):
+                self.attr[self.y][self.x + k] = attr
+            self.x += width
+
+    def addnstr(self, y: int, x: int, text: str, n: int, attr: int = 0) -> None:
+        self.move(y, x)
+        self.addstr(text, attr)
+
+    def row_text(self, y: int) -> str:
+        return "".join(self.text[y]).rstrip()
+
+    def row_with(self, needle: str) -> int:
+        return next(y for y in range(self.rows) if needle in self.row_text(y))
+
+    def marked(self, y: int, attr_bit: int) -> str:
+        """그 행에서 속성이 걸린 글자를 **열 순서대로**.
+
+        넓은 글자는 두 칸을 차지하지만 글자는 첫 칸에만 있으므로 한 번씩만 모인다.
+        """
+        return "".join(
+            self.text[y][x]
+            for x in range(self.cols)
+            if self.attr[y][x] & attr_bit and self.text[y][x] != " "
+        )
+
+
+@_needs_pty
+def test_the_accent_lands_on_the_arrow_keys_even_when_ambiguous_is_two_cells(
+    _isolated_home: Path,
+) -> None:
+    """진짜 회귀. 옛 덧칠 방식은 여기서 `←→` 대신 `move` 를 물들인다."""
+    from codex_swap.core import config
+
+    settings = config.load()
+    view = tui.replace(tui.View(rows=(), cursor=0, settings=settings), mode="policy")
+    screen = WideAmbiguousScreen(24, 120)
+    tui._paint(screen, view)
+
+    row = screen.row_with("adjust")
+    expected = "".join(key for key, _ in tui.POLICY_KEYS)
+    assert screen.marked(row, _curses.A_BOLD) == expected, (
+        f"강조가 키 글자에서 벗어났다\n  줄: {screen.row_text(row)!r}\n"
+        f"  강조된 것: {screen.marked(row, _curses.A_BOLD)!r}\n  기대: {expected!r}"
+    )
