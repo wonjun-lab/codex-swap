@@ -183,7 +183,8 @@ def test_a_finished_probe_does_not_eject_you_from_the_policy_screen(tmp_path: Pa
     #   전에 끝나면 `Usage refreshed` 는 떴다가 지워진다. 그러면 아래 가드가 "조회가 안
     #   끝났다" 로 오진한다 — 끝났는데 흔적이 지워졌을 뿐이다.
     #
-    # 키 전달에 걸리는 시간은 `settle` × 키 수 + 그리기다. 넉넉히 두 배 이상 잡는다.
+    # 키 전달에 걸리는 시간은 `settle` 곱하기 키 수에 그리기를 더한 값이다. 넉넉히 두 배
+    # 이상 잡는다.
     # 2.0 초였을 때 macOS 러너에서 정확히 이 순서가 뒤집혀 60 초를 기다리다 실패했다.
     s.delay(8.0)
 
