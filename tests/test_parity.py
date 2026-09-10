@@ -160,3 +160,189 @@ def test_every_cli_command_is_either_on_screen_or_listed_as_known(
         f"화면에 없고 목록에도 없는 명령: {sorted(missing)}\n"
         "TUI 에 넣거나, 안 넣는 이유를 KNOWN_ASYMMETRY 에 적어라"
     )
+
+
+# ── 쿠폰 소비: 두 표면이 똑같이 막는가 ──────────────────────────────────────
+#
+# 여기가 비어 있었다. CLI 쪽은 촘촘히 쟀는데 화면 쪽은 한 줄도 없어서, 확인 입력을 아예
+# 안 견주도록 바꿔도 아무 테스트가 물지 않았다 — **테스트 자체의 패리티 공백**이다.
+
+SOON = tui.Credit(id="soon", status="available", expires_at=2_000_000_000, title="Full reset")
+BUSY = tui.Credit(id="busy", status="redeeming", expires_at=2_000_000_000, title="Full reset")
+
+
+@pytest.fixture
+def screen(_isolated_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """쿠폰 화면 + 실제로 소비 요청이 나간 id 를 담는 목록."""
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    spent: list[str] = []
+
+    def fake(_settings, _label, credit, _expect):
+        spent.append(credit.id)
+        return tui.probe.CreditOutcome.RESET
+
+    monkeypatch.setattr(credits_core, "spend", fake)
+    accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts, credit_cursor=0)
+    return view, spent
+
+
+def _usage_with(*credits: tui.Credit):
+    from codex_swap.core.types import Usage
+
+    return Usage(
+        used_percent=98, email="a@example.com", reset_credits=len(credits), credits=credits
+    )
+
+
+@pytest.mark.parametrize("typed", [None, "", "y", "yes", "maste", "MASTER", " master x"])
+def test_the_screen_spends_nothing_unless_the_label_is_typed(screen, typed: str | None) -> None:
+    """`y` 로는 안 된다. 화면에는 `--yes` 같은 다른 관문이 없어서, 이 입력이 유일한 문턱이다."""
+    view, spent = screen
+    after = tui.apply_spend(view, typed)
+    assert spent == [], typed
+    assert "Left it alone" in after.message, after.message
+
+
+def test_typing_the_label_spends(screen) -> None:
+    view, spent = screen
+    after = tui.apply_spend(view, "master")
+    assert spent == ["soon"]
+    assert "spent" in after.message, after.message
+
+
+def test_the_screen_will_not_offer_a_credit_that_is_not_available(_isolated_home: Path) -> None:
+    """`redeeming` 은 이미 쓰이는 중이다. 물어보는 것 자체가 잘못이다."""
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(BUSY)),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    assert tui.spend_prompt(view) is None
+    assert "usable credit" in tui.apply_spend(view, "master").message
+
+
+def test_the_prompt_asks_for_the_label_not_a_keypress(screen) -> None:
+    view, _ = screen
+    asked = tui.spend_prompt(view)
+    assert asked is not None
+    prompt, expected = asked
+    assert expected == "master"
+    assert "master" in prompt
+
+
+@pytest.mark.parametrize(
+    ("outcome", "cleared"),
+    [
+        ("RESET", True),
+        ("UNKNOWN", True),  # 썼는지 모르는 채로 낡은 숫자를 믿는 것이 더 나쁘다
+        ("NOTHING_TO_RESET", False),  # 아무 일도 안 일어났다
+    ],
+)
+def test_the_screen_clears_the_stale_usage_exactly_when_the_cli_does(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch, outcome: str, cleared: bool
+) -> None:
+    """`rotate` 는 캐시를 정책 입력으로 읽는다. 안 지우면 방금 되살린 계정을 소진으로 본다."""
+    from codex_swap.core import cache
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    cache.write(s, "master", {"usedPercent": 98}, now=1000)
+    monkeypatch.setattr(
+        credits_core,
+        "spend",
+        lambda *_, **__: getattr(tui.probe.CreditOutcome, outcome),
+    )
+    accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    tui.apply_spend(view, "master")
+    assert (cache.read_stale(s, "master") is None) is cleared
+
+
+def test_the_screen_reports_a_refusal_from_core_instead_of_claiming_success(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+
+    def refuse(*_: object, **__: object):
+        raise credits_core.CreditError("another switch is in progress. Nothing was spent")
+
+    monkeypatch.setattr(credits_core, "spend", refuse)
+    accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    after = tui.apply_spend(view, "master")
+    assert "Nothing was spent" in after.message, after.message
+
+
+# ── core 가 소비 직전에 다시 보는가 ─────────────────────────────────────────
+
+
+def test_core_refuses_when_the_account_changed_between_asking_and_spending(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """확인을 기다리는 동안 그 라벨이 **다른 계정을 담게** 될 수 있다.
+
+    `adopt` 가 같은 이름 위에 지금 로그인된 계정을 덮어쓰는 것이 그런 경우다. 승인한 것은
+    A 인데 요청은 B 의 자격증명으로 나간다. **두 표면 모두** 이 검사에 기댄다.
+
+    활성 라벨이 안 맞는 쪽으로 어긋나는 경우는 이 검사가 필요 없다 — `_home_for` 가 슬롯
+    사본으로 떨어지고, 그 사본은 여전히 그 계정의 것이다. 위험한 것은 **같은 이름이 다른
+    계정을 가리키게 되는 것**이다.
+    """
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+
+    sent: list[str] = []
+
+    def record(*_: object, **__: object):
+        sent.append("went")
+        return credits_core.probe.CreditOutcome.RESET
+
+    monkeypatch.setattr(credits_core.probe, "consume_credit", record)
+    monkeypatch.setattr(credits_core, "_codex_bin", lambda: "/bin/true")
+
+    # 승인한 뒤, 소비 직전에 그 이름이 다른 계정을 담게 됐다.
+    _auth(s.accounts_dir / "master/auth.json", "someone-else@example.com")
+    _auth(s.default_home / "auth.json", "someone-else@example.com")
+
+    with pytest.raises(credits_core.CreditError, match="Nothing was spent"):
+        credits_core.spend(s, "master", SOON, "a@example.com")
+    assert sent == [], "승인한 계정이 아닌데 요청이 나갔다"
+
+
+def test_core_goes_through_when_the_account_is_still_the_one_approved(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """검사가 평상시를 막으면 기능이 없는 것과 같다."""
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    sent: list[str] = []
+    monkeypatch.setattr(
+        credits_core.probe,
+        "consume_credit",
+        lambda *_, **__: (sent.append("went"), credits_core.probe.CreditOutcome.RESET)[1],
+    )
+    monkeypatch.setattr(credits_core, "_codex_bin", lambda: "/bin/true")
+    assert (
+        credits_core.spend(s, "master", SOON, "a@example.com")
+        is credits_core.probe.CreditOutcome.RESET
+    )
+    assert sent == ["went"]
