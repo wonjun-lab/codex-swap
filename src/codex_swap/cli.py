@@ -26,7 +26,7 @@ from typing import Any
 
 from codex_swap import __version__
 from codex_swap.core import cache, config, discovery, identity, paths, probe, rotate, store
-from codex_swap.core.types import ProbeOutcome, Switched, Usage, decision_exit_code
+from codex_swap.core.types import Credit, ProbeOutcome, Switched, Usage, decision_exit_code
 
 
 class CliError(Exception):
@@ -535,6 +535,190 @@ def cmd_credits(settings: config.Settings) -> int:
     return 0
 
 
+def _pick_credit(credits: Sequence[Credit], wanted: str | None) -> Credit | None:
+    """쓸 쿠폰 하나를 고른다. 없으면 None.
+
+    **먼저 잃을 것부터 쓴다** — 만료가 가장 이른 것. 쿠폰은 되돌릴 수 없으므로 "어느 것을
+    쓸까" 는 실제로 "어느 것을 잃어도 되나" 이고, 답은 어차피 곧 사라질 것이다.
+
+    만료를 모르는 쿠폰은 **뒤로** 보낸다. 모르는 것을 급한 것으로 취급하면, 날짜가 찍힌
+    쿠폰을 놔두고 정체 모를 것을 먼저 태운다.
+
+    `wanted` 가 있으면 그것만 본다. 자동 선택이 사람의 뜻과 다를 수 있고, 되돌릴 수 없는
+    동작에서는 지목할 방법이 있어야 한다 — `credits --json` 이 `id` 를 싣는 이유다.
+    """
+    usable = [c for c in credits if c.status == "available"]
+    if wanted is not None:
+        # 지목한 것은 만료 여부를 따지지 않는다. 사용자가 보고 골랐고, 서버가 여전히
+        # `available` 이라고 말한다 — 우리 시계가 틀렸을 수도 있다.
+        return next((c for c in usable if c.id == wanted), None)
+    # **만료된 것은 자동으로 고르지 않는다.** 만료가 이른 것부터 쓰는 규칙이 그대로면
+    # 이미 지난 쿠폰이 **가장 먼저** 뽑힌다 — 정렬 키가 가장 작기 때문이다. 서버가
+    # `available` 이라고 적어 둔 채 날짜만 지난 항목이 실제로 그렇게 뽑혔다.
+    now = time.time()
+    fresh = [c for c in usable if c.expires_at is None or c.expires_at > now]
+    if not fresh:
+        return None
+    return min(fresh, key=lambda c: (c.expires_at is None, c.expires_at or 0))
+
+
+def cmd_credits_use(
+    settings: config.Settings,
+    label: str | None = None,
+    *,
+    credit_id: str | None = None,
+    assume_yes: bool = False,
+    dry_run: bool = False,
+) -> int:
+    """쿠폰 하나를 써서 그 계정의 사용량 창을 되돌린다. **되돌릴 수 없다.**
+
+    라벨을 안 주면 **활성 계정**이다. 쿠폰을 쓰고 싶은 순간은 대개 지금 쓰는 계정이 막힌
+    때이고, 그때 라벨을 다시 적게 하는 것은 마찰이다.
+
+    식별자는 **여기서 방금 조회한 것**을 쓴다. 캐시에 남기지 않는 이유가 이것이다 — 낡은
+    식별자로 지목하면 그 사이 만료됐거나 이미 쓰인 쿠폰을 가리킨다.
+    """
+    active = store.active_label(settings)
+    # **`None` 과 `""` 는 다르다.** 앞은 "안 적었다"(활성을 쓴다)이고 뒤는 "빈 값을
+    # 적었다" — 스크립트가 비어 있는 변수를 따옴표로 감싸 넘긴 경우다. `label or active`
+    # 로 두면 뒤엣것이 조용히 활성 계정이 되어, 지목하지도 않은 계정의 쿠폰을 태운다.
+    if label is not None and not label.strip():
+        raise CliError("empty label. Leave it out to use the active account")
+    target = label if label is not None else active
+    if target is None:
+        raise CliError(
+            "no active account to spend a credit on. Name one: codex-swap credits use <label>"
+        )
+    if not store.label_syntax_ok(target):
+        raise CliError(f"not a usable label: {target}")
+    if target not in store.labels(settings):
+        raise CliError(f"no such label: {target}")
+
+    try:
+        codex_bin = str(discovery.resolve_codex_bin())
+    except Exception as exc:
+        raise CliError(
+            f"cannot run codex: {exc}. Check that `codex --version` works, "
+            "or set CODEX_ACCOUNT_BIN to its path"
+        ) from exc
+
+    home = settings.default_home if target == active else store.slot_dir(settings, target)
+    result = probe.probe(codex_bin, str(home))
+    if result.outcome is not ProbeOutcome.OK or result.usage is None:
+        raise CliError(f"could not read {target}'s credits. Try: codex-swap credits")
+    usage = result.usage
+
+    # `credits` 와 같은 신원 검사. 조회와 소비 사이에 다른 rotate 가 전환을 끝내면 기본
+    # 홈에 이미 다른 계정이 있다 — 그대로 진행하면 **남의 쿠폰을 쓴다.**
+    #
+    # **조회 화면보다 엄격하다.** `credits` 는 "알 때만 견준다" — 이메일을 모른다고 갱신을
+    # 통째로 멈추면 화면이 빈다. 여기는 반대다. 누구 것인지 확인하지 못한 채 태우는 것보다
+    # 거절하는 편이 낫다. 이메일이 비는 응답이 실제로 있을 수 있고, 그때 검사가 **열려**
+    # 있으면 하필 전환이 끼어든 순간에 남의 쿠폰이 승인된 것으로 처리된다.
+    want = identity.email_of(store.slot_auth(settings, target))
+    if usage.email is None or want is None or usage.email != want:
+        raise CliError(
+            f"could not confirm whose credit this is "
+            f"(slot says {want or 'unknown'}, the account said {usage.email or 'nothing'}). "
+            "Nothing was spent"
+        )
+
+    credit = _pick_credit(usage.credits, credit_id)
+    if credit is None:
+        if credit_id is not None:
+            raise CliError(f"{target} has no usable credit with id {credit_id}")
+        # 왜 못 고르는지가 셋으로 갈린다. 뭉뚱그리면 사용자는 엉뚱한 조치를 한다 —
+        # "상세가 없다" 는 다시 시도하라는 뜻이지만 "전부 만료" 는 아무리 다시 해도 같다.
+        if [c for c in usage.credits if c.status == "available"]:
+            raise CliError(f"{target}'s usable credits have all expired. See: codex-swap credits")
+        have = usage.reset_credits
+        if have:
+            raise CliError(
+                f"{target} reports {have} credit(s) but sent no usable detail. "
+                "Try again in a moment"
+            )
+        raise CliError(f"{target} has no credit to spend")
+
+    who = usage.email
+    title = credit.title or "credit"
+    when = _expiry_text(credit.expires_at)
+    headline = f"{title} on {target} ({who}), expires {when}"
+
+    if dry_run:
+        print(f"would spend: {headline}")
+        print("nothing was spent (--dry-run)")
+        return 0
+
+    # **tty 가 아니면 거부한다.** `remove` 는 같은 상황에 묻지 않고 진행하는데, 그쪽은
+    # 슬롯 **사본**을 지우는 것이라 살아 있는 자격증명은 그대로다. 쿠폰은 재발급이
+    # 없다 — 스크립트가 실수로 태우면 되돌릴 방법이 아예 없다.
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            raise CliError(
+                "refusing to spend a credit without a terminal. Pass --yes if you mean it"
+            )
+        print(f"About to spend: {headline}")
+        print("This cannot be undone.")
+        try:
+            answer = input("Type y to continue: ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in {"y", "yes"}:
+            print("Left it alone.")
+            return 1
+
+    # **락 안에서 쓴다.** 확인을 기다리는 동안 `rotate` 가 전환을 끝내면 기본 홈에 이미
+    # 다른 계정이 들어 있다 — 사용자가 승인한 것은 A 인데 소비 요청은 B 의 자격증명으로
+    # 나간다. 락은 소비하는 몇 초만 잡는다(프롬프트는 밖에 둔다 — 사람이 자리를 비우면
+    # rotate 가 그동안 멈춘다).
+    try:
+        with store.switch_lock(settings):
+            here = settings.default_home if target == store.active_label(settings) else home
+            confirmed = identity.email_of(here / "auth.json")
+            if confirmed != who:
+                raise CliError(
+                    f"{target} now holds {confirmed or 'an unknown account'}, not {who}. "
+                    "Nothing was spent"
+                )
+            outcome = probe.consume_credit(codex_bin, str(here), credit.id)
+    except store.LockBusy:
+        raise CliError(
+            "another switch is in progress. Nothing was spent. Try again in a moment"
+        ) from None
+    except KeyboardInterrupt:
+        # 요청이 이미 나갔을 수 있다. 조용히 죽으면 사용자는 안 쓴 줄 안다.
+        print("interrupted. The credit may or may not have been spent")
+        print("check before trying again: codex-swap credits")
+        cache.clear(settings)
+        return 1
+    except probe.ProbeError as exc:
+        raise CliError(f"could not spend the credit: {exc}") from exc
+
+    # **캐시를 비운다.** 쿠폰이 먹었으면 그 계정의 사용량 창이 방금 바뀌었는데, 캐시에는
+    # 쓰기 직전의 숫자가 남아 있다. `rotate` 는 그것을 정책 입력으로 읽으므로, 지우지
+    # 않으면 방금 되살린 계정을 최대 TTL 동안 소진된 것으로 취급한다.
+    #
+    # `UNKNOWN` 에서도 지운다 — 썼는지 모르는 상태에서 낡은 숫자를 믿는 것이 더 나쁘다.
+    if outcome is not probe.CreditOutcome.NOTHING_TO_RESET:
+        cache.clear(settings)
+
+    if outcome is probe.CreditOutcome.RESET:
+        print(f"spent: {headline}")
+        print(f"{target}'s usage window was reset. Check it with: codex-swap status --fresh")
+        return 0
+    if outcome is probe.CreditOutcome.ALREADY_REDEEMED:
+        print("that credit was already redeemed. Nothing changed. See: codex-swap credits")
+        return 1
+    if outcome is probe.CreditOutcome.NOTHING_TO_RESET:
+        print(f"{target} had nothing to reset, so the credit was not needed and is still yours")
+        return 1
+    # UNKNOWN 을 "실패" 로 적으면 안 된다. 쿠폰이 이미 쓰였을 수 있는데 사용자가 하나 더
+    # 쓴다 — 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
+    print("the server did not say what happened. The credit may or may not have been spent")
+    print("check before trying again: codex-swap credits")
+    return 1
+
+
 def cmd_credits_json(settings: config.Settings) -> int:
     """`credits` 의 기계용 판. **이 모양이 계약이다.**
 
@@ -988,6 +1172,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("credits", help="usage-reset credits per account, with expiry")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    # `use` 를 별도 명령이 아니라 `credits` 의 하위 동작으로 둔다. 되돌릴 수 없는 동작을
+    # 최상위에 두면 `codex-swap use` 와 두 글자 차이가 되는데, 그 둘은 각각 "계정을
+    # 바꾼다" 와 "쿠폰을 태운다" 다. 오타 한 번의 대가가 너무 다르다.
+    p.add_argument(
+        "action", nargs="?", choices=["use"], help="use: spend one credit (cannot be undone)"
+    )
+    p.add_argument("label", nargs="?", help="which account. Defaults to the active one")
+    p.add_argument("--credit", metavar="ID", help="spend this exact credit (see --json)")
+    p.add_argument("--dry-run", action="store_true", help="say what would be spent, spend nothing")
+    p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
 
     p = sub.add_parser("status", help="active account and its usage")
     p.add_argument("--fresh", action="store_true", help="ignore the cache and probe now")
@@ -1062,6 +1256,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return cmd_list_json(settings)
                 return cmd_list(settings, fresh=args.fresh)
             case "credits":
+                if args.action == "use":
+                    return cmd_credits_use(
+                        settings,
+                        args.label,
+                        credit_id=args.credit,
+                        assume_yes=args.yes,
+                        dry_run=args.dry_run,
+                    )
+                if args.label is not None:
+                    raise CliError(f"unknown argument: {args.label}. Did you mean: credits use?")
                 return cmd_credits_json(settings) if args.json else cmd_credits(settings)
             case "status":
                 return cmd_status(settings, fresh=args.fresh, as_json=args.json)

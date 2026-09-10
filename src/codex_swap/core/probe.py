@@ -28,6 +28,7 @@ import re
 import select
 import subprocess
 import time
+from enum import Enum
 from pathlib import Path
 
 from codex_swap.core.types import Credit, ProbeResult, Usage
@@ -183,6 +184,86 @@ def probe(
         # 정확히 §6.3 이 금지하는 오분류다.
         return ProbeResult.unknown()
     return ProbeResult.of(usage)
+
+
+class CreditOutcome(Enum):
+    """`account/rateLimitResetCredit/consume` 이 돌려주는 네 갈래.
+
+    서버가 이름 붙인 셋(`reset`·`nothingToReset`·`alreadyRedeemed`)에 **우리 쪽 하나**를
+    더한다. `UNKNOWN` 은 "요청은 갔는데 결과를 못 읽었다" 이고, 이것을 실패로 접으면 안
+    된다 — 쿠폰이 이미 쓰였을 수 있는데 화면이 "안 쓰였다" 고 말하면 사용자는 하나 더
+    쓴다. 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
+    """
+
+    RESET = "reset"
+    NOTHING_TO_RESET = "nothingToReset"
+    ALREADY_REDEEMED = "alreadyRedeemed"
+    UNKNOWN = "unknown"
+
+
+def consume_credit(
+    codex_bin: str | os.PathLike[str],
+    home: str | os.PathLike[str] | None,
+    credit_id: str,
+    timeout_ms: int = DEFAULT_TIMEOUT_MS,
+) -> CreditOutcome:
+    """쿠폰 하나를 쓴다. **되돌릴 수 없다.**
+
+    이 함수는 확인을 묻지 않는다 — 그 자리는 CLI 다. 여기까지 왔으면 이미 결정된 것으로
+    본다. 대신 결과를 **지어내지 않는다.** 타임아웃·파싱 실패는 `UNKNOWN` 이고, 호출부는
+    그것을 "안 쓰였다" 로 읽으면 안 된다.
+
+    `credit_id` 는 **방금 조회한 것**이어야 한다. 캐시에 남기지 않는 이유가 이것이다 —
+    낡은 식별자로 지목하면 그 사이 만료됐거나 이미 쓰인 쿠폰을 가리킨다.
+    """
+    if not credit_id:
+        raise ProbeError("credit id must not be empty")
+    proc = subprocess.Popen(
+        [os.fspath(codex_bin), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=_probe_env(codex_bin, home),
+    )
+    try:
+        return _consume(proc, credit_id, timeout_ms / 1000.0)
+    finally:
+        _shutdown(proc)
+
+
+def _consume(proc: subprocess.Popen[bytes], credit_id: str, timeout_s: float) -> CreditOutcome:
+    conn = _Conn(proc, timeout_s)
+
+    # 인사는 **요청이 나가기 전**이다. 여기서 실패하면 쿠폰은 확실히 그대로다.
+    conn.request(1, "initialize", {"clientInfo": _CLIENT_INFO})
+    conn.notify("initialized")
+
+    try:
+        reply = conn.request(2, "account/rateLimitResetCredit/consume", {"creditId": credit_id})
+    except ProbeError:
+        # **여기서 던지면 안 된다.** 타임아웃·EOF·깨진 응답은 "못 썼다" 가 아니라 "썼는지
+        # 모른다" 다 — 요청은 이미 나갔을 수 있다. 확정 실패로 적으면 사용자는 다시 시도해
+        # 쿠폰을 하나 더 태운다.
+        #
+        # 보내기 자체가 실패한 경우(파이프가 이미 닫힘)도 여기로 온다. 그때는 확실히 안
+        # 쓴 것이지만 모른다고 말하는 쪽으로 기운다 — 헛되이 한 번 더 확인하는 값이,
+        # 잃은 쿠폰보다 싸다.
+        return CreditOutcome.UNKNOWN
+
+    error = reply.get("error")
+    if js_truthy(error):
+        # 오류는 **올린다.** `UNKNOWN` 으로 접으면 "인증이 끊겼다" 같은 확정된 실패까지
+        # "썼는지 모른다" 가 되어, 사용자가 쓰지도 않은 쿠폰을 잃었다고 믿는다.
+        raise ProbeError(f"account/rateLimitResetCredit/consume: {_js_message(error)}")
+
+    outcome = _prop(reply.get("result"), "outcome")
+    if not isinstance(outcome, str):
+        return CreditOutcome.UNKNOWN
+    try:
+        return CreditOutcome(outcome)
+    except ValueError:
+        # 서버가 새 갈래를 추가했다. 이름을 모른다고 "실패" 로 적으면 안 된다.
+        return CreditOutcome.UNKNOWN
 
 
 def _run(
