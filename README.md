@@ -202,6 +202,29 @@ early while the active account is below the first rung, which is most of the tim
 slot you are not using can sit at a reading from days ago — long enough for its window to
 have reset underneath it.
 
+## Usage-reset credits
+
+A credit resets one account's usage window. The `CRED` column in `list` shows how many an
+account has, but not how long they last — a credit that expires tonight and one with two
+months left both read as `1`.
+
+```
+codex-swap credits
+```
+
+```
+    LABEL  EMAIL               CREDIT     EXPIRES
+*   master you@example.com     Full reset 10-05 13:20 (in 25d)
+    shared other@example.com   -          -
+```
+
+This probes every account, so it takes a moment and needs the network — unlike `list`,
+which only reads the cache. Credits are not cached: they change rarely and the detail is
+only wanted when you ask for it.
+
+Spending a credit is not automated. Automatic switching never spends one — that is a
+decision with a cost, and the policy has no way to know whether you would rather switch.
+
 ## Policy
 
 A switch is only considered when usage crosses a rung of the ladder (`50,70,85,95` by
@@ -223,6 +246,7 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `codex-swap add <label>` | Log in to a new slot (opens a browser) |
 | `codex-swap list [--fresh]` | Stored accounts and cached usage. `--fresh` probes every slot |
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
+| `codex-swap credits` | Usage-reset credits per account, with the date each one expires |
 | `codex-swap use <label>` | Switch by hand |
 | `codex-swap rotate [--dry-run]` | Run the policy |
 | `codex-swap rename <old> <new>` | Give a slot a different name |
