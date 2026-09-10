@@ -338,7 +338,8 @@ def test_the_server_count_is_not_lost_when_the_list_is_shown(
     )
     cli.cmd_credits(env)
     out = capsys.readouterr().out
-    assert "1 usable of 3 shown" in out, out
+    assert "counts 1 usable but sent detail for 3" in out, out
+    assert "expired or already being redeemed" in out, out
     assert len([ln for ln in out.splitlines() if "05-18" in ln or "09-13" in ln]) >= 2, out
 
 
@@ -359,3 +360,102 @@ def test_nothing_is_said_when_the_count_matches_the_list(
     )
     cli.cmd_credits(env)
     assert "usable of" not in capsys.readouterr().out
+
+
+def test_the_other_direction_of_the_mismatch_is_not_described_backwards(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """개수가 상세보다 **많을** 때도 있다 — 서버가 일부만 보낸 경우다.
+
+    한 방향 문구만 쓰면 "나머지는 만료됐다" 라고 **없는 사실**을 말한다. codex 검토가
+    잡은 자리이고, 실제로 그 문구로 쓰여 있었다.
+    """
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com",
+                Credit(id="c1", status="available", expires_at=2_000_000_000),
+                count=2,
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    out = capsys.readouterr().out
+    assert "counts 2 usable but sent detail for 1" in out, out
+    assert "expired" not in out, out
+    assert "did not arrive" in out, out
+
+
+def test_a_failed_slot_is_not_sent_to_a_command_that_cannot_reach_it(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`status --fresh` 는 **활성 계정만** 조회한다.
+
+    실패한 것이 비활성 슬롯이면 그 안내를 따라가도 그 슬롯에 닿지 않는다. codex 검토가
+    잡았다.
+    """
+    _answer({"a@example.com": _usage("a@example.com")}, monkeypatch)  # shared 실패
+    cli.cmd_credits(env)
+    out = capsys.readouterr().out
+    assert "could not read: shared" in out, out
+    assert "status --fresh" not in out, out
+
+
+def test_asking_for_json_with_no_accounts_does_not_need_codex(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """슬롯이 없으면 프로브할 것도 없다.
+
+    사람용 판은 안내 한 줄을 내고 0 으로 끝나는데 기계용 판만 바이너리를 찾다 죽었다.
+    """
+
+    def missing() -> Path:
+        raise RuntimeError("no codex on PATH")
+
+    monkeypatch.setattr(cli.discovery, "resolve_codex_bin", missing)
+    assert cli.cmd_credits_json(config.load()) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["accounts"] == []
+
+
+# ── 시각 계산 (codex 검토에서 나온 것) ───────────────────────────────────────
+
+
+def test_a_daylight_saving_boundary_does_not_swallow_an_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """로컬 시각으로 바꾼 뒤 빼면 시계를 되돌리는 한 시간이 뺄셈에서 사라진다.
+
+    `America/New_York` 에서 20 분 남은 쿠폰이 `(expired)` 로 나왔다.
+    """
+    import datetime
+    import time as _time
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    _time.tzset()
+    try:
+        now = datetime.datetime(2026, 11, 1, 5, 50, tzinfo=datetime.UTC).timestamp()
+        soon = datetime.datetime(2026, 11, 1, 6, 10, tzinfo=datetime.UTC).timestamp()
+        assert "in 20m" in cli._expiry_text(soon, now=now)
+        assert "expired" not in cli._expiry_text(soon, now=now)
+    finally:
+        monkeypatch.undo()
+        _time.tzset()
+
+
+def test_a_credit_that_just_expired_does_not_read_as_almost_due() -> None:
+    """`int(-0.5)` 는 0 이라 만료 직후 1 초 동안 `in 0m` 이었다."""
+    assert "expired" in cli._expiry_text(1_700_000_000, now=1_700_000_000.5)
+
+
+@pytest.mark.parametrize("value", [1_700_000_000_000, -1_700_000_000_000, 10**18])
+def test_an_epoch_outside_the_calendar_does_not_take_the_screen_down(value: int) -> None:
+    """밀리초 epoch 하나가 섞이면 `fromtimestamp` 가 던진다.
+
+    행을 다 모은 뒤 찍는 구조라, 그 예외 하나에 **멀쩡한 슬롯의 결과까지** 화면에 못
+    나온다. 모르는 값 하나에 명령 전체를 걸 이유가 없다.
+    """
+    assert cli._expiry_text(value) == "-"
+    assert cli._reset_text(value) == "-"

@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -40,8 +41,43 @@ def _opt(v: object) -> str:
     return "-" if v is None else str(v)
 
 
+def _clock_text(value: object, past: str, *, now: float | None = None) -> str:
+    """epoch 을 `MM-DD HH:MM (남은 시간)` 으로. 못 읽으면 `-`.
+
+    **남은 시간은 epoch 끼리 뺀다.** 로컬 시각으로 바꾼 뒤 빼면 서머타임 경계에서 한 시간이
+    통째로 어긋난다 — `America/New_York` 에서 2026-11-01 05:50 UTC 기준 06:10 UTC 만료는
+    실제로 20 분 남았는데 `(expired)` 로 나왔다. 시계를 되돌리는 그 한 시간이 뺄셈에서
+    사라지기 때문이다. 화면에 찍는 **시각**만 로컬로 바꾸고, 계산은 epoch 에서 한다.
+
+    정수로 만들기 **전에** 지났는지 본다. `int(-0.5)` 는 0 이라 만료 직후 1 초 동안
+    "곧 만료" 로 보였다.
+
+    범위 밖 값은 `-` 다. 밀리초 epoch(`1700000000000`) 하나가 섞이면 `fromtimestamp` 가
+    `ValueError` 를 던지는데, 행을 다 모은 뒤 찍는 구조라 **멀쩡한 슬롯의 결과까지** 화면에
+    못 나온다. 서버가 그런 값을 보내는지는 모르지만, 모르는 값 하나에 명령 전체를 걸 이유가
+    없다.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "-"
+    current = time.time() if now is None else now
+    left = value - current
+    try:
+        when = datetime.datetime.fromtimestamp(value)
+    except (ValueError, OSError, OverflowError):
+        return "-"
+    if left < 0:
+        rel = past
+    elif left < 3600:
+        rel = f"in {int(left) // 60}m"
+    elif left < 86400:
+        rel = f"in {int(left) // 3600}h"
+    else:
+        rel = f"in {int(left) // 86400}d"
+    return f"{when:%m-%d %H:%M} ({rel})"
+
+
 def _reset_text(resets_at: object, *, now: float | None = None) -> str:
-    """사용량이 되돌아오는 시각. epoch 을 사람이 읽을 형태로 바꾼다.
+    """사용량이 되돌아오는 시각.
 
     raw epoch 을 그대로 보여주면 "언제 풀리나" 를 계산기 없이 알 수 없다. 남은 시간을
     함께 적는 이유는 그것이 실제로 알고 싶은 값이기 때문이다 — 오늘 안에 풀리는지,
@@ -50,20 +86,7 @@ def _reset_text(resets_at: object, *, now: float | None = None) -> str:
     쿠폰으로 사용량을 리셋하면 이 값이 앞으로 당겨진다. 그래서 이 표시가 곧 "쿠폰이
     먹었나" 를 확인하는 자리이기도 하다.
     """
-    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
-        return "-"
-    when = datetime.datetime.fromtimestamp(resets_at)
-    current = datetime.datetime.now() if now is None else datetime.datetime.fromtimestamp(now)
-    secs = int((when - current).total_seconds())
-    if secs < 0:
-        rel = "past"
-    elif secs < 3600:
-        rel = f"in {secs // 60}m"
-    elif secs < 86400:
-        rel = f"in {secs // 3600}h"
-    else:
-        rel = f"in {secs // 86400}d"
-    return f"{when:%m-%d %H:%M} ({rel})"
+    return _clock_text(resets_at, "past", now=now)
 
 
 def _usage_line(u: Usage) -> str:
@@ -376,20 +399,7 @@ def _expiry_text(expires_at: object, *, now: float | None = None) -> str:
     사용량 리셋은 지나면 좋은 일(이미 풀렸다)이지만 쿠폰 만료는 지나면 **잃은 것**이다.
     같은 `past` 로 적으면 그 차이가 사라진다.
     """
-    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
-        return "-"
-    when = datetime.datetime.fromtimestamp(expires_at)
-    current = datetime.datetime.now() if now is None else datetime.datetime.fromtimestamp(now)
-    secs = int((when - current).total_seconds())
-    if secs < 0:
-        return f"{when:%m-%d %H:%M} (expired)"
-    if secs < 3600:
-        rel = f"in {secs // 60}m"
-    elif secs < 86400:
-        rel = f"in {secs // 3600}h"
-    else:
-        rel = f"in {secs // 86400}d"
-    return f"{when:%m-%d %H:%M} ({rel})"
+    return _clock_text(expires_at, "expired", now=now)
 
 
 def _probe_credits(settings: config.Settings) -> list[tuple[str, str, Usage | None]]:
@@ -465,9 +475,15 @@ def cmd_credits(settings: config.Settings) -> int:
         # 사용자가 오해하는 것은 "쓸 수 있는 게 몇 개인가" 가 아니라 **화면에 몇 줄이
         # 있는가** 다. 만료된 쿠폰 두 줄이 함께 뜨면 셋으로 읽는다.
         if usage.reset_credits is not None and usage.reset_credits != len(usage.credits):
+            shown = len(usage.credits)
             disagree.append(
-                f"{label}: {usage.reset_credits} usable of {len(usage.credits)} shown "
-                "(the rest are expired or already being redeemed)"
+                f"{label}: the server counts {usage.reset_credits} usable "
+                f"but sent detail for {shown}"
+                + (
+                    " (the rest are expired or already being redeemed)"
+                    if usage.reset_credits < shown
+                    else " (detail for the others did not arrive)"
+                )
             )
         for i, credit in enumerate(usage.credits):
             title = credit.title or credit.status or "credit"
@@ -498,7 +514,9 @@ def cmd_credits(settings: config.Settings) -> int:
         print(_row(*row))
     print()
     if unreadable:
-        print(f"could not read: {', '.join(unreadable)}. Try: codex-swap status --fresh")
+        # `status --fresh` 로 보내면 안 된다 — 그것은 **활성 계정만** 조회하므로,
+        # 실패한 것이 비활성 슬롯이면 재시도가 그 슬롯에 닿지도 않는다.
+        print(f"could not read: {', '.join(unreadable)}. Try again, or: codex-swap list --fresh")
     for note in disagree:
         print(note)
     print("A credit resets that account's usage window. Spending one cannot be undone.")
@@ -513,7 +531,11 @@ def cmd_credits_json(settings: config.Settings) -> int:
     """
     active = store.active_label(settings)
     accounts = []
-    for label, email, usage in _probe_credits(settings):
+    # 슬롯이 하나도 없으면 프로브할 것도 없다. 그런데 `_probe_credits` 는 먼저 codex 를
+    # 찾으므로, 빈 목록을 물었을 뿐인데 바이너리가 없다고 실패했다 — 사람용 판은 안내 한
+    # 줄을 내고 0 으로 끝나는데 기계용 판만 그랬다.
+    found = _probe_credits(settings) if store.labels(settings) else []
+    for label, email, usage in found:
         accounts.append(
             {
                 "label": label,
