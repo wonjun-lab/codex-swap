@@ -20,6 +20,62 @@ from pathlib import Path
 from codex_swap.core import config, discovery, identity, probe, store
 from codex_swap.core.types import Credit, ProbeOutcome, Usage
 
+SPENT_NOTHING = frozenset({probe.CreditOutcome.NOTHING_TO_RESET, probe.CreditOutcome.NO_CREDIT})
+"""**아무것도 쓰이지 않았고 사용량도 그대로**인 결과들.
+
+캐시를 비울지 가르는 데 쓴다. 이 둘은 사용량 창을 건드리지 않았으므로 캐시에 있는 숫자가
+여전히 맞다 — 지우면 다음 `rotate` 가 공짜로 프로브를 한 번 더 돈다.
+
+나머지는 전부 비운다. `UNKNOWN` 도 포함이다 — 썼는지 모르는 상태에서 낡은 숫자를 믿는
+쪽이 더 나쁘다.
+
+`cli` 와 `tui` 가 각자 이 목록을 적으면 갈린다. 한쪽만 `NO_CREDIT` 을 빠뜨리는 식으로.
+"""
+
+
+def too_early(settings: config.Settings, label: str, usage: Usage | None) -> str | None:
+    """지금 쓰면 **버리는 셈**인가. 그렇다면 이유를, 쓸 만하면 None.
+
+    리셋은 남은 창을 늘려 주지 않는다 — **지우고 새로 준다.** 아직 한도가 많이 남았을 때
+    쓰면 그 남은 만큼이 그대로 사라진다. 쿠폰 하나를 내고 오히려 손해를 보는 유일한
+    경우라, 되돌릴 수 없는 동작 중에서도 여기만 "너무 이르다" 는 판단이 성립한다.
+
+    문턱은 **사다리의 마지막 칸**이다(기본 95%). 노브를 새로 만들지 않는 이유는 그 칸이
+    이미 같은 것을 뜻하기 때문이다 — "더 올라갈 데가 없다", 즉 전환으로는 해결이 안 되는
+    지점. 쿠폰을 쓸 시점이 정확히 거기다. 사다리를 조정하면 이 문턱도 같이 따라온다.
+
+    **사용량을 모르면 막는 쪽으로 기운다.** 되돌릴 수 없는 일 앞에서 "모른다" 를 "괜찮다"
+    로 읽으면, 프로브가 실패한 순간이 하필 가장 위험한 순간이 된다. 다만 영영 못 쓰게
+    하지는 않는다 — 두 표면 모두 밀고 나갈 길이 있다.
+    """
+    ladder = settings.ladder
+    if not ladder:
+        return None
+    gate = ladder[-1]
+    if usage is None or usage.used_percent is None:
+        return f"cannot read {label}'s usage right now, so it is unclear whether a reset would help"
+    if usage.used_percent < gate:
+        left = 100 - usage.used_percent
+        return (
+            f"{label} is at {usage.used_percent}% — a reset replaces the window, "
+            f"so the {left}% still left would be thrown away"
+        )
+    return None
+
+
+def said_yes(answer: str | None) -> bool:
+    """되돌릴 수 없는 일을 해도 좋다는 대답인가.
+
+    **두 표면이 같은 어휘를 쓰게 하려고** 여기 둔다. 한동안 화면만 라벨을 그대로 치게
+    했는데(`Type shared to spend:`), 되돌릴 수 없으니 더 세게 막자는 뜻이었다. 실제로는
+    무엇을 치라는 것인지부터 애매했고 — 계정 이름? `use`? 쿠폰 이름? — 파이프에서는 `y`
+    면 되는 일이 화면에서만 달랐다.
+
+    답을 못 받은 것(`None`)은 **거절이다.** 프롬프트가 끊기거나 사용자가 빠져나온 자리라,
+    침묵을 승낙으로 읽으면 아무도 승인하지 않은 소비가 일어난다.
+    """
+    return answer is not None and answer.strip().lower() in {"y", "yes"}
+
 
 class CreditError(Exception):
     """쿠폰을 다루다 멈췄다. **소비는 일어나지 않았다.**

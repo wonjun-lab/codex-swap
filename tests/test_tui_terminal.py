@@ -293,13 +293,23 @@ def test_a_colourless_terminal_still_works(tmp_path: Path, term: str) -> None:
 # 단위 테스트가 닿지 않으므로 여기서 실제 키를 눌러 본다.
 
 
-def test_enter_no_longer_switches(session: Session) -> None:
-    """가장 위험한 회귀다. `enter` 가 아직 전환하면 자격증명이 의도 없이 바뀐다."""
+def test_enter_switches_to_the_account_under_the_cursor(session: Session) -> None:
+    """목록에서 항목을 고르고 `enter` — 사용자가 가장 먼저 시도하는 동작이다.
+
+    한동안 계정 줄에서만 `enter` 가 죽어 있었다. 메뉴 줄에서는 정책을 열고 자동 전환을
+    토글하는데 계정 줄에서만 "`s` 를 누르라" 고 안내해서, 같은 화면 안에서 같은 키가 다른
+    규칙을 따르는 것처럼 보였다.
+    """
+    screen = session.run([b"\x1bOB", b"\n", b"q"])  # 아래로 한 칸 → shared → enter
+    assert screen.exit_code == 0
+    assert "Switched to shared" in screen.text, screen.text
+
+
+def test_enter_on_the_active_account_says_so_instead_of_going_quiet(session: Session) -> None:
+    """커서는 처음에 활성 계정 위에 있다. 여기서 아무 말이 없으면 키가 죽은 줄 안다."""
     screen = session.run([b"\n", b"q"])
     assert screen.exit_code == 0
-    assert "Press s to switch" in screen.text, screen.text
-    # 활성 계정이 그대로다 — `*` 가 master 줄에 있어야 한다.
-    assert "*master" in screen.text.replace(" *master", "*master"), screen.row("master")
+    assert "already active" in screen.text, screen.text
 
 
 def test_s_switches(session: Session) -> None:

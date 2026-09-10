@@ -20,7 +20,7 @@ codex-swap    gate 70% · margin 5%p
    Automatic switching: on
    Quit
 
-   enter open   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
+   enter select   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
 ```
 
 `*` is the account in use, `>` is the cursor. On a bar, `┆` is the gate you have to
@@ -28,9 +28,13 @@ cross next and `╪` means you already crossed it. `RESETS` is how many usage re
 the account has left — when an account is exhausted and still has a usage reset, spending it
 is an alternative to switching.
 
-The cursor runs past the accounts into the menu underneath, and `enter` opens whatever it
-is on. Switching is `s`, not `enter`: one key that means "open a screen" in one place and
-"replace my credentials" in another is a key you eventually press by mistake.
+The cursor runs past the accounts into the menu underneath, and `enter` does whatever the
+row it is on says: switches to that account, or opens that menu entry. `s` still switches,
+so the old finger memory keeps working.
+
+Switching is not the irreversible part — you can always switch back. The one thing you
+cannot undo is discarding credentials that are not saved in any slot, and that asks twice
+no matter which key you arrive on.
 
 ## What you need
 
@@ -82,8 +86,8 @@ Then run it with no arguments to get the TUI:
 codex-swap
 ```
 
-`s` switches to the account under the cursor, `r` refreshes usage, `p` edits the policy.
-Or move down to the menu and press `enter` — every shortcut has an entry there.
+`enter` (or `s`) switches to the account under the cursor, `r` refreshes usage, `p` edits
+the policy. Or move down to the menu and press `enter` — every shortcut has an entry there.
 
 ## Wiring up automatic switching
 
@@ -230,14 +234,18 @@ codex-swap credits use shared     # a named one
 codex-swap credits use --dry-run  # say what would happen, spend nothing
 ```
 
-The TUI has the same screen: `Usage resets` in the menu, `u` to spend. There it asks you to
-**type the label** rather than press a key — a keypress next to `s` (switch) is one slip
-away from an action that cannot be undone, and a name is not something you slip into.
+The TUI has the same screen: `Usage resets` in the menu, then move to the reset you want and
+press `enter`. Both surfaces then ask the same thing — `y` to go ahead, naming the account
+and when that reset expires.
 
-It asks before spending, naming the account and its expiry date. **A spent reset
-cannot be recovered**, so without a terminal it refuses rather than guessing — pass `--yes`
-if you mean it from a script. `remove` is more relaxed about this because deleting a slot
-leaves the live credentials alone; a usage reset has no such second copy.
+The confirmation is the only thing between you and an irreversible action; the cursor starts
+on the first row, so there may be nothing to move. That is why the question spells out what
+you are about to lose rather than just asking.
+
+It asks before spending, naming the account. **A spent reset cannot be recovered**, so
+without a terminal it refuses rather than guessing — pass `--yes` if you mean it from a
+script. `remove` is more relaxed about this because deleting a slot leaves the live
+credentials alone; a usage reset has no such second copy.
 
 When several are available it spends the one that **expires first** — the one you would
 lose anyway. Override with `--credit <id>`; `credits --json` prints the ids.

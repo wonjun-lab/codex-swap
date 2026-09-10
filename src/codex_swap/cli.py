@@ -329,9 +329,15 @@ def _display_width(text: str) -> str | int:
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
 
-def _pad_to(text: str, cols: int) -> str:
-    """표시 폭 기준으로 채운다."""
-    return text + " " * max(0, cols - _display_width(text))
+def _pad_to(text: str, cols: int, *, right: bool = False) -> str:
+    """표시 폭 기준으로 채운다.
+
+    `right` 는 **숫자 열**에 쓴다. 왼쪽으로 붙이면 낡음 표시 `~` 한 글자 때문에 `5%` ·
+    `~66%` · `100%` 가 전부 다른 칸에서 시작해, 위아래로 읽는 유일한 열에서 자릿수가
+    어긋난다. TUI 의 `_cell(..., right=True)` 와 같은 이유로 같은 선택을 한다.
+    """
+    pad = " " * max(0, cols - _display_width(text))
+    return pad + text if right else text + pad
 
 
 def _age_text(seconds: int) -> str:
@@ -528,6 +534,7 @@ def cmd_credits_use(
     credit_id: str | None = None,
     assume_yes: bool = False,
     dry_run: bool = False,
+    force: bool = False,
 ) -> int:
     """쿠폰 하나를 써서 그 계정의 사용량 창을 되돌린다. **되돌릴 수 없다.**
 
@@ -597,6 +604,14 @@ def cmd_credits_use(
             )
         raise CliError(f"{target} has no usage reset to spend")
 
+    # **아직 쓸 때가 아니면 막는다.** 리셋은 남은 창을 늘리는 것이 아니라 지우고 새로
+    # 주는 것이라, 한도가 많이 남았을 때 쓰면 그 남은 만큼을 버린다 — 쿠폰을 내고 손해를
+    # 보는 유일한 경우다. 완전히 막지는 않는다: 일부러 그러는 용법이 있을 수 있고,
+    # `--force` 가 그 자리다(전환의 `--force` 와 같은 어휘).
+    early = credits_core.too_early(settings, target, usage)
+    if early is not None and not force:
+        raise CliError(f"{early}. Nothing was spent. Pass --force if you mean it")
+
     who = usage.email
     title = credit.title or "credit"
     when = _expiry_text(credit.expires_at)
@@ -618,10 +633,10 @@ def cmd_credits_use(
         print(f"About to spend: {headline}")
         print("This cannot be undone.")
         try:
-            answer = input("Type y to continue: ")
+            answer: str | None = input("Type y to continue: ")
         except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
+            answer = None
+        if not credits_core.said_yes(answer):
             print("Left it alone.")
             return 1
 
@@ -657,7 +672,7 @@ def cmd_credits_use(
     # 않으면 방금 되살린 계정을 최대 TTL 동안 소진된 것으로 취급한다.
     #
     # `UNKNOWN` 에서도 지운다 — 썼는지 모르는 상태에서 낡은 숫자를 믿는 것이 더 나쁘다.
-    if outcome is not probe.CreditOutcome.NOTHING_TO_RESET:
+    if outcome not in credits_core.SPENT_NOTHING:
         cache.clear(settings)
 
     if outcome is probe.CreditOutcome.RESET:
@@ -665,10 +680,18 @@ def cmd_credits_use(
         print(f"{target}'s usage window was reset. Check it with: codex-swap status --fresh")
         return 0
     if outcome is probe.CreditOutcome.ALREADY_REDEEMED:
-        print("that credit was already redeemed. Nothing changed. See: codex-swap credits")
-        return 1
+        # **성공이다.** 서버 스키마상 이것은 "같은 키가 이미 리셋을 성공적으로 끝냈다" 이고,
+        # 그 키를 우리가 쿠폰 id 에서 결정론적으로 만드는 이유가 바로 재시도를 여기로
+        # 접기 위해서다. 접힌 것을 실패로 보고하면 그 장치가 무의미해진다 — 스크립트는
+        # 0 이 아닌 값을 보고 **한 번 더** 시도한다.
+        print(f"{target}'s usage window was already reset by this same attempt")
+        print("nothing more was spent")
+        return 0
     if outcome is probe.CreditOutcome.NOTHING_TO_RESET:
         print(f"{target} had nothing to reset, so the credit was not needed and is still yours")
+        return 1
+    if outcome is probe.CreditOutcome.NO_CREDIT:
+        print(f"{target} has no usage reset left to spend. Nothing was spent")
         return 1
     # UNKNOWN 을 "실패" 로 적으면 안 된다. 쿠폰이 이미 쓰였을 수 있는데 사용자가 하나 더
     # 쓴다 — 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
@@ -790,7 +813,7 @@ def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
             _pad_to(mark, 3),
             _pad_to(label, lw),
             _pad_to(email, ew),
-            _pad_to(used, uw),
+            _pad_to(used, uw, right=True),
             _pad_to(cred, cw),
             reset,
         ]
@@ -904,10 +927,17 @@ def cmd_status(settings: config.Settings, *, fresh: bool, as_json: bool = False)
             print(_usage_line(_usage_from_cache(cached)))
             return 0
 
-    # 활성이 어느 슬롯에도 없으면 홈을 직접 고른다. bash 는 이 경우 가짜 라벨
-    # `__active__` 를 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌리는데,
-    # 자격증명은 실제로 기본 홈에 있으므로 그 파생은 결함이다 (설계문 §7.5 D3).
-    home = settings.default_home if active is None else store.slot_dir(settings, active)
+    # **언제나 기본 홈이다.** 이 명령이 보는 것은 활성 계정 하나뿐이고, 활성이라는 말이
+    # 곧 "자격증명이 기본 홈에 있다" 는 뜻이다 — 슬롯이 있든(`active` 가 라벨) 없든
+    # (`None`) 마찬가지다. bash 는 후자에 가짜 라벨 `__active__` 를 경로에 넣어
+    # `CODEX_HOME=<root>/__active__` 로 프로브를 돌렸는데, 자격증명은 거기 없으므로 그
+    # 파생은 결함이다 (설계문 §7.5 D3).
+    #
+    # 한동안 여기만 조건이 거꾸로 붙어, 슬롯이 **있을 때** 그 사본을 읽었다. 슬롯 사본은
+    # 전환 시점의 스냅숏이라 토큰이 갱신되며 뒤처지고, 그러면 `--fresh` 가 낡은 자격증명
+    # 으로 조회해 멀쩡한 계정을 못 읽은 것처럼 보고한다. `refresh_all`·`rotate`·`credits`·
+    # TUI 는 전부 반대로 골랐다 — **여기 하나만 달랐다.**
+    home = settings.default_home
 
     # 바이너리 해석을 프로브 호출의 **인자 안**에 두면 그 실패가 아래 `except` 에 걸려
     # "사용량 조회 실패" 로 접힌다. 그러면 codex 가 아예 없는 기기에서도 화면은 계정을
@@ -1141,10 +1171,10 @@ def cmd_remove(settings: config.Settings, label: str, *, assume_yes: bool = Fals
         who = identity.email_of(store.slot_auth(settings, label)) or "email unknown"
         print(f"About to delete slot '{label}' ({who}). This cannot be undone.")
         try:
-            answer = input("Type y to continue: ")
+            answer: str | None = input("Type y to continue: ")
         except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
+            answer = None
+        if not credits_core.said_yes(answer):
             print("Left it alone.")
             return 1
 
@@ -1259,6 +1289,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--credit", metavar="ID", help="spend this exact reset (see --json)")
     p.add_argument("--dry-run", action="store_true", help="say what would be spent, spend nothing")
     p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="spend even when the account still has usage left (a reset would throw it away)",
+    )
 
     p = sub.add_parser("status", help="active account and its usage")
     p.add_argument("--fresh", action="store_true", help="ignore the cache and probe now")
@@ -1344,6 +1379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         credit_id=args.credit,
                         assume_yes=args.yes,
                         dry_run=args.dry_run,
+                        force=args.force,
                     )
                 if args.label is not None:
                     raise CliError(f"unknown argument: {args.label}. Did you mean: credits use?")

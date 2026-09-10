@@ -28,6 +28,7 @@ import re
 import select
 import subprocess
 import time
+import uuid
 from enum import Enum
 from pathlib import Path
 
@@ -187,18 +188,65 @@ def probe(
 
 
 class CreditOutcome(Enum):
-    """`account/rateLimitResetCredit/consume` 이 돌려주는 네 갈래.
+    """`account/rateLimitResetCredit/consume` 이 돌려주는 다섯 갈래.
 
-    서버가 이름 붙인 셋(`reset`·`nothingToReset`·`alreadyRedeemed`)에 **우리 쪽 하나**를
-    더한다. `UNKNOWN` 은 "요청은 갔는데 결과를 못 읽었다" 이고, 이것을 실패로 접으면 안
-    된다 — 쿠폰이 이미 쓰였을 수 있는데 화면이 "안 쓰였다" 고 말하면 사용자는 하나 더
-    쓴다. 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
+    서버가 이름 붙인 넷(`reset`·`nothingToReset`·`noCredit`·`alreadyRedeemed`)에 **우리 쪽
+    하나**를 더한다. `UNKNOWN` 은 "요청은 갔는데 결과를 못 읽었다" 이고, 이것을 실패로
+    접으면 안 된다 — 쿠폰이 이미 쓰였을 수 있는데 화면이 "안 쓰였다" 고 말하면 사용자는
+    하나 더 쓴다. 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
+
+    반대 방향도 같은 무게다. `NO_CREDIT` 은 한동안 이 목록에 없어서 `UNKNOWN` 으로
+    접혔는데, 그것은 **확정된 사실**("쓸 쿠폰이 없다")을 "썼는지 모른다" 로 바꿔 놓는다 —
+    아무 일도 없었는데 사용자는 쿠폰을 잃었을까 걱정하게 된다.
     """
 
     RESET = "reset"
     NOTHING_TO_RESET = "nothingToReset"
+    NO_CREDIT = "noCredit"
     ALREADY_REDEEMED = "alreadyRedeemed"
     UNKNOWN = "unknown"
+
+
+_ATTEMPT_NS = uuid.UUID("f3540538-b1c2-44b8-af80-cdbdcb0452f3")
+"""`attempt_key` 의 네임스페이스. 값 자체에 의미는 없고 **고정이라는 것**이 전부다."""
+
+
+def attempt_key(credit_id: str) -> str:
+    """이 쿠폰을 쓰려는 시도의 이름. 같은 쿠폰이면 **언제 불러도 같은 값**이다.
+
+    서버가 요구하는 `idempotencyKey` 이고, 스키마는 "하나의 논리적 리셋 시도를 가리킨다.
+    재시도할 때는 같은 값을 다시 쓰라" 고 적어 둔다.
+
+    우리에게 재시도란 `UNKNOWN` 을 보고 사용자가 같은 쿠폰을 다시 고르는 것이다 — 요청은
+    나갔는데 결과를 못 읽은 자리라, 실제로는 이미 쓰였을 수 있다. `uuid4()` 로 매번 새로
+    만들면 그 재시도가 서버에 **별개의 시도**로 보이고, 첫 번째가 사실 성공했다면 두
+    번째가 쿠폰을 하나 더 태운다. 쿠폰 id 에서 유도하면 재시도가 몇 번이든, 어느
+    표면에서 누르든(`cli` 든 `tui` 든), 프로세스가 죽었다 살아나든 같은 시도로 접힌다.
+
+    **이 키가 막는 것은 "같은 쿠폰을 다시 고른 재시도" 뿐이다.** 사용자의 모든 재시도가
+    보호된다는 뜻이 아니다 — 첫 요청이 사실 성공해서 그 쿠폰이 목록에서 사라지면, 다시
+    시도할 때 고르는 것은 **다른 쿠폰**이고 키도 다르다. 그것을 여기서 막을 방법은 없다.
+    화면과 CLI 가 소비 뒤 목록을 다시 읽는 이유가 그것이다.
+
+    **여기서 우리가 아는 것과 모르는 것을 갈라 둔다.** 아는 것은 서버가 `alreadyRedeemed`
+    를 "같은 키가 **이미 성공적으로** 리셋을 끝냈다" 로 정의한다는 것뿐이다(스키마 문구).
+    성공만 기억한다면 이 선택은 정확히 맞는다.
+
+    모르는 것은 서버가 **성공하지 못한 결과까지** 그 키에 매어 두는지다. 만약 그렇다면
+    `nothingToReset`(쿠폰은 그대로 남는다)을 한 번 받은 쿠폰은 나중에 정말 리셋이
+    필요해졌을 때도 같은 키로 막힐 수 있다. 위 정의와 모순되지 않는 반례라, "성공만
+    기억한다" 는 **추측이지 보장이 아니다.**
+
+    그 위험을 알고도 이 쪽을 고르는 것은 잃는 것의 크기가 다르기 때문이다 — 이중 소비는
+    쿠폰을 확실히 하나 잃고, 이쪽은 그 가정이 틀렸을 때 하나를 못 쓴다. 못 쓰는 쪽은
+    나중에 되돌릴 여지라도 있다.
+
+    키에 시간을 섞어 두 경우를 가르는 안도 있었으나 넣지 않았다. 그러면 경계를 사이에 둔
+    재시도가 다시 별개의 시도가 되어, 가장 위험한 경로를 되살린다.
+    """
+    if not credit_id:
+        raise ProbeError("credit id must not be empty")
+    return str(uuid.uuid5(_ATTEMPT_NS, credit_id))
 
 
 def consume_credit(
@@ -239,7 +287,11 @@ def _consume(proc: subprocess.Popen[bytes], credit_id: str, timeout_s: float) ->
     conn.notify("initialized")
 
     try:
-        reply = conn.request(2, "account/rateLimitResetCredit/consume", {"creditId": credit_id})
+        reply = conn.request(
+            2,
+            "account/rateLimitResetCredit/consume",
+            {"creditId": credit_id, "idempotencyKey": attempt_key(credit_id)},
+        )
     except ProbeError:
         # **여기서 던지면 안 된다.** 타임아웃·EOF·깨진 응답은 "못 썼다" 가 아니라 "썼는지
         # 모른다" 다 — 요청은 이미 나갔을 수 있다. 확정 실패로 적으면 사용자는 다시 시도해

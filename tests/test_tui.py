@@ -1020,20 +1020,21 @@ def test_columns_are_separated_by_the_same_gutter(env) -> None:
     body = next(line for line in tui.render_lines(view, width=140) if line.startswith(" >"))
     bar = tui.usage_bar(70, 70)
     assert f"{tui._GUTTER}{bar}{tui._GUTTER}" in body, body
-    # 사용량 칸은 `~100%` 상한에 맞춘 5 칸이라, `70%` 뒤의 남는 자리는 두 칸이다.
-    # 그 뒤에 간격이 붙는다. 칸을 넓게 잡으면 이 열만 멀어 보인다.
-    assert f"70%  {tui._GUTTER}{bar}" in body, f"사용량 열과 다음 열 사이 간격이 다르다: {body!r}"
+    # 사용량 칸은 `~100%` 상한에 맞춘 5 칸이고 값은 **오른쪽**에 붙는다. `70%` 는 세 칸이라
+    # 남는 두 칸이 앞에 오고, 값과 바 사이에는 간격만 남는다 — 같은 값을 두 방식으로
+    # 보여 주는 둘이 값의 자릿수와 무관하게 같은 거리로 붙는다.
+    assert f"  70%{tui._GUTTER}{bar}" in body, f"사용량 열과 다음 열 사이 간격이 다르다: {body!r}"
 
 
-def test_the_used_column_does_not_leave_dead_space(env) -> None:
-    """자릿수 정렬(오른쪽 붙임)을 **되돌린 자리**다.
+def test_the_used_column_is_no_wider_than_its_largest_value(env) -> None:
+    """칸은 값의 상한(`~100%` = 5)에 딱 맞는다.
 
-    한때 이 열만 오른쪽으로 붙였다. `58%` 와 `~70%` 의 `%` 가 세로로 맞는 이점이 있었지만,
-    표에서 한 열만 반대 방향이라 어긋나 보였다. 계정이 두셋뿐인 화면에서 자릿수 정렬의
-    이득은 작고 그 인상은 매번 치른다.
+    폭과 정렬은 **다른 문제**다. 한때 이 둘을 묶어서, 칸을 좁히면 왼쪽 정렬로도 죽은
+    공백이 안 남으니 오른쪽 붙임이 필요 없다고 보았다. 실제로는 `~` 가 붙는 값과 안 붙는
+    값이 섞이는 순간 왼쪽 정렬에서 자릿수가 어긋난다 — 칸을 아무리 좁혀도 그렇다.
 
-    대신 칸을 값의 상한(`~100%` = 5)에 맞춰 좁혔다. 왼쪽 정렬로도 죽은 공백이 남지
-    않으므로, 오른쪽 붙임이 풀려던 문제가 애초에 생기지 않는다.
+    그래서 정렬은 오른쪽으로 옮겼고(`test_text_columns_go_left_and_the_number_column_goes_right`),
+    폭은 여기서 그대로 지킨다. 넓게 잡으면 이 열만 다음 열에서 멀어 보인다.
     """
     rows = (
         tui.Row("a", "a@x", "58%", "-", True, percent=58),
@@ -1122,7 +1123,7 @@ def test_the_span_offsets_are_character_indices_not_columns(env) -> None:
 def test_the_account_screen_carries_the_key_spans(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter open" in text)
+    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter select" in text)
     assert keys.spans and keys.tone == "dim"
 
 
@@ -1254,11 +1255,15 @@ def test_the_axis_sits_directly_under_the_bars(env) -> None:
 # ── 열 정렬은 한 방향이다 ──────────────────────────────────────────────────
 
 
-def test_every_column_is_left_aligned(env) -> None:
-    """숫자만 오른쪽으로 붙이면 한 열만 반대로 보인다.
+def test_text_columns_go_left_and_the_number_column_goes_right(env) -> None:
+    """글자 열은 왼쪽, **숫자 열은 오른쪽**이다.
 
-    자릿수 정렬이라는 이점이 있지만, 계정이 두셋뿐인 화면에서 그 이득은 작고 어긋나
-    보이는 대가는 매번 치른다. 칸을 값에 맞춰 좁히면 죽은 공백도 같이 사라진다.
+    한동안 `USED` 도 왼쪽이었다. 근거는 "한 열만 반대 방향으로 보인다" 였는데, 두 방식을
+    나란히 그려 보니 그 인상이 관찰되지 않았다 — 숫자를 오른쪽에 붙이는 것은 표의 관례라
+    튀지 않는다.
+
+    왼쪽 정렬의 실제 대가는 `~` 였다. 낡음 표시 한 글자 때문에 `58%` 와 `~100%` 가 서로
+    다른 칸에서 시작해, **위아래로 읽는 유일한 열**에서 자릿수가 어긋났다.
     """
     rows = (
         tui.Row("a", "a@x", "58%", "-", True, percent=58),
@@ -1268,10 +1273,19 @@ def test_every_column_is_left_aligned(env) -> None:
     lines = tui.render_lines(view, width=140)
     header = next(ln for ln in lines if "USED" in ln)
     body = [ln for ln in lines if ln.startswith((" >", "  ")) and "@x" in ln]
-    # 값이 각 칸의 **왼쪽 끝**에서 시작한다 = 머리말과 같은 열에서 시작한다.
-    used_at = header.index("USED")
-    for ln in body:
-        assert ln[used_at] not in " ", f"USED 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
+
+    # 글자 열은 머리말과 같은 칸에서 시작한다.
+    for name in ("LABEL", "EMAIL"):
+        at = header.index(name)
+        for ln in body:
+            assert ln[at] != " ", f"{name} 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
+
+    # 숫자 열은 **끝이** 맞는다 — `%` 가 세로로 한 칸에 선다.
+    end = header.index("USED") + len("USED")
+    assert [ln[:end].rstrip()[-1] for ln in body] == ["%", "%"], [ln[:end] for ln in body]
+    assert body[0][:end].endswith("58%"), body[0]
+    assert body[1][:end].endswith("~100%"), body[1]
+
     cred_at = header.index("RESETS")
     assert body[1][cred_at] == "2", body[1]
 
@@ -1320,12 +1334,30 @@ def test_enter_on_a_menu_item_goes_in(env) -> None:
     assert after.mode == "policy"
 
 
-def test_enter_on_an_account_does_not_switch_but_says_what_does(env) -> None:
-    """전환은 `s` 다. 조용히 아무 일도 안 하면 사용자는 키가 죽은 줄 안다."""
-    before = _view(env, cursor=1)
-    after = tui.activate(before)
+def test_enter_on_an_account_actually_switches(env) -> None:
+    """**커서가 놓인 줄이 말하는 일을 한다.**
+
+    한동안 여기서만 아무 일도 안 하고 "`s` 를 누르라" 고 안내했다. `enter` 를 "들어간다"
+    하나로 두려던 것인데, 그 규칙이 이 화면에서만 깨져 보였다 — 메뉴 줄에서는 `enter` 가
+    정책을 열고 자동 전환을 토글하는데 계정 줄에서만 죽은 키였다.
+
+    **실제로 자격증명이 바뀌는 것까지 본다.** 한때 여기서 `activate()` 의 메시지를
+    `do_switch()` 의 메시지와 견주었는데, 그것은 구현을 구현과 비교하는 자기참조였다.
+    게다가 `_view()` 가 만드는 행(`a`/`b`)은 `env` 의 슬롯에 없어서 **두 호출이 나란히
+    "미등록" 으로 실패해도 통과**했다 — 전환이 아예 안 일어나도 초록불이었다.
+    """
+    s = config.load()
+    _write_auth(store.slot_auth(s, "master"), "a@example.com")
+    _write_auth(store.slot_auth(s, "shared"), "b@example.com")
+    _write_auth(store.active_auth(s), "a@example.com")
+
+    view = tui.build_view(s)
+    at = next(i for i, row in enumerate(view.rows) if row.label == "shared")
+    after = tui.activate(tui.replace(view, cursor=at))
+
     assert after.mode == "accounts"
-    assert "s" in after.message and "switch" in after.message.lower(), after.message
+    assert "Switched to shared" in after.message, after.message
+    assert store.active_label(s) == "shared", "메시지만 바뀌고 자격증명은 그대로다"
 
 
 def test_s_still_switches(env) -> None:
@@ -1345,7 +1377,7 @@ def test_s_on_a_menu_row_is_refused_gently(env) -> None:
 def test_the_key_line_teaches_the_new_layout(env) -> None:
     text, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=140)
     assert "s switch" in text, text
-    assert "enter open" in text, text
+    assert "enter select" in text, text
 
 
 # ── 방향키는 방향키로 보여야 한다 ──────────────────────────────────────────
