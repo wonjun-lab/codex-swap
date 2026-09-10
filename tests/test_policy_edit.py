@@ -108,16 +108,26 @@ def test_the_switch_is_the_file_the_readme_told_people_to_make(env: config.Setti
 
 
 def test_setting_it_to_what_it_already_is_leaves_the_file_alone(env: config.Settings) -> None:
-    """`touch` 는 mtime 을 바꾼다. 그 나이를 보는 코드가 나중에 생길 수 있다."""
+    """`touch` 는 mtime 을 바꾼다. 그 나이를 보는 코드가 나중에 생길 수 있다.
+
+    **시각을 직접 심는다.** 처음에는 두 번 호출 사이의 mtime 을 견줬는데, 리눅스는 파일
+    시각을 성긴 시계로 찍어서 두 호출이 같은 눈금에 들어가면 값이 같다 — 검사가 통과했지만
+    아무것도 재지 않았고, 뮤테이션이 살아남아서야 알았다.
+    """
+    import os
+
     policy_edit.set_auto(env, False)
-    before = env.off_switch.stat().st_mtime_ns
+    long_ago = 1_000_000_000
+    os.utime(env.off_switch, (long_ago, long_ago))
+
     policy_edit.set_auto(env, False)
-    assert env.off_switch.stat().st_mtime_ns == before
+    assert env.off_switch.stat().st_mtime == long_ago, "이미 꺼져 있는데 파일을 다시 건드렸다"
 
 
 def test_turning_it_on_when_it_is_already_on_does_not_fail(env: config.Settings) -> None:
     assert policy_edit.auto_on(env)
     assert policy_edit.set_auto(env, True) is True
+    assert not env.off_switch.exists()
 
 
 def test_the_cli_shows_the_state_without_changing_it(env: config.Settings, capsys) -> None:
