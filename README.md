@@ -139,6 +139,14 @@ that, so you do not have to remember. Since a git install keeps the same version
 while the commit moves, it compares commits rather than versions and tells you when there
 is nothing to do.
 
+**If `update` is not there yet**, you are on a build from before it existed — run the
+install line again instead. Nothing needs uninstalling first: every path above overwrites
+in place, and your accounts live in `~/.codex/accounts`, outside the package.
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/wonjun-lab/codex-swap/main/install.sh | sh
+```
+
 If it cannot tell where it came from it prints the command and stops rather than guessing:
 running the default URL over an install that came from a fork would quietly replace it.
 
