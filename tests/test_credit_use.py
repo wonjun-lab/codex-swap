@@ -577,3 +577,177 @@ def test_the_command_line_asks_when_yes_was_not_given(
     _answer(monkeypatch, "n")
     assert cli.main(["credits", "use"]) == 1
     assert spent == []
+
+
+# ── codex 교차 검토가 지목한 것들 ───────────────────────────────────────────
+
+
+def test_a_lost_answer_is_unknown_not_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**요청이 나간 뒤** 응답이 끊긴 경우.
+
+    타임아웃·EOF·깨진 응답은 "못 썼다" 가 아니라 "썼는지 모른다" 다 — 서버는 이미
+    처리했을 수 있다. 확정 실패로 적으면 사용자가 다시 시도해 하나 더 태운다.
+
+    앞선 테스트들은 `UNKNOWN` 을 **받았을 때** 무엇을 하는지만 쟀다. 실제 불명 상황에서
+    `UNKNOWN` 이 **만들어지는지**는 아무도 안 봤다.
+    """
+
+    class Gone:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def request(self, _id: int, method: str, _params: object = None) -> dict[str, object]:
+            self.sent.append(method)
+            if method.endswith("/consume"):
+                raise probe.ProbeError("timeout: account/rateLimitResetCredit/consume")
+            return {"result": {}}
+
+        def notify(self, method: str, _params: object = None) -> None:
+            self.sent.append(method)
+
+    conn = Gone()
+    monkeypatch.setattr(probe, "_Conn", lambda *_, **__: conn)
+    assert probe._consume(None, "cid", 1.0) is probe.CreditOutcome.UNKNOWN
+    assert any(m.endswith("/consume") for m in conn.sent), "요청조차 안 나갔다"
+
+
+def test_a_greeting_that_fails_is_still_a_definite_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`initialize` 는 소비 요청 **전**이다. 거기서 죽으면 쿠폰은 확실히 그대로다.
+
+    이것까지 `UNKNOWN` 으로 접으면 "썼는지 모른다" 가 남발되어 그 문구가 값싸진다.
+    """
+
+    class Deaf:
+        def request(self, _id: int, method: str, _params: object = None) -> dict[str, object]:
+            raise probe.ProbeError(f"timeout: {method}")
+
+        def notify(self, _method: str, _params: object = None) -> None:
+            pass
+
+    monkeypatch.setattr(probe, "_Conn", lambda *_, **__: Deaf())
+    with pytest.raises(probe.ProbeError, match="initialize"):
+        probe._consume(None, "cid", 1.0)
+
+
+@pytest.mark.parametrize("label", ["", " ", "\t"])
+def test_an_explicitly_empty_label_is_refused_not_swapped_for_the_active_one(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch, label: str
+) -> None:
+    """`None`(안 적었다)과 `""`(빈 값을 적었다)는 다르다.
+
+    스크립트가 비어 있는 변수를 따옴표로 감싸 넘기면 뒤엣것이 된다. `label or active` 로
+    두면 그것이 조용히 활성 계정이 되어, **지목하지도 않은 계정**의 쿠폰을 태운다.
+    """
+    _has(monkeypatch, SOON)
+    with pytest.raises(cli.CliError, match="empty label"):
+        cli.cmd_credits_use(env, label, assume_yes=True)
+    assert spent == []
+
+
+def test_an_account_that_will_not_say_who_it_is_does_not_get_charged(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조회 화면은 "알 때만 견준다" — 모른다고 갱신을 멈추면 화면이 빈다.
+
+    여기는 반대다. 누구 것인지 확인 못 한 채 태우는 것보다 거절하는 편이 낫다. 이메일이
+    비는 응답에서 검사가 **열려** 있으면, 하필 전환이 끼어든 순간에 남의 쿠폰이 승인된
+    것으로 처리된다.
+    """
+
+    def nameless(_bin: object, _home: object) -> ProbeResult:
+        return ProbeResult.of(Usage(used_percent=98, email=None, reset_credits=1, credits=(SOON,)))
+
+    monkeypatch.setattr(probe, "probe", nameless)
+    with pytest.raises(cli.CliError, match="could not confirm whose credit"):
+        cli.cmd_credits_use(env, assume_yes=True)
+    assert spent == []
+
+
+def test_the_account_switching_while_we_wait_for_yes_stops_the_spend(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """확인을 기다리는 동안 rotate 가 전환을 끝낼 수 있다.
+
+    사용자가 승인한 것은 A 인데 소비 요청은 B 의 자격증명으로 나간다. 조회 시점의 검사만
+    있으면 이 창이 열려 있다 — 소비 **직전에** 다시 봐야 한다.
+    """
+    _has(monkeypatch, SOON)
+
+    def switch_then_yes(_: str = "") -> str:
+        _auth(env.default_home / "auth.json", "someone-else@example.com")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", switch_then_yes)
+    with pytest.raises(cli.CliError, match="Nothing was spent"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_a_switch_in_progress_stops_the_spend(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """락을 못 잡으면 다른 전환이 도는 중이다. 그 위에 소비를 겹치지 않는다."""
+    _has(monkeypatch, SOON)
+
+    def busy(_: config.Settings):
+        raise probe_store_lock_busy()
+
+    monkeypatch.setattr(cli.store, "switch_lock", busy)
+    with pytest.raises(cli.CliError, match="Nothing was spent"):
+        cli.cmd_credits_use(env, assume_yes=True)
+    assert spent == []
+
+
+def probe_store_lock_busy() -> Exception:
+    from codex_swap.core import store
+
+    return store.LockBusy("held")
+
+
+def test_an_expired_credit_is_never_the_automatic_choice(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """만료가 이른 것부터 쓰는 규칙을 그대로 두면 **이미 지난 쿠폰이 가장 먼저** 뽑힌다.
+
+    정렬 키가 가장 작기 때문이다. 서버가 `available` 이라고 적어 둔 채 날짜만 지난
+    항목이 실제로 그렇게 뽑혔다 — codex 교차 검토가 잡았다.
+    """
+    import time as _time
+
+    dead = Credit(id="dead", status="available", expires_at=int(_time.time()) - 100)
+    alive = Credit(id="alive", status="available", expires_at=int(_time.time()) + 86400)
+    _has(monkeypatch, dead, alive)
+    assert cli.cmd_credits_use(env, assume_yes=True) == 0
+    assert spent == ["alive"]
+
+
+def test_every_usable_credit_being_expired_spends_nothing(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time as _time
+
+    dead = Credit(id="dead", status="available", expires_at=int(_time.time()) - 100)
+    _has(monkeypatch, dead)
+    # **"상세가 없다" 와 갈려야 한다.** 그쪽은 다시 시도하라는 뜻인데, 전부 만료는 아무리
+    # 다시 해도 같다.
+    with pytest.raises(cli.CliError, match="have all expired"):
+        cli.cmd_credits_use(env, assume_yes=True)
+    assert spent == []
+
+
+def test_naming_an_expired_credit_is_still_allowed(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """지목한 것은 만료 여부를 따지지 않는다.
+
+    사용자가 보고 골랐고 서버는 여전히 `available` 이라고 말한다 — 우리 시계가 틀렸을
+    수도 있다. 자동으로 고르지 않는 것과 못 고르게 막는 것은 다르다.
+    """
+    import time as _time
+
+    dead = Credit(id="dead", status="available", expires_at=int(_time.time()) - 100)
+    _has(monkeypatch, dead)
+    assert cli.cmd_credits_use(env, credit_id="dead", assume_yes=True) == 0
+    assert spent == ["dead"]

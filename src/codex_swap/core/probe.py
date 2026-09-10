@@ -233,9 +233,22 @@ def consume_credit(
 
 def _consume(proc: subprocess.Popen[bytes], credit_id: str, timeout_s: float) -> CreditOutcome:
     conn = _Conn(proc, timeout_s)
+
+    # 인사는 **요청이 나가기 전**이다. 여기서 실패하면 쿠폰은 확실히 그대로다.
     conn.request(1, "initialize", {"clientInfo": _CLIENT_INFO})
     conn.notify("initialized")
-    reply = conn.request(2, "account/rateLimitResetCredit/consume", {"creditId": credit_id})
+
+    try:
+        reply = conn.request(2, "account/rateLimitResetCredit/consume", {"creditId": credit_id})
+    except ProbeError:
+        # **여기서 던지면 안 된다.** 타임아웃·EOF·깨진 응답은 "못 썼다" 가 아니라 "썼는지
+        # 모른다" 다 — 요청은 이미 나갔을 수 있다. 확정 실패로 적으면 사용자는 다시 시도해
+        # 쿠폰을 하나 더 태운다.
+        #
+        # 보내기 자체가 실패한 경우(파이프가 이미 닫힘)도 여기로 온다. 그때는 확실히 안
+        # 쓴 것이지만 모른다고 말하는 쪽으로 기운다 — 헛되이 한 번 더 확인하는 값이,
+        # 잃은 쿠폰보다 싸다.
+        return CreditOutcome.UNKNOWN
 
     error = reply.get("error")
     if js_truthy(error):

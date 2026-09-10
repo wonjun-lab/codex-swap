@@ -549,10 +549,17 @@ def _pick_credit(credits: Sequence[Credit], wanted: str | None) -> Credit | None
     """
     usable = [c for c in credits if c.status == "available"]
     if wanted is not None:
+        # 지목한 것은 만료 여부를 따지지 않는다. 사용자가 보고 골랐고, 서버가 여전히
+        # `available` 이라고 말한다 — 우리 시계가 틀렸을 수도 있다.
         return next((c for c in usable if c.id == wanted), None)
-    if not usable:
+    # **만료된 것은 자동으로 고르지 않는다.** 만료가 이른 것부터 쓰는 규칙이 그대로면
+    # 이미 지난 쿠폰이 **가장 먼저** 뽑힌다 — 정렬 키가 가장 작기 때문이다. 서버가
+    # `available` 이라고 적어 둔 채 날짜만 지난 항목이 실제로 그렇게 뽑혔다.
+    now = time.time()
+    fresh = [c for c in usable if c.expires_at is None or c.expires_at > now]
+    if not fresh:
         return None
-    return min(usable, key=lambda c: (c.expires_at is None, c.expires_at or 0))
+    return min(fresh, key=lambda c: (c.expires_at is None, c.expires_at or 0))
 
 
 def cmd_credits_use(
@@ -572,7 +579,12 @@ def cmd_credits_use(
     식별자로 지목하면 그 사이 만료됐거나 이미 쓰인 쿠폰을 가리킨다.
     """
     active = store.active_label(settings)
-    target = label or active
+    # **`None` 과 `""` 는 다르다.** 앞은 "안 적었다"(활성을 쓴다)이고 뒤는 "빈 값을
+    # 적었다" — 스크립트가 비어 있는 변수를 따옴표로 감싸 넘긴 경우다. `label or active`
+    # 로 두면 뒤엣것이 조용히 활성 계정이 되어, 지목하지도 않은 계정의 쿠폰을 태운다.
+    if label is not None and not label.strip():
+        raise CliError("empty label. Leave it out to use the active account")
+    target = label if label is not None else active
     if target is None:
         raise CliError(
             "no active account to spend a credit on. Name one: codex-swap credits use <label>"
@@ -598,26 +610,36 @@ def cmd_credits_use(
 
     # `credits` 와 같은 신원 검사. 조회와 소비 사이에 다른 rotate 가 전환을 끝내면 기본
     # 홈에 이미 다른 계정이 있다 — 그대로 진행하면 **남의 쿠폰을 쓴다.**
+    #
+    # **조회 화면보다 엄격하다.** `credits` 는 "알 때만 견준다" — 이메일을 모른다고 갱신을
+    # 통째로 멈추면 화면이 빈다. 여기는 반대다. 누구 것인지 확인하지 못한 채 태우는 것보다
+    # 거절하는 편이 낫다. 이메일이 비는 응답이 실제로 있을 수 있고, 그때 검사가 **열려**
+    # 있으면 하필 전환이 끼어든 순간에 남의 쿠폰이 승인된 것으로 처리된다.
     want = identity.email_of(store.slot_auth(settings, target))
-    if usage.email is not None and want is not None and usage.email != want:
+    if usage.email is None or want is None or usage.email != want:
         raise CliError(
-            f"{target} now holds {usage.email}, not {want}. Nothing was spent. Try again"
+            f"could not confirm whose credit this is "
+            f"(slot says {want or 'unknown'}, the account said {usage.email or 'nothing'}). "
+            "Nothing was spent"
         )
 
     credit = _pick_credit(usage.credits, credit_id)
     if credit is None:
         if credit_id is not None:
             raise CliError(f"{target} has no usable credit with id {credit_id}")
+        # 왜 못 고르는지가 셋으로 갈린다. 뭉뚱그리면 사용자는 엉뚱한 조치를 한다 —
+        # "상세가 없다" 는 다시 시도하라는 뜻이지만 "전부 만료" 는 아무리 다시 해도 같다.
+        if [c for c in usage.credits if c.status == "available"]:
+            raise CliError(f"{target}'s usable credits have all expired. See: codex-swap credits")
         have = usage.reset_credits
         if have:
-            # 개수는 있는데 쓸 수 있는 상세가 없다. 서버가 상세를 안 준 경우다.
             raise CliError(
                 f"{target} reports {have} credit(s) but sent no usable detail. "
                 "Try again in a moment"
             )
         raise CliError(f"{target} has no credit to spend")
 
-    who = usage.email or want or "email unknown"
+    who = usage.email
     title = credit.title or "credit"
     when = _expiry_text(credit.expires_at)
     headline = f"{title} on {target} ({who}), expires {when}"
@@ -645,8 +667,30 @@ def cmd_credits_use(
             print("Left it alone.")
             return 1
 
+    # **락 안에서 쓴다.** 확인을 기다리는 동안 `rotate` 가 전환을 끝내면 기본 홈에 이미
+    # 다른 계정이 들어 있다 — 사용자가 승인한 것은 A 인데 소비 요청은 B 의 자격증명으로
+    # 나간다. 락은 소비하는 몇 초만 잡는다(프롬프트는 밖에 둔다 — 사람이 자리를 비우면
+    # rotate 가 그동안 멈춘다).
     try:
-        outcome = probe.consume_credit(codex_bin, str(home), credit.id)
+        with store.switch_lock(settings):
+            here = settings.default_home if target == store.active_label(settings) else home
+            confirmed = identity.email_of(here / "auth.json")
+            if confirmed != who:
+                raise CliError(
+                    f"{target} now holds {confirmed or 'an unknown account'}, not {who}. "
+                    "Nothing was spent"
+                )
+            outcome = probe.consume_credit(codex_bin, str(here), credit.id)
+    except store.LockBusy:
+        raise CliError(
+            "another switch is in progress. Nothing was spent. Try again in a moment"
+        ) from None
+    except KeyboardInterrupt:
+        # 요청이 이미 나갔을 수 있다. 조용히 죽으면 사용자는 안 쓴 줄 안다.
+        print("interrupted. The credit may or may not have been spent")
+        print("check before trying again: codex-swap credits")
+        cache.clear(settings)
+        return 1
     except probe.ProbeError as exc:
         raise CliError(f"could not spend the credit: {exc}") from exc
 
