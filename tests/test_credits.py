@@ -625,3 +625,22 @@ def test_the_json_flag_actually_reaches_the_json_function(
     )
     assert cli.main(["credits", "--json"]) == 0
     json.loads(capsys.readouterr().out)  # 표였다면 여기서 터진다
+
+
+def test_the_same_account_under_two_labels_is_not_counted_twice(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """같은 계정이 두 라벨에 있으면 **같은 쿠폰이 두 번** 나온다.
+
+    줄이 둘이니 둘로 세는데 실제로는 하나다. `list` 는 같은 상황에 경고를 내는데 하필
+    세어 보는 이 화면만 조용했다 — codex 검토가 잡았다.
+    """
+    _auth(env.accounts_dir / "shared/auth.json", "a@example.com")
+    _answer(
+        {"a@example.com": _usage("a@example.com", Credit(id="same_one", status="available"))},
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    out = capsys.readouterr().out
+    assert "hold the same account" in out, out
+    assert "counted once" in out, out

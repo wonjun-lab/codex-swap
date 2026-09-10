@@ -459,7 +459,13 @@ def cmd_credits(settings: config.Settings) -> int:
     # 만료됐거나 `redeeming` 인 쿠폰이 섞이면 그 둘이 다르다 — 사용자는 세어 보고 더
     # 많다고 믿는다. 어긋날 때만 말한다. 늘 떠 있는 안내는 곧 안 읽힌다.
     disagree: list[str] = []
+    # 같은 계정이 두 라벨에 있으면 **같은 쿠폰이 두 번** 나온다. 줄이 둘이니 둘로 세는데
+    # 실제로는 하나다. `list` 는 같은 상황에 "두 라벨이 같은 계정을 들고 있다" 고 말하는데
+    # 여기만 조용했다 — 하필 세어 보는 화면이다.
+    seen_emails: dict[str, list[str]] = {}
     for label, email, usage in _probe_credits(settings):
+        if email != "?":
+            seen_emails.setdefault(email, []).append(label)
         mark = "*" if label == active else " "
         if usage is None:
             unreadable.append(label)
@@ -519,6 +525,12 @@ def cmd_credits(settings: config.Settings) -> int:
         print(f"could not read: {', '.join(unreadable)}. Try again, or: codex-swap list --fresh")
     for note in disagree:
         print(note)
+    for email, owners in sorted(seen_emails.items()):
+        if len(owners) > 1:
+            print(
+                f"note: {', '.join(owners)} hold the same account ({email}). "
+                "Their credits are the same credits, counted once"
+            )
     print("A credit resets that account's usage window. Spending one cannot be undone.")
     return 0
 
