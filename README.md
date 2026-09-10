@@ -52,14 +52,31 @@ actually be runnable — check that `codex --version` works first.
 ## Install
 
 ```bash
-uv tool install git+https://github.com/wonjun-lab/codex-swap.git
+curl -LsSf https://raw.githubusercontent.com/wonjun-lab/codex-swap/main/install.sh | sh
 ```
 
-Without uv, pip works too (a virtualenv is recommended):
+That picks whichever of uv, pipx or pip you already have and runs one command with it —
+there is nothing in [`install.sh`](install.sh) you could not type yourself, which is the
+only reason piping a script into a shell is reasonable here. It never uses sudo.
+
+Or name the tool yourself:
 
 ```bash
-pip install git+https://github.com/wonjun-lab/codex-swap.git
+uv tool install git+https://github.com/wonjun-lab/codex-swap.git    # isolated
+pipx install git+https://github.com/wonjun-lab/codex-swap.git       # isolated
+pip install --user git+https://github.com/wonjun-lab/codex-swap.git
 ```
+
+Homebrew, from [`packaging/homebrew/codex-swap.rb`](packaging/homebrew/codex-swap.rb):
+
+```bash
+brew install --HEAD wonjun-lab/tap/codex-swap
+```
+
+There is no release tarball yet, so the formula is HEAD-only. `codex-swap update` knows
+which of these you used and reuses it — with Homebrew it steps aside and tells you to run
+`brew upgrade` instead, because reinstalling over a Cellar with pip would leave brew's
+idea of the world out of step with what is on disk.
 
 ### When something looks wrong
 

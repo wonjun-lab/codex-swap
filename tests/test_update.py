@@ -271,3 +271,49 @@ def test_upgrade_is_the_same_command(
     monkeypatch.setattr(selfupdate, "latest_commit", lambda *_, **__: NEW)
     assert cli.main(["upgrade", "--yes"]) == 0
     assert "already up to date" in capsys.readouterr().out
+
+
+# ── 다른 방식으로 깔린 경우 ─────────────────────────────────────────────────
+
+
+def test_a_homebrew_install_is_left_to_homebrew(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**pip 이 brew 의 Cellar 를 헤집으면 안 된다.**
+
+    brew 는 자기 안의 가상환경을 스스로 관리한다. 그 안에서 `pip install --force-reinstall`
+    을 돌리면 brew 가 아는 상태와 실제가 갈리고, 그 뒤로는 brew 쪽 명령이 전부 어긋난다.
+    """
+    _direct_url(monkeypatch, _git_install())
+    install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/0.1.0/libexec")
+    assert install is not None
+    assert install.manager == "brew"
+    with pytest.raises(selfupdate.UpdateError, match="brew upgrade"):
+        selfupdate.upgrade_command(install)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "/opt/homebrew/Cellar/codex-swap/0.1.0/libexec",
+        "/usr/local/Cellar/codex-swap/0.1.0/libexec",
+        "/home/linuxbrew/.linuxbrew/Cellar/codex-swap/0.1.0/libexec",
+    ],
+)
+def test_homebrew_is_recognised_on_every_platform(
+    monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    """intel mac · apple silicon · linuxbrew 가 각자 다른 자리에 깐다."""
+    _direct_url(monkeypatch, _git_install())
+    install = selfupdate.detect(prefix)
+    assert install is not None and install.manager == "brew"
+
+
+def test_the_installer_script_is_shipped_and_runnable() -> None:
+    """`curl … | sh` 로 안내해 두고 파일이 없으면 그 한 줄이 404 를 내려받는다."""
+    import subprocess as sp
+    from pathlib import Path as P
+
+    script = P(__file__).resolve().parent.parent / "install.sh"
+    assert script.is_file(), "install.sh 가 없다"
+    assert script.stat().st_mode & 0o111, "실행 권한이 없다"
+    # 문법이 깨진 채 올라가면 사용자의 셸에서 터진다. 우리 쪽에서 먼저 본다.
+    assert sp.run(["sh", "-n", str(script)]).returncode == 0

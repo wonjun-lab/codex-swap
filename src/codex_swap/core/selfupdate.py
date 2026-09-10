@@ -90,6 +90,11 @@ def _manager(prefix: str | None = None) -> str:
         return "uv"
     if "/pipx/venvs/" in where:
         return "pipx"
+    if "/Cellar/" in where or "/homebrew/" in where or "/linuxbrew/" in where:
+        # **여기를 놓치면 pip 이 brew 의 설치를 헤집는다.** brew 는 자기 Cellar 안의
+        # 가상환경을 스스로 관리하는데, 그 안에서 `pip install --force-reinstall` 을
+        # 돌리면 brew 가 아는 상태와 실제가 갈린다. 갱신은 brew 에게 맡긴다.
+        return "brew"
     return "pip"
 
 
@@ -183,6 +188,13 @@ def upgrade_command(install: Install) -> list[str]:
             f"this is an editable install at {install.source}. "
             "Update it with git instead: git -C "
             f"{install.source} pull"
+        )
+    if install.manager == "brew":
+        # 우리가 실행하지 않는다. brew 가 관리하는 것을 pip 으로 덮으면 brew 가 아는
+        # 상태와 실제가 갈리고, 그 뒤로는 brew 쪽 명령이 전부 어긋난다.
+        raise UpdateError(
+            "this was installed with Homebrew, which manages its own updates. "
+            "Run: brew upgrade codex-swap"
         )
     if install.manager == "uv":
         return ["uv", "tool", "install", "--force", install.source]
