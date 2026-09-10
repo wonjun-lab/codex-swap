@@ -528,6 +528,7 @@ def cmd_credits_use(
     credit_id: str | None = None,
     assume_yes: bool = False,
     dry_run: bool = False,
+    force: bool = False,
 ) -> int:
     """쿠폰 하나를 써서 그 계정의 사용량 창을 되돌린다. **되돌릴 수 없다.**
 
@@ -597,6 +598,14 @@ def cmd_credits_use(
             )
         raise CliError(f"{target} has no usage reset to spend")
 
+    # **아직 쓸 때가 아니면 막는다.** 리셋은 남은 창을 늘리는 것이 아니라 지우고 새로
+    # 주는 것이라, 한도가 많이 남았을 때 쓰면 그 남은 만큼을 버린다 — 쿠폰을 내고 손해를
+    # 보는 유일한 경우다. 완전히 막지는 않는다: 일부러 그러는 용법이 있을 수 있고,
+    # `--force` 가 그 자리다(전환의 `--force` 와 같은 어휘).
+    early = credits_core.too_early(settings, target, usage)
+    if early is not None and not force:
+        raise CliError(f"{early}. Nothing was spent. Pass --force if you mean it")
+
     who = usage.email
     title = credit.title or "credit"
     when = _expiry_text(credit.expires_at)
@@ -665,10 +674,13 @@ def cmd_credits_use(
         print(f"{target}'s usage window was reset. Check it with: codex-swap status --fresh")
         return 0
     if outcome is probe.CreditOutcome.ALREADY_REDEEMED:
-        # 서버 스키마상 이것은 "**같은 시도**가 이미 성공했다" 다. 재시도가 쿠폰을 하나 더
-        # 태우지 않고 여기로 접힌 것이므로, 잃은 것은 없다.
-        print("that reset was already redeemed by this same attempt. Nothing more was spent")
-        return 1
+        # **성공이다.** 서버 스키마상 이것은 "같은 키가 이미 리셋을 성공적으로 끝냈다" 이고,
+        # 그 키를 우리가 쿠폰 id 에서 결정론적으로 만드는 이유가 바로 재시도를 여기로
+        # 접기 위해서다. 접힌 것을 실패로 보고하면 그 장치가 무의미해진다 — 스크립트는
+        # 0 이 아닌 값을 보고 **한 번 더** 시도한다.
+        print(f"{target}'s usage window was already reset by this same attempt")
+        print("nothing more was spent")
+        return 0
     if outcome is probe.CreditOutcome.NOTHING_TO_RESET:
         print(f"{target} had nothing to reset, so the credit was not needed and is still yours")
         return 1
@@ -1264,6 +1276,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--credit", metavar="ID", help="spend this exact reset (see --json)")
     p.add_argument("--dry-run", action="store_true", help="say what would be spent, spend nothing")
     p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="spend even when the account still has usage left (a reset would throw it away)",
+    )
 
     p = sub.add_parser("status", help="active account and its usage")
     p.add_argument("--fresh", action="store_true", help="ignore the cache and probe now")
@@ -1349,6 +1366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         credit_id=args.credit,
                         assume_yes=args.yes,
                         dry_run=args.dry_run,
+                        force=args.force,
                     )
                 if args.label is not None:
                     raise CliError(f"unknown argument: {args.label}. Did you mean: credits use?")

@@ -60,11 +60,22 @@ def spent(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
-def _has(monkeypatch: pytest.MonkeyPatch, *credits: Credit, count: int | None = None) -> None:
+def _has(
+    monkeypatch: pytest.MonkeyPatch,
+    *credits: Credit,
+    count: int | None = None,
+    used: int = 98,
+) -> None:
+    """기본 사용량이 98% 인 것은 **거의 다 쓴 상태**를 뜻한다.
+
+    쿠폰을 쓰는 것이 이치에 맞는 유일한 지점이라 여기가 기본이다. 아직 여유가 있는 판을
+    보려면 `used` 를 낮춘다 — 그때는 `too_early` 가 막아야 한다.
+    """
+
     def fake(_bin: object, home: str) -> ProbeResult:
         return ProbeResult.of(
             Usage(
-                used_percent=98,
+                used_percent=used,
                 email=identity.email_of(Path(home) / "auth.json"),
                 reset_credits=len(credits) if count is None else count,
                 credits=credits,
@@ -332,13 +343,21 @@ def _outcome(monkeypatch: pytest.MonkeyPatch, value: probe.CreditOutcome) -> Non
     monkeypatch.setattr(probe, "consume_credit", lambda *_, **__: value)
 
 
-def test_already_redeemed_is_not_reported_as_success(
+def test_already_redeemed_is_a_success_because_the_attempt_landed(
     env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
+    """**멱등 재시도가 접힌 자리다.** 실패로 적으면 그 장치가 무의미해진다.
+
+    서버 스키마상 이것은 "같은 키가 이미 리셋을 성공적으로 끝냈다" 이고, 키를 쿠폰 id 에서
+    결정론적으로 만드는 이유가 바로 재시도를 여기로 접기 위해서다. 0 이 아닌 값을 돌려주면
+    스크립트는 그것을 실패로 읽고 한 번 더 시도한다 — 막으려던 바로 그 행동이다.
+    """
     _has(monkeypatch, SOON)
     _outcome(monkeypatch, probe.CreditOutcome.ALREADY_REDEEMED)
-    assert cli.cmd_credits_use(env, assume_yes=True) == 1
-    assert "already redeemed" in capsys.readouterr().out
+    assert cli.cmd_credits_use(env, assume_yes=True) == 0
+    said = capsys.readouterr().out
+    assert "already reset" in said, said
+    assert "nothing more was spent" in said, said
 
 
 def test_nothing_to_reset_says_the_credit_is_still_yours(
@@ -349,6 +368,63 @@ def test_nothing_to_reset_says_the_credit_is_still_yours(
     _outcome(monkeypatch, probe.CreditOutcome.NOTHING_TO_RESET)
     assert cli.cmd_credits_use(env, assume_yes=True) == 1
     assert "still yours" in capsys.readouterr().out
+
+
+# ── 아직 쓸 때가 아니면 막는다 ──────────────────────────────────────────────
+#
+# 리셋은 남은 창을 **늘리는** 것이 아니라 지우고 새로 준다. 한도가 많이 남았을 때 쓰면 그
+# 남은 만큼이 그대로 사라진다 — 되돌릴 수 없는 동작 중에서 유일하게 "너무 이르다" 가
+# 성립하는 자리다.
+
+
+def test_spending_with_usage_left_is_refused(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _has(monkeypatch, SOON, used=40)
+    with pytest.raises(cli.CliError) as exc:
+        cli.cmd_credits_use(env, assume_yes=True)
+    said = str(exc.value)
+    assert "40%" in said, said
+    assert "--force" in said, said
+    assert spent == [], "막았다면서 요청이 나갔다"
+
+
+def test_force_spends_anyway(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """완전히 막지는 않는다. 일부러 그러는 용법이 있고, `--force` 가 그 자리다."""
+    _has(monkeypatch, SOON, used=40)
+    assert cli.cmd_credits_use(env, assume_yes=True, force=True) == 0
+    assert spent == ["soon"]
+
+
+def test_the_gate_follows_the_ladder_instead_of_a_fixed_number(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """문턱은 **사다리의 마지막 칸**이다 — 노브를 새로 만들지 않은 이유가 이것이다.
+
+    사다리 끝은 "더 올라갈 데가 없다", 즉 전환으로는 해결이 안 되는 지점을 뜻한다. 쿠폰을
+    쓸 시점이 정확히 거기이므로, 사다리를 조정하면 이 문턱도 같이 따라와야 한다.
+    """
+    monkeypatch.setenv("CODEX_ROTATE_LADDER", "30,50")
+    s = config.load()
+    _has(monkeypatch, SOON, used=60)  # 기본 사다리(95)면 막히지만 여기서는 끝을 넘었다
+    assert cli.cmd_credits_use(s, assume_yes=True) == 0
+    assert spent == ["soon"]
+
+
+def test_an_unreadable_usage_is_not_treated_as_a_go_ahead(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**모르면 막는 쪽으로 기운다.**
+
+    되돌릴 수 없는 일 앞에서 "모른다" 를 "괜찮다" 로 읽으면, 프로브가 실패한 순간이 하필
+    가장 위험한 순간이 된다.
+    """
+    from codex_swap.core import credits as credits_core
+
+    assert credits_core.too_early(env, "master", None) is not None
+    assert spent == []
 
 
 def test_no_credit_says_nothing_was_spent_not_that_it_might_have_been(
@@ -609,6 +685,34 @@ def test_the_same_credit_keeps_the_same_attempt_key() -> None:
     서버는 그것을 별개의 시도로 보고 두 번째를 태운다.
     """
     assert probe.attempt_key("cred_abc") == probe.attempt_key("cred_abc")
+
+
+def test_retrying_the_same_credit_puts_the_same_key_on_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**실제로 나가는 것**을 두 번 견준다.
+
+    `attempt_key` 만 따로 재고 요청은 "UUID 인가" 만 보면, `_consume` 이 매번 `uuid4()` 를
+    싣도록 바뀌어도 둘 다 통과한다 — 두 검사 사이가 비어 있다. 재시도가 접히는지는 키
+    함수가 아니라 **파이프에 실린 값**이 결정한다.
+    """
+
+    def sent_key() -> str:
+        conn = _reply(monkeypatch, {"result": {"outcome": "reset"}})
+        probe._consume(None, "cred_abc", 1.0)
+        _, params = next(x for x in conn.sent if str(x[0]).endswith("/consume"))
+        return params["idempotencyKey"]
+
+    first, second = sent_key(), sent_key()
+    assert first == second
+
+    def other_key() -> str:
+        conn = _reply(monkeypatch, {"result": {"outcome": "reset"}})
+        probe._consume(None, "cred_other", 1.0)
+        _, params = next(x for x in conn.sent if str(x[0]).endswith("/consume"))
+        return params["idempotencyKey"]
+
+    assert other_key() != first, "다른 쿠폰까지 같은 시도로 접히면 두 번째를 못 쓴다"
 
 
 def test_a_different_credit_gets_a_different_attempt_key() -> None:

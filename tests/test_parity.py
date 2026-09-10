@@ -305,6 +305,82 @@ def test_the_screen_clears_the_stale_usage_exactly_when_the_cli_does(
     assert expected is cleared, f"{outcome}: SPENT_NOTHING 과 이 표가 어긋난다"
 
 
+# ── 아직 쓸 때가 아니면 두 표면 다 막는가 ──────────────────────────────────
+
+
+def _screen_at(settings, used: int):
+    """사용량이 `used` 인 계정 하나짜리 쿠폰 화면."""
+    from codex_swap.core import credits as credits_core
+    from codex_swap.core.types import Usage
+
+    usage = Usage(used_percent=used, email="a@example.com", reset_credits=1, credits=(SOON,))
+    accounts = (credits_core.Account("master", "a@example.com", True, usage),)
+    return tui.replace(tui.build_view(settings), mode="credits", credit_accounts=accounts)
+
+
+def test_the_screen_stops_before_asking_when_usage_is_left(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**묻기 전에 세운다.** 물어본 뒤에 막으면 이미 `y` 하나 거리다.
+
+    CLI 는 같은 자리에서 `--force` 를 요구한다. 화면에서는 한 번 더 누르는 것이 그 역할을
+    한다 — `do_switch` 가 등록 안 된 계정을 버릴 때 쓰는 것과 같은 어휘다.
+    """
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    spent: list[str] = []
+    monkeypatch.setattr(
+        credits_core, "spend", lambda *a, **k: spent.append("x") or tui.probe.CreditOutcome.RESET
+    )
+
+    view = _screen_at(s, used=40)
+    after = tui.apply_spend(view, "y")
+
+    assert spent == [], "경고 전에 이미 썼다"
+    assert after.spend_armed, "한 번 더 누르면 되는 상태로 남아야 한다"
+    assert "40%" in after.message, after.message
+
+
+def test_pressing_enter_again_spends_anyway(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """완전히 막지는 않는다 — CLI 의 `--force` 와 같은 탈출구가 화면에도 있어야 한다."""
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    spent: list[str] = []
+    monkeypatch.setattr(
+        credits_core, "spend", lambda *a, **k: spent.append("x") or tui.probe.CreditOutcome.RESET
+    )
+
+    armed = tui.apply_spend(_screen_at(s, used=40), "y")
+    after = tui.apply_spend(armed, "y")
+    assert spent == ["x"]
+    assert "spent" in after.message, after.message
+
+
+def test_moving_the_cursor_takes_the_spend_warning_back(_isolated_home: Path) -> None:
+    """경고를 잊고 나중에 누른 `enter` 가 곧바로 프롬프트를 띄우면 세운 의미가 없다."""
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    armed = tui.replace(_screen_at(s, used=40), spend_armed=True)
+    assert not tui.move_credits(armed, +1).spend_armed
+
+
+def test_a_nearly_spent_account_is_not_nagged(_isolated_home: Path) -> None:
+    """가드가 평상시를 방해하면 안 된다 — 매번 두 번 눌러야 하면 곧 반사적으로 넘긴다."""
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    assert tui.spend_warning(_screen_at(s, used=98)) is None
+
+
 @pytest.mark.parametrize("outcome", list(tui.probe.CreditOutcome), ids=lambda o: o.name)
 def test_every_outcome_says_something_instead_of_crashing(
     _isolated_home: Path, monkeypatch: pytest.MonkeyPatch, outcome

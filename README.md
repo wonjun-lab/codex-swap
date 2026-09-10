@@ -235,9 +235,12 @@ codex-swap credits use --dry-run  # say what would happen, spend nothing
 ```
 
 The TUI has the same screen: `Usage resets` in the menu, then move to the reset you want and
-press `enter`. Both surfaces then ask the same thing — `y` to go ahead. What stands between
-you and an irreversible action is not an unusual word to type but the path itself: you have
-to put the cursor on that reset first.
+press `enter`. Both surfaces then ask the same thing — `y` to go ahead, naming the account
+and when that reset expires.
+
+The confirmation is the only thing between you and an irreversible action; the cursor starts
+on the first row, so there may be nothing to move. That is why the question spells out what
+you are about to lose rather than just asking.
 
 It asks before spending, naming the account. **A spent reset cannot be recovered**, so
 without a terminal it refuses rather than guessing — pass `--yes` if you mean it from a

@@ -112,6 +112,17 @@ class View:
     잊고 나중에 누른 `s` 가 곧바로 버리면 묻는 의미가 없다.
     """
 
+    spend_armed: bool = False
+    """아직 쓸 때가 아닌 리셋 앞에서 한 번 경고해 둔 상태.
+
+    `switch_armed` 와 같은 어휘다. 리셋은 남은 창을 늘리는 것이 아니라 **지우고 새로**
+    주므로, 한도가 많이 남았을 때 쓰면 그 남은 만큼을 버린다 — 쿠폰을 내고 손해를 보는
+    유일한 경우라 한 번은 세운다.
+
+    `move_credits` 가 커서를 옮길 때 푼다. 경고를 잊고 나중에 누른 `enter` 가 곧바로
+    프롬프트를 띄우면 세운 의미가 없다.
+    """
+
     discard_armed: bool = False
     """`esc` 를 한 번 눌러 "버릴까요" 를 물어 둔 상태.
 
@@ -1152,7 +1163,8 @@ def move_credits(view: View, delta: int) -> View:
     if not rows:
         return view
     at = min(max(view.credit_cursor + delta, 0), len(rows) - 1)
-    return replace(view, credit_cursor=at, message="")
+    # 경고를 세워 둔 채 다른 줄로 가면 푼다 — 그 경고는 **이 쿠폰**에 대한 것이었다.
+    return replace(view, credit_cursor=at, message="", spend_armed=False)
 
 
 def _credit_note(account: credits_core.Account, credit: Credit | None) -> str:
@@ -1773,16 +1785,45 @@ def spend_prompt(view: View) -> str | None:
     무엇을 치라는 것인지부터 애매하고(계정 이름? `use`? 쿠폰 이름?), 같은 동작을 두 표면이
     서로 다른 어휘로 물었다. 이 프로젝트에서 CLI 와 TUI 가 갈리면 언제나 대가를 치렀다.
 
-    세기는 다른 데서 확보한다. 목록에서 **그 쿠폰 위로 커서를 옮겨야** 하고, 그러고서
-    `enter`, 그러고서 `y` 다. 지나가다 눌러서 통과할 수 있는 경로가 아니다.
+    **문턱은 이 질문 하나뿐이다.** 한때 여기에 "그 쿠폰 위로 커서를 옮겨야 하므로 지나가다
+    통과할 수 없다" 고 적어 두었는데 사실이 아니었다 — 화면에 들어오면 커서는 `0` 번 행에
+    있고(`open_credits`·조회 완료·소비 직후 모두), 첫 계정이 쿠폰을 가졌으면 그 행이 이미
+    소비 대상이다. 옮길 것이 없다.
+
+    그래서 묻는 문장이 **무엇을 잃는지**를 담는다. 만료일까지 적는 것은 장식이 아니라,
+    습관적으로 `y` 를 치려던 손을 한 박자 세우려는 것이다. 되돌릴 수 없는 일 앞에서
+    사용자가 읽을 것이 계정 이름 하나뿐이면 읽지 않는다.
     """
+    # `cli` 를 위에서 들여오면 순환이 된다(`cli` 가 이 화면을 띄운다). 만료 문구는 표와
+    # **같은 함수**로 적어야 하므로, 이 화면의 다른 자리와 같이 여기서 들여온다.
+    from codex_swap.cli import _expiry_text
+
     picked = selected_credit(view)
     if picked is None:
         return None
     account, credit = picked
     if credit is None or credit.status != "available":
         return None
-    return f"  Spend {account.label}'s usage reset? [y/N] "
+    # `_expiry_text` 가 이미 `(in 24d)` 를 달고 온다. 여기서 또 괄호로 감싸면
+    # `(expires 10-05 13:18 (in 24d))` 처럼 괄호가 겹친다.
+    return f"  Spend {account.label}'s reset, expiring {_expiry_text(credit.expires_at)}? [y/N] "
+
+
+def spend_warning(view: View) -> str | None:
+    """지금 쓰면 **버리는 셈**인지. 이미 한 번 세웠으면(`spend_armed`) 통과시킨다.
+
+    `_spend_here` 가 프롬프트를 띄우기 **전에** 본다. 물어본 뒤에 막으면 이미 `y` 하나
+    거리이고, 그 자리에서 거절하면 사용자는 자기가 승인한 것이 왜 안 됐는지 모른다.
+    """
+    if view.spend_armed:
+        return None
+    picked = selected_credit(view)
+    if picked is None:
+        return None
+    account, credit = picked
+    if credit is None or credit.status != "available":
+        return None
+    return credits_core.too_early(view.settings, account.label, account.usage)
 
 
 def apply_spend(view: View, typed: str | None) -> View:
@@ -1796,6 +1837,13 @@ def apply_spend(view: View, typed: str | None) -> View:
     if asked is None or picked is None:
         return replace(view, message="Move to a usable reset first")
     account, credit = picked
+    # **소비하는 유일한 순수 함수라 가드가 여기 있어야 한다.** `_spend_here` 는 터미널이
+    # 있어야 도는 자리라 테스트가 닿지 않는다 — 거기에만 두면 아무도 재지 않는 가드가 된다.
+    early = spend_warning(view)
+    if early is not None:
+        return replace(
+            view, message=f"{early}. Press enter again to spend anyway", spend_armed=True
+        )
     if not credits_core.said_yes(typed):
         return replace(view, message="Left it alone")
     assert credit is not None
@@ -1836,6 +1884,13 @@ def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - �
     asked = spend_prompt(view)
     if asked is None:
         return replace(view, message="Move to a usable reset first")
+    # **묻기 전에 세운다.** 물어본 뒤에 막으면 이미 `y` 하나 거리이고, 그 자리에서
+    # 거절하면 사용자는 자기가 승인한 것이 왜 안 됐는지 모른다.
+    early = spend_warning(view)
+    if early is not None:
+        return replace(
+            view, message=f"{early}. Press enter again to spend anyway", spend_armed=True
+        )
     # **묻기 전에 버퍼를 비운다.** 이 질문이 뜨기 전에 눌린 키는 이 질문에 대한 답이
     # 아니다 — `getstr` 는 그것을 그대로 답으로 읽는다. 지금은 남아 있을 만한 키가
     # 대부분 거절로 떨어지지만, 되돌릴 수 없는 자리에서 그 안전이 우연이면 안 된다.

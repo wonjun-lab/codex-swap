@@ -33,6 +33,36 @@ SPENT_NOTHING = frozenset({probe.CreditOutcome.NOTHING_TO_RESET, probe.CreditOut
 """
 
 
+def too_early(settings: config.Settings, label: str, usage: Usage | None) -> str | None:
+    """지금 쓰면 **버리는 셈**인가. 그렇다면 이유를, 쓸 만하면 None.
+
+    리셋은 남은 창을 늘려 주지 않는다 — **지우고 새로 준다.** 아직 한도가 많이 남았을 때
+    쓰면 그 남은 만큼이 그대로 사라진다. 쿠폰 하나를 내고 오히려 손해를 보는 유일한
+    경우라, 되돌릴 수 없는 동작 중에서도 여기만 "너무 이르다" 는 판단이 성립한다.
+
+    문턱은 **사다리의 마지막 칸**이다(기본 95%). 노브를 새로 만들지 않는 이유는 그 칸이
+    이미 같은 것을 뜻하기 때문이다 — "더 올라갈 데가 없다", 즉 전환으로는 해결이 안 되는
+    지점. 쿠폰을 쓸 시점이 정확히 거기다. 사다리를 조정하면 이 문턱도 같이 따라온다.
+
+    **사용량을 모르면 막는 쪽으로 기운다.** 되돌릴 수 없는 일 앞에서 "모른다" 를 "괜찮다"
+    로 읽으면, 프로브가 실패한 순간이 하필 가장 위험한 순간이 된다. 다만 영영 못 쓰게
+    하지는 않는다 — 두 표면 모두 밀고 나갈 길이 있다.
+    """
+    ladder = settings.ladder
+    if not ladder:
+        return None
+    gate = ladder[-1]
+    if usage is None or usage.used_percent is None:
+        return f"cannot read {label}'s usage right now, so it is unclear whether a reset would help"
+    if usage.used_percent < gate:
+        left = 100 - usage.used_percent
+        return (
+            f"{label} is at {usage.used_percent}% — a reset replaces the window, "
+            f"so the {left}% still left would be thrown away"
+        )
+    return None
+
+
 def said_yes(answer: str | None) -> bool:
     """되돌릴 수 없는 일을 해도 좋다는 대답인가.
 

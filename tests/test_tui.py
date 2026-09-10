@@ -1320,23 +1320,30 @@ def test_enter_on_a_menu_item_goes_in(env) -> None:
     assert after.mode == "policy"
 
 
-def test_enter_on_an_account_takes_the_same_path_as_s(env) -> None:
+def test_enter_on_an_account_actually_switches(env) -> None:
     """**커서가 놓인 줄이 말하는 일을 한다.**
 
     한동안 여기서만 아무 일도 안 하고 "`s` 를 누르라" 고 안내했다. `enter` 를 "들어간다"
     하나로 두려던 것인데, 그 규칙이 이 화면에서만 깨져 보였다 — 메뉴 줄에서는 `enter` 가
     정책을 열고 자동 전환을 토글하는데 계정 줄에서만 죽은 키였다.
 
-    두 키가 **같은 함수**를 지나는지를 잰다. 갈라 두면 한쪽에만 가드가 붙는다 — 이 프로젝트가
-    반복해서 겪은 결함이 정확히 그 모양이다. 실제로 전환이 일어나는 것은 pty 테스트
-    (`test_enter_switches_to_the_account_under_the_cursor`) 가 진짜 키를 눌러 확인한다.
+    **실제로 자격증명이 바뀌는 것까지 본다.** 한때 여기서 `activate()` 의 메시지를
+    `do_switch()` 의 메시지와 견주었는데, 그것은 구현을 구현과 비교하는 자기참조였다.
+    게다가 `_view()` 가 만드는 행(`a`/`b`)은 `env` 의 슬롯에 없어서 **두 호출이 나란히
+    "미등록" 으로 실패해도 통과**했다 — 전환이 아예 안 일어나도 초록불이었다.
     """
-    view = _view(env, cursor=1)
-    assert tui.selected_row(view) is not None, "전제가 깨졌다 — 커서가 계정 위가 아니다"
-    after = tui.activate(view)
+    s = config.load()
+    _write_auth(store.slot_auth(s, "master"), "a@example.com")
+    _write_auth(store.slot_auth(s, "shared"), "b@example.com")
+    _write_auth(store.active_auth(s), "a@example.com")
+
+    view = tui.build_view(s)
+    at = next(i for i, row in enumerate(view.rows) if row.label == "shared")
+    after = tui.activate(tui.replace(view, cursor=at))
+
     assert after.mode == "accounts"
-    assert after.message == tui.do_switch(view).message
-    assert "press s" not in after.message.lower(), after.message
+    assert "Switched to shared" in after.message, after.message
+    assert store.active_label(s) == "shared", "메시지만 바뀌고 자격증명은 그대로다"
 
 
 def test_s_still_switches(env) -> None:
