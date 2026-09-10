@@ -146,3 +146,76 @@ def test_the_command_exits_zero_when_all_is_well(
     _probe(monkeypatch, ProbeResult.of(Usage(used_percent=42, email="a@example.com")))
     assert cli.main(["doctor"]) == 0
     assert "ok" in capsys.readouterr().out
+
+
+# ── 우리를 거치지 않고 바뀐 경우 ───────────────────────────────────────────
+#
+# 이것이 mbp-m5m 에서 실제로 일어난 일이다. ChatGPT 데스크톱 앱이 자기 codex 를
+# `CODEX_HOME=~/.codex` 로 띄워 두고 같은 auth.json 을 쓰는데, 앱이 다른 계정으로 로그인돼
+# 있으면 우리가 걸어 둔 것을 자기 세션으로 되돌려 놓는다. 사용자에게는 "로그인이 자꾸
+# 풀린다" 로 보인다.
+
+
+def test_an_outside_change_is_caught(env: config.Settings) -> None:
+    """원장은 shared 로 갔다는데 살아 있는 것은 master 다."""
+    from codex_swap.core import log
+
+    _auth(env.accounts_dir / "shared/auth.json", "b@example.com")
+    log.append(env, from_label="master", to_label="shared", reason="manual (tui)")
+    # 앱이 되돌려 놓은 상태 — 활성 자리에 master 가 다시 들어와 있다.
+    _auth(env.default_home / "auth.json", "a@example.com")
+
+    found = doctor.drifted(env)
+    assert found is not None
+    assert found.state == doctor.DRIFT
+    assert "shared" in found.detail and "master" in found.detail, found.detail
+
+
+def test_the_fix_names_the_chatgpt_app_and_a_separate_home(env: config.Settings) -> None:
+    """**원인을 모르면 계정을 다시 만드는 데 시간을 쓴다.** 실제로 그랬다."""
+    from codex_swap.core import log
+
+    _auth(env.accounts_dir / "shared/auth.json", "b@example.com")
+    log.append(env, from_label="master", to_label="shared", reason="manual (tui)")
+    _auth(env.default_home / "auth.json", "a@example.com")
+
+    fix = doctor.drifted(env).fix
+    assert "ChatGPT" in fix, fix
+    assert "CODEX_HOME" in fix and "CODEX_ACCOUNT_DEFAULT_HOME" in fix, fix
+
+
+def test_a_matching_state_is_not_reported(env: config.Settings) -> None:
+    """가드가 평상시를 방해하면 안 된다 — 정상인데 매번 경고하면 곧 안 읽힌다."""
+    from codex_swap.core import log
+
+    log.append(env, from_label="shared", to_label="master", reason="manual (tui)")
+    assert doctor.drifted(env) is None
+
+
+def test_no_ledger_yet_means_nothing_to_compare(env: config.Settings) -> None:
+    """한 번도 안 바꿨으면 견줄 것이 없다. 첫 실행에 경고가 뜨면 안 된다."""
+    assert doctor.drifted(env) is None
+
+
+def test_the_environment_problem_is_listed_first(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """계정마다 실패가 줄줄이 뜨는데 까닭이 맨 아래 있으면, 그 전에 계정을 다시 만든다."""
+    from codex_swap.core import log
+
+    _auth(env.accounts_dir / "shared/auth.json", "b@example.com")
+    log.append(env, from_label="master", to_label="shared", reason="manual (tui)")
+    _auth(env.default_home / "auth.json", "a@example.com")
+    _probe(monkeypatch, ProbeResult.auth_failed())
+
+    found = doctor.run(env)
+    assert found[0].state == doctor.DRIFT, [f.state for f in found]
+
+
+def test_the_ledger_reader_takes_the_last_arrival(env: config.Settings) -> None:
+    """마지막 줄만 본다. 원장은 계속 자라는 파일이라 통째로 읽으면 이 검사가 가장 비싸진다."""
+    from codex_swap.core import log
+
+    for target in ("master", "shared", "master"):
+        log.append(env, from_label="x", to_label=target, reason="r")
+    assert log.last_switch(env) == "master"

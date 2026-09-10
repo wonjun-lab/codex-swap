@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from codex_swap.core import config, discovery, identity, probe, store
+from codex_swap.core import config, discovery, identity, log, probe, store
 from codex_swap.core.types import ProbeOutcome
 
 OK = "ok"
@@ -24,6 +24,7 @@ AUTH = "auth"
 UNREACHABLE = "unreachable"
 NO_CREDENTIALS = "no_credentials"
 MISMATCH = "mismatch"
+DRIFT = "drift"
 
 
 @dataclass(frozen=True)
@@ -112,10 +113,46 @@ def check(settings: config.Settings, label: str, active: str | None) -> Finding:
     return Finding(label, OK, f"{used}% used" if used is not None else "reachable")
 
 
+def drifted(settings: config.Settings) -> Finding | None:
+    """**우리를 거치지 않고 활성이 바뀌었나.** 아니면 None.
+
+    원장의 마지막 도착지와 지금 활성이 다르면 누군가 `auth.json` 을 직접 갈아 끼운 것이다.
+    실제로 그런 환경이 있다 — ChatGPT 데스크톱 앱이 자기 codex 를 `CODEX_HOME=~/.codex` 로
+    띄워 두고 **같은 파일**을 쓴다. 그 앱이 다른 계정으로 로그인돼 있으면 우리가 걸어 둔
+    것을 자기 세션으로 되돌려 놓는다.
+
+    사용자에게는 "로그인이 자꾸 풀린다" 로 보이고, 원장에는 `A -> B` 만 쌓이고 `B -> A` 는
+    남지 않아 **출발점이 계속 A 인 이상한 이력**이 된다. 그 어긋남이 여기서 잡으려는 것이다.
+
+    이 검사는 슬롯이 아니라 **환경**에 대한 것이라 계정별 검사와 따로 둔다.
+    """
+    expected = log.last_switch(settings)
+    if expected is None:
+        return None  # 아직 한 번도 안 바꿨다 — 견줄 것이 없다
+    active = store.active_label(settings)
+    if active == expected:
+        return None
+    now = active or (identity.email_of(store.active_auth(settings)) or "an unknown account")
+    return Finding(
+        "active",
+        DRIFT,
+        f"codex-swap last switched to {expected}, but {now} is live now — "
+        "something changed the credentials without going through it",
+        "if the ChatGPT desktop app is signed in, its own codex runs with "
+        "CODEX_HOME=~/.codex and will keep putting its account back. Give the CLI a "
+        "home of its own: export CODEX_HOME=~/.codex-cli and "
+        "CODEX_ACCOUNT_DEFAULT_HOME=~/.codex-cli, then register the accounts there",
+    )
+
+
 def run(settings: config.Settings) -> list[Finding]:
     """등록된 슬롯을 전부 본다. 하나가 실패해도 나머지는 계속한다."""
     active = store.active_label(settings)
-    return [check(settings, label, active) for label in store.labels(settings)]
+    out = [check(settings, label, active) for label in store.labels(settings)]
+    # 환경 쪽 문제는 **맨 앞**에 둔다. 계정마다 "서버가 거절했다" 가 줄줄이 뜨는데 그
+    # 까닭이 맨 아래 있으면, 사용자는 그 전에 계정을 다시 만들기 시작한다.
+    outside = drifted(settings)
+    return [outside, *out] if outside is not None else out
 
 
 def summary(findings: list[Finding]) -> str:
