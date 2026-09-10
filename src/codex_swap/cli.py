@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -1232,6 +1233,42 @@ def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
     return decision_exit_code(decision)
 
 
+def cmd_exec(settings: config.Settings, argv: Sequence[str]) -> int:
+    """정책을 돌리고 **진짜 codex 로 넘어간다.** wrapper 가 부르는 자리다.
+
+    사용자가 셸 프로필에 무엇을 넣었는지, 어느 셸을 쓰는지, 공식 앱이 깔렸는지를 여기서
+    한 번에 처리한다. wrapper 파일은 이 한 줄을 부르는 것이 전부라, 규칙이 바뀌어도
+    기기에 놓인 파일은 고칠 필요가 없다.
+
+    **실패해도 codex 는 뜬다.** 전환이 안 되는 것과 codex 를 못 쓰는 것은 무게가 전혀
+    다르다 — 스위처가 codex 를 못 쓰게 만드는 순간 그것은 도구가 아니라 장애물이다.
+    """
+    with contextlib.suppress(Exception):
+        rotate.rotate(settings, dry_run=False)
+
+    try:
+        real = discovery.resolve_codex_bin()
+    except Exception as exc:
+        raise CliError(
+            f"cannot find the codex binary: {exc}. "
+            "Install it (npm install -g @openai/codex), or set CODEX_ACCOUNT_BIN"
+        ) from exc
+
+    env = dict(os.environ)
+    # 공식 앱이 `~/.codex` 를 자기 것으로 쓰는 기기에서는 우리 자리를 따로 둔다. 그
+    # 판단은 `settings` 가 이미 하고 있다 — 여기서 다시 감지하면 두 곳이 갈린다.
+    env["CODEX_HOME"] = str(settings.default_home)
+    # wrapper 를 다시 집으면 무한 재귀다. `discovery` 가 그것을 막으려고 PATH 를 손보는데,
+    # 자식에게도 같은 PATH 를 줘야 그 효과가 이어진다.
+    env["PATH"] = discovery.path_without_local_bin(env)
+
+    try:
+        os.execve(os.fspath(real), [os.fspath(real), *argv], env)
+    except OSError as exc:  # pragma: no cover - execve 는 성공하면 돌아오지 않는다
+        raise CliError(f"could not start codex: {exc}") from exc
+    return 0  # pragma: no cover
+
+
 def cmd_init(settings: config.Settings) -> int:
     """설치와 사용 사이의 다리. **여기서 다음 한 걸음이 정해진다.**
 
@@ -1262,23 +1299,38 @@ def cmd_init(settings: config.Settings) -> int:
     shell = wiring.shell_of()
     isolate = wiring.app_installed()
     if isolate:
-        print("  note  the ChatGPT desktop app is installed")
-        print(f"        it keeps its own account in {settings.default_home}, so the wiring")
-        print(f"        below moves ours to {wiring.ISOLATED_HOME} to stop the two")
-        print("        overwriting each other")
+        # **앱이 쓰는 자리를 그대로 적는다.** `settings.default_home` 은 이미 비켜난
+        # 뒤의 값이라, 그걸 적으면 "앱이 우리 자리를 쓴다" 는 거꾸로 된 말이 된다.
+        print("  ok    the ChatGPT desktop app is installed, so accounts are kept apart")
+        print(f"          app : {wiring.DEFAULT_HOME}")
+        print(f"          ours: {settings.default_home}")
+        print(f"        your registered accounts stay in {settings.accounts_dir}")
 
-    # 3) 셸 배선 — 자동 전환과 홈 분리가 둘 다 여기에 걸린다.
+    # 3) 배선. **묻지 않고 놓는다** — 사용자가 신경 쓸 일이 아니다.
+    #
+    #    파일 하나를 PATH 에 두는 것으로 끝난다. 셸 프로필을 고치게 하면 셸마다 문법이
+    #    다르고, 어느 파일인지 찾아야 하고, 새 셸을 열어야 하고, 그 사본이 낡는다.
     wired = wiring.already_wired(shell)
     if wired is not None:
-        print(f"  ok    shell wiring found in {wired}")
-    else:
+        print(f"  ok    codex is already wired through {wired}")
+    elif wiring.occupied_by_other():
+        # 남이 놓은 것을 덮지 않는다. dotfiles 로 자기 wrapper 를 심어 둔 사람이 있고,
+        # 그것도 제 몫을 한다 — 다만 우리를 안 부르므로 그 사실만 알린다.
         ok = False
-        print(f"  TODO  add this to {wiring.profile_for(shell)}, then open a new shell:")
-        print()
-        print(f"          {wiring.line_for(shell)}")
-        print()
-        print("        that line keeps automatic switching working and, on machines with")
-        print("        the desktop app, keeps the two accounts apart")
+        print(f"  note  {wiring.WRAPPER} exists but does not call codex-swap")
+        print("        leaving it alone. Add this line to it, or remove it and rerun init:")
+        print("          codex-swap rotate >/dev/null || true")
+    else:
+        try:
+            placed = wiring.install_wrapper()
+            print(f"  ok    wired: {placed}")
+            if not wiring.on_path():
+                ok = False
+                print(f"        but {placed.parent} is not on your PATH — add it:")
+                print(f'          export PATH="{placed.parent}:$PATH"')
+        except OSError as exc:
+            ok = False
+            print(f"  FAIL  could not write {wiring.WRAPPER}: {exc}")
 
     # 4) 분리로 넘어온 직후라면 자격증명이 아직 원래 자리에 있다. 슬롯이 있으면 전환
     #    한 번으로 채워지지만, 아직 아무것도 등록 안 했으면 `adopt` 가 막힌다.
@@ -1314,22 +1366,6 @@ def cmd_init(settings: config.Settings) -> int:
     else:
         print("finish the TODOs above, then run codex-swap init again.")
     return 0 if ok else 1
-
-
-def cmd_shell_init(*, shell: str | None = None, isolate: bool | None = None) -> int:
-    """셸에 먹일 배선을 낸다. **여기 나가는 것은 전부 셸이 실행한다.**
-
-    그래서 안내도 진단도 섞지 않는다 — 한 줄이라도 셸 문법이 아닌 것이 끼면 사용자의
-    프로필이 그 자리에서 깨진다. 할 말이 있으면 `doctor` 가 한다.
-
-    `~/.codex` 의 주인은 공식 ChatGPT 데스크톱 앱이다. 그 앱이 깔려 있으면 활성 자격증명
-    자리를 비켜 준다 — 우리는 서드파티이고, 같은 파일을 놓고 다투면 사용자에게는 "로그인이
-    자꾸 풀린다" 로만 보인다. 앱이 없으면 옮길 이유도 없다.
-    """
-    use = wiring.shell_of(shell)
-    want = wiring.app_installed() if isolate is None else isolate
-    print(wiring.snippet(use, isolate=want), end="")
-    return 0
 
 
 def cmd_doctor(settings: config.Settings) -> int:
@@ -1513,15 +1549,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("clean", help="clear probe leftovers from the slots")
     sub.add_parser("doctor", help="test each account and say how to fix what is broken")
-    sub.add_parser("init", help="check the setup and say what to do next")
-    p = sub.add_parser("shell-init", help="print shell wiring (for eval in your profile)")
-    p.add_argument("--shell", choices=["bash", "zsh", "fish"], help="defaults to $SHELL")
-    p.add_argument(
-        "--isolate",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="keep our home apart from the ChatGPT app (default: only if the app is installed)",
-    )
+    sub.add_parser("init", help="set this machine up and say what is left")
+    p = sub.add_parser("exec", help="run codex through the policy (used by the wrapper)")
+    p.add_argument("args", nargs=argparse.REMAINDER, help="passed straight to codex")
 
     p = sub.add_parser("update", aliases=["upgrade"], help="get the newest codex-swap")
     p.add_argument(
@@ -1621,8 +1651,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_doctor(settings)
             case "init":
                 return cmd_init(settings)
-            case "shell-init":
-                return cmd_shell_init(shell=args.shell, isolate=args.isolate)
+            case "exec":
+                return cmd_exec(settings, args.args)
             case "update" | "upgrade":
                 # 계정을 건드리지 않는 유일한 명령이라 `settings` 를 받지 않는다.
                 return cmd_update(check_only=args.check, assume_yes=args.yes)

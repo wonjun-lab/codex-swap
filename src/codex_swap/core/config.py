@@ -222,6 +222,17 @@ class Settings:
     off_switch: Path
 
 
+def _app_installed() -> bool:
+    """공식 ChatGPT 데스크톱 앱이 깔려 있나.
+
+    `wiring` 을 위에서 들여오지 않고 여기서 부른다 — `config` 는 거의 모든 모듈이 들여오는
+    바닥이라, 여기에 의존을 하나 더 얹으면 순환이 생길 자리가 넓어진다.
+    """
+    from codex_swap.core import wiring
+
+    return wiring.app_installed()
+
+
 def load(environ: dict[str, str] | None = None) -> Settings:
     """현재 환경에서 설정을 읽는다.
 
@@ -249,8 +260,28 @@ def load(environ: dict[str, str] | None = None) -> Settings:
     #
     # 홈을 옮긴 사용자는 `CODEX_ACCOUNT_DEFAULT_HOME` 으로 이 도구에 따로 알려 준다.
     # 그 안내는 `cmd_adopt` 의 오류 메시지와 README 에 있다.
-    default_home = Path(_raw("CODEX_ACCOUNT_DEFAULT_HOME") or home / ".codex")
-    accounts_dir = Path(_raw("CODEX_ACCOUNTS_DIR") or default_home / "accounts")
+    # ── 공식 앱이 있으면 활성 자리를 비켜 준다 ──
+    #
+    # `~/.codex/auth.json` 의 주인은 ChatGPT 데스크톱 앱이다. 그 앱은 자기 codex 를
+    # `CODEX_HOME=~/.codex` 로 띄워 두고 그 파일을 자기 세션으로 되돌려 놓는데, 우리는
+    # 서드파티이므로 같은 파일을 놓고 다투지 않는다. 다투면 사용자에게는 "로그인이 자꾸
+    # 풀린다" 로만 보이고 원인을 짐작할 길이 없다 — 실제로 한 기기에서 그랬다.
+    #
+    # **계정 저장소는 따라 옮기지 않는다.** 앱이 건드리는 것은 `auth.json` 하나이고
+    # `accounts/` 는 앱이 모른다. 홈을 통째로 옮기면 등록해 둔 계정까지 잃어버리므로,
+    # 활성 자리만 비켜 주고 슬롯은 원래 자리에 묶어 둔다.
+    told = _raw("CODEX_ACCOUNT_DEFAULT_HOME")
+    if told:
+        # 사람이 정한 것이 이긴다. 그때는 계정도 그 홈을 따르던 기존 규칙 그대로다.
+        default_home = Path(told)
+        accounts_default = default_home / "accounts"
+    elif _app_installed():
+        default_home = home / ".codex-cli"
+        accounts_default = home / ".codex/accounts"
+    else:
+        default_home = home / ".codex"
+        accounts_default = default_home / "accounts"
+    accounts_dir = Path(_raw("CODEX_ACCOUNTS_DIR") or accounts_default)
     state_root = Path(
         _raw("CODEX_ROTATE_STATE_ROOT") or home / ".claude/plugins/data/codex-openai-codex/state"
     )
