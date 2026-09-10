@@ -61,6 +61,20 @@ Without uv, pip works too (a virtualenv is recommended):
 pip install git+https://github.com/wonjun-lab/codex-swap.git
 ```
 
+### When something looks wrong
+
+```bash
+codex-swap doctor        # or: pick "Check accounts" in the TUI
+```
+
+It tries each account for real rather than checking that files exist, and prints what to
+do about anything that fails. The two are not the same: credentials can be present and
+still be dead, which shows up as an email that reads fine next to a usage column of `?`.
+
+That happens most often after logging in over SSH — the browser is on your laptop while
+the listener waiting for the OAuth callback is on the remote box, so the login
+half-finishes without saying so. `doctor` names that case specifically.
+
 ### Updating
 
 ```bash
@@ -357,6 +371,24 @@ script never has to read prose off stderr. The exit code still follows the human
 | `CODEX_ACCOUNTS_DIR` | `~/.codex/accounts` | Where slots live |
 | `CODEX_ACCOUNT_DEFAULT_HOME` | `~/.codex` | Home of the active account. **Set this if you moved codex's home with `CODEX_HOME`** — see below |
 | `CODEX_ACCOUNT_BIN` · `CODEX_REAL_BIN` | — | Point at the codex binary directly (skips discovery) |
+| `CODEX_SWAP_THEME` | `auto` | `dark`, `light`, or `auto` — see below |
+
+### Light and dark terminals
+
+The TUI asks your terminal what colour its background is (OSC 11) and picks foreground
+colours to match. The background itself is never painted, so your terminal's own theme
+shows through either way.
+
+This matters because the default yellow all but disappears on a white background — on a
+light terminal the warning colour stopped reading as a warning. On light backgrounds it
+uses darker greens, ambers and blues instead.
+
+Terminals that do not answer fall back to `COLORFGBG`, and then to dark. If the guess is
+wrong — over SSH, inside a multiplexer, or with a terminal that lies — say so directly:
+
+```bash
+CODEX_SWAP_THEME=light codex-swap
+```
 
 **If you set `CODEX_HOME`, set `CODEX_ACCOUNT_DEFAULT_HOME` to match.** codex-swap does
 not follow `CODEX_HOME` on purpose: `add` hands a slot to its child through that same

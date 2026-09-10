@@ -37,6 +37,7 @@ from codex_swap.core import (
     policy_edit,
     probe,
     store,
+    theme,
 )
 from codex_swap.core import credits as credits_core
 from codex_swap.core.discovery import resolve_codex_bin
@@ -1729,22 +1730,15 @@ _TONE_COLORS = {"ok": 1, "warn": 2, "danger": 3, "accent": 4}
 """tone → color pair 번호. 0 은 curses 가 예약한 기본 쌍이라 1 부터 쓴다."""
 
 
-def _tone_fg() -> dict[str, int]:  # pragma: no cover - curses 상수
-    return {
-        "ok": curses.COLOR_GREEN,
-        "warn": curses.COLOR_YELLOW,
-        "danger": curses.COLOR_RED,
-        # 상태가 아니라 **조작**이라 상태 삼색과 겹치지 않는 색을 쓴다. 초록·노랑·빨강
-        # 중 하나를 쓰면 단축키가 계정 상태를 말하는 것처럼 읽힌다.
-        "accent": curses.COLOR_CYAN,
-    }
-
-
-def _init_colors() -> bool:  # pragma: no cover - 터미널 필요
+def _init_colors(want: str = theme.DARK) -> bool:  # pragma: no cover - 터미널 필요
     """색을 쓸 수 있으면 쌍을 등록하고 True.
 
     `use_default_colors` 로 배경을 -1 로 둔다. 검정으로 칠하면 밝은 테마 터미널에서
     글자만 남기고 배경이 뒤집혀 읽기 어려워진다.
+
+    **전경은 테마를 탄다.** 배경을 건드리지 않는 것만으로는 부족했다 — 기본 8 색의 노랑은
+    흰 바탕에서 거의 사라지고 시안도 옅어서, 밝은 테마를 쓰는 사람에게는 경고가 경고로
+    안 보였다. 어두운 바탕에 맞춘 색을 그대로 쓴 탓이다.
     """
     if not curses.has_colors():
         return False
@@ -1759,8 +1753,10 @@ def _init_colors() -> bool:  # pragma: no cover - 터미널 필요
             # 배경 -1 은 `use_default_colors` 가 성립해야 유효하다. 실패했으면 검정으로
             # 내린다 — 색을 통째로 포기하는 것보다 낫다.
             background = curses.COLOR_BLACK
+        colors = getattr(curses, "COLORS", 8)
+        fg = theme.palette(want, colors)
         for tone, pair in _TONE_COLORS.items():
-            curses.init_pair(pair, _tone_fg()[tone], background)
+            curses.init_pair(pair, fg[tone], background)
         return True
     return False
 
@@ -2240,7 +2236,9 @@ def probing_note(view: View, labels: Sequence[str]) -> View:
     return replace(view, message=f"{view.message}   {note}" if view.message else note)
 
 
-def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover - 터미널 필요
+def _loop(
+    stdscr, settings: config.Settings, want: str = theme.DARK
+) -> str | None:  # pragma: no cover - 터미널 필요
     # 커서 숨기기는 terminfo 에 `civis` 가 없는 터미널에서 실패한다. 화면을 못 여는
     # 이유로는 사소하므로 삼킨다.
     with contextlib.suppress(curses.error):
@@ -2248,7 +2246,7 @@ def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover 
     # 기본 ESCDELAY 는 1 초라 esc 를 누르면 화면이 멈춘 것처럼 보인다.
     if hasattr(curses, "set_escdelay"):
         curses.set_escdelay(25)
-    colored = _init_colors()
+    colored = _init_colors(want)
 
     # 조회가 도는 동안에도 키를 읽어야 하므로 getch 를 논블로킹으로 만든다. 이 값이
     # 곧 조회 결과가 화면에 반영되는 지연이고, 사람이 못 느끼는 범위에서 가장 크게 잡는다.
@@ -2460,8 +2458,11 @@ curses 안에서 자기 자신을 갈아치울 수는 없다 — 설치 도구�
 
 
 def run(settings: config.Settings) -> int:  # pragma: no cover - 터미널 필요
+    # **화면을 켜기 전에 묻는다.** curses 가 올라온 뒤에 물으면 터미널의 응답이 화면
+    # 한복판에 찍히고, 그것을 지우는 것은 그리기 순서와 싸우는 일이 된다.
+    want = theme.detect(background=theme.ask_background() if theme.chosen() is None else None)
     try:
-        outcome = curses.wrapper(_loop, settings)
+        outcome = curses.wrapper(_loop, settings, want)
         if outcome == "update":
             return WANTS_UPDATE
     except KeyboardInterrupt:
