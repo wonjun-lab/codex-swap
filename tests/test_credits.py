@@ -66,6 +66,16 @@ def _answer(mapping: dict[str, Usage | None], monkeypatch: pytest.MonkeyPatch) -
 DAY = 86400
 
 
+def _credit_cell(out: str) -> str:
+    """활성 행의 **CREDIT 열**. 열을 집지 않으면 엉뚱한 칸을 보고 통과한다.
+
+    처음에 `row.split()[-1]` 로 썼다가 뮤테이션이 살아남았다 — 그건 EXPIRES 열이라
+    CREDIT 이 `-` 에서 `0` 으로 바뀌어도 그대로 통과했다.
+    """
+    row = next(ln for ln in out.splitlines() if ln.split()[:1] == ["*"])
+    return row.split()[3]
+
+
 def test_the_expiry_is_shown_not_just_the_count(
     env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
@@ -269,8 +279,7 @@ def test_a_count_without_detail_is_still_shown(
     """
     _answer({"a@example.com": _usage("a@example.com", count=2)}, monkeypatch)
     cli.cmd_credits(env)
-    row = next(ln for ln in capsys.readouterr().out.splitlines() if ln.split()[:1] == ["*"])
-    assert " 2 " in f" {' '.join(row.split())} ", row
+    assert _credit_cell(capsys.readouterr().out) == "2"
 
 
 def test_a_count_we_do_not_know_is_a_dash_not_a_zero(
@@ -281,8 +290,7 @@ def test_a_count_we_do_not_know_is_a_dash_not_a_zero(
         monkeypatch,
     )
     cli.cmd_credits(env)
-    row = next(ln for ln in capsys.readouterr().out.splitlines() if ln.split()[:1] == ["*"])
-    assert row.split()[-1] == "-", row
+    assert _credit_cell(capsys.readouterr().out) == "-"
 
 
 def test_credit_detail_never_reaches_the_cache(
