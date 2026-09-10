@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -459,3 +460,168 @@ def test_an_epoch_outside_the_calendar_does_not_take_the_screen_down(value: int)
     """
     assert cli._expiry_text(value) == "-"
     assert cli._reset_text(value) == "-"
+
+
+# ── codex 검토가 지목한 공백 (뮤테이션으로 전부 생존 확인) ──────────────────
+
+
+def test_one_slot_blowing_up_does_not_take_the_others_with_it(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`ProbeResult.unknown()` 은 정상 반환이다. **예외**는 그것과 다른 경로다.
+
+    슬롯 하나가 던지는데 안 막으면 명령 전체가 죽어, 멀쩡한 계정의 쿠폰도 못 본다.
+    """
+
+    def explode(_bin: str, home: str) -> ProbeResult:
+        if identity.email_of(Path(home) / "auth.json") == "b@example.com":
+            raise RuntimeError("app-server went away")
+        return ProbeResult.of(_usage("a@example.com", Credit(id="c1", status="available")))
+
+    monkeypatch.setattr(probe, "probe", explode)
+    assert cli.cmd_credits(env) == 0
+    out = capsys.readouterr().out
+    assert "could not read: shared" in out, out
+    assert "master" in out, out
+
+
+def test_the_active_account_is_read_from_the_live_home_not_the_slot_copy(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """슬롯 사본은 토큰이 갱신되며 뒤처지고 **기본 홈이 언제나 사실**이다.
+
+    `refresh_all` 이 같은 이유로 같은 선택을 한다. 이메일로는 못 가른다 — 둘 다 같은
+    계정이라서다. 그래서 **경로**로 가른다.
+    """
+
+    def by_path(_bin: str, home: str) -> ProbeResult:
+        if Path(home) == env.default_home:
+            return ProbeResult.of(_usage("a@example.com", Credit(id="live", status="available")))
+        return ProbeResult.unknown()
+
+    monkeypatch.setattr(probe, "probe", by_path)
+    cli.cmd_credits(env)
+    out = capsys.readouterr().out
+    assert "could not read: shared" in out, out
+    assert "could not read: master" not in out, "활성을 슬롯 사본으로 읽었다\n" + out
+
+
+def test_a_credit_that_is_not_available_says_so(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`redeeming` 인 쿠폰이 `available` 과 똑같이 보이면 쓸 수 있는 줄 안다."""
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com",
+                Credit(id="c1", status="redeeming", title="Full reset"),
+                count=0,
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    assert "(redeeming)" in capsys.readouterr().out
+
+
+def test_each_credit_shows_its_own_expiry(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """만료가 다른데 같은 날짜가 두 줄이면, 하나가 곧 사라지는 것을 못 본다."""
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com",
+                Credit(id="c1", status="available", expires_at=2_000_000_000),
+                Credit(id="c2", status="available", expires_at=2_100_000_000),
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    out = capsys.readouterr().out
+    dates = set(re.findall(r"\b\d{2}-\d{2} \d{2}:\d{2}\b", out))
+    assert len(dates) == 2, f"두 쿠폰이 같은 만료일로 나왔다: {dates}\n{out}"
+
+
+def test_the_json_carries_more_than_the_id(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`id` 만 단언하면 나머지 필드가 통째로 사라져도 통과한다."""
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com",
+                Credit(
+                    id="c1",
+                    status="available",
+                    title="Full reset",
+                    granted_at=1_600_000_000,
+                    expires_at=2_000_000_000,
+                ),
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits_json(env)
+    doc = json.loads(capsys.readouterr().out)
+    credit = next(a for a in doc["accounts"] if a["label"] == "master")["credits"][0]
+    assert credit == {
+        "id": "c1",
+        "status": "available",
+        "title": "Full reset",
+        "grantedAt": 1_600_000_000,
+        "expiresAt": 2_000_000_000,
+    }
+
+
+def test_the_json_keeps_the_count_and_the_email_for_readable_accounts(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """못 읽은 계정의 `null` 만 재면, 읽은 계정까지 `null` 이 돼도 통과한다."""
+    _answer(
+        {
+            "a@example.com": _usage("a@example.com", count=3),
+            "b@example.com": _usage("b@example.com", count=0),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits_json(env)
+    doc = json.loads(capsys.readouterr().out)
+    by_label = {a["label"]: a for a in doc["accounts"]}
+    assert by_label["master"]["availableCount"] == 3
+    assert by_label["shared"]["availableCount"] == 0
+    assert by_label["master"]["email"] == "a@example.com"
+    assert by_label["shared"]["email"] == "b@example.com"
+
+
+def test_the_json_marks_only_the_active_account_active(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """전부 활성으로 적으면 스크립트가 엉뚱한 계정에 대고 동작한다."""
+    _answer(
+        {"a@example.com": _usage("a@example.com"), "b@example.com": _usage("b@example.com")},
+        monkeypatch,
+    )
+    cli.cmd_credits_json(env)
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["active"] == "master"
+    assert [a["label"] for a in doc["accounts"] if a["active"]] == ["master"]
+
+
+def test_the_json_flag_actually_reaches_the_json_function(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """함수를 직접 부르는 테스트만 있으면 **배선이 끊겨도** 전부 통과한다.
+
+    실제 CLI 에서 `--json` 이 표를 찍는 일이 그렇게 생긴다.
+    """
+    _answer(
+        {"a@example.com": _usage("a@example.com"), "b@example.com": _usage("b@example.com")},
+        monkeypatch,
+    )
+    assert cli.main(["credits", "--json"]) == 0
+    json.loads(capsys.readouterr().out)  # 표였다면 여기서 터진다
