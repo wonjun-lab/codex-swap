@@ -31,6 +31,7 @@ from codex_swap.core import (
     discovery,
     identity,
     paths,
+    policy_edit,
     probe,
     rotate,
     store,
@@ -964,6 +965,108 @@ def cmd_status(settings: config.Settings, *, fresh: bool, as_json: bool = False)
     return 1
 
 
+def _print_auto(settings: config.Settings) -> None:
+    """스위치 상태와, **환경변수가 그것을 무의미하게 만들고 있는지**를 함께 적는다.
+
+    파일 스위치만 보고 "on" 이라고 말하면, `CODEX_ROTATE_SKIP` 이 걸린 기기에서는 실제로
+    한 번도 안 도는데 화면은 정상이라고 한다.
+    """
+    on = policy_edit.auto_on(settings)
+    print(f"automatic switching: {'on' if on else 'off'}")
+    if not on:
+        print(f"  the switch is {settings.off_switch}")
+    if on and policy_edit.auto_blocked_by_env(settings):
+        print("  but CODEX_ROTATE_SKIP is set, so rotate stops before it decides anything")
+
+
+def cmd_auto(settings: config.Settings, want: str | None = None) -> int:
+    """자동 전환을 켜거나 끈다. 인자가 없으면 지금 상태만 말한다.
+
+    이것이 TUI 에만 있던 동안, CLI 사용자는 README 가 시키는 대로
+    `touch ~/.claude/.codex-rotate-off` 를 직접 해야 했다 — 도구가 자기 내부 파일을
+    사용자에게 떠넘기는 셈이다. 게다가 경로를 외워야 하고, 오타를 내면 아무 일도 일어나지
+    않는데 **조용히** 그렇다.
+    """
+    if want is None:
+        _print_auto(settings)
+        return 0
+    try:
+        policy_edit.set_auto(settings, want == "on")
+    except OSError as exc:
+        raise CliError(f"could not change the switch: {exc}") from exc
+    _print_auto(settings)
+    return 0
+
+
+def cmd_policy(settings: config.Settings, changes: dict[str, object]) -> int:
+    """정책을 보여 주거나 고친다. 바꿀 것이 없으면 보여 주기만 한다.
+
+    TUI 의 정책 화면과 **같은 노브, 같은 저장 경로**다. 한쪽에만 있으면 사용자는 다른
+    표면에서 그것을 찾다가 못 찾는다.
+    """
+    if not changes:
+        print(f"ladder         {','.join(str(x) for x in settings.ladder)}")
+        print(f"margin         {settings.margin}%p")
+        print(f"cooldown       {settings.cooldown}s")
+        print(f"cache ttl      {settings.cache_ttl}s")
+        print(f"throttle       {settings.check_interval}s")
+        print()
+        print(f"saved in: {settings.accounts_dir / config.CONFIG_NAME}")
+        broken = config.file_config_error(settings.accounts_dir)
+        if broken:
+            print(f"warning: that file is not being read — {broken}")
+        return 0
+
+    try:
+        saved = policy_edit.save(settings, **changes)
+    except policy_edit.CreditsFileError as exc:
+        raise CliError(str(exc)) from exc
+    except OSError as exc:
+        raise CliError(f"could not save the policy: {exc}") from exc
+
+    print(f"saved: {saved.path}")
+    if saved.shadowed:
+        # 저장은 됐는데 안 먹는다. 조용히 두면 사용자는 반영된 줄 알고 같은 값을 다시 넣는다.
+        # 원인을 단정하지 않는다. 대개 환경변수지만 파일을 다른 프로세스가 방금
+        # 깨뜨렸을 수도 있다 — 아는 것은 "요청한 값이 실효값과 다르다" 까지다.
+        raise CliError(
+            f"saved, but these are not in effect: {', '.join(saved.shadowed)}. "
+            "An environment variable usually wins over the file"
+        )
+    return 0
+
+
+def _policy_changes(args: argparse.Namespace) -> dict[str, object]:
+    """플래그를 노브로 옮긴다. 파싱 실패는 **저장 전에** 올린다.
+
+    값 하나가 틀렸는데 나머지를 저장하면, 사용자는 무엇이 들어가고 무엇이 안 들어갔는지
+    모른 채 파일만 바뀐 상태로 남는다.
+    """
+    out: dict[str, object] = {}
+    if args.ladder is not None:
+        rungs = config.parse_ladder(args.ladder)
+        if not rungs:
+            raise CliError(f"not a ladder: {args.ladder!r}. Example: --ladder 50,70,85,95")
+        out["ladder"] = list(rungs)
+    for flag, key in (
+        ("margin", "margin"),
+        ("cooldown", "cooldown"),
+        ("cache_ttl", "cache_ttl"),
+        ("throttle", "check_interval"),
+    ):
+        raw = getattr(args, flag)
+        if raw is None:
+            continue
+        try:
+            value = config.parse_int(raw)
+        except config.ConfigError as exc:
+            raise CliError(f"--{flag.replace('_', '-')}: {exc}") from exc
+        if value < 0:
+            raise CliError(f"--{flag.replace('_', '-')} cannot be negative")
+        out[key] = value
+    return out
+
+
 def cmd_use(settings: config.Settings, label: str, *, force: bool = False) -> int:
     if not store.label_syntax_ok(label):
         raise CliError(f"not a usable label: {label}")
@@ -1129,6 +1232,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="store_true", help="probe every slot before printing")
     p.add_argument("--json", action="store_true", help="machine-readable output")
 
+    p = sub.add_parser("auto", help="turn automatic switching on or off")
+    p.add_argument("state", nargs="?", choices=["on", "off"], help="leave out to just show it")
+
+    p = sub.add_parser("policy", help="show or change the switching policy")
+    p.add_argument("--ladder", metavar="A,B,C", help="switch gates, e.g. 50,70,85,95")
+    p.add_argument("--margin", metavar="N", help="how much lower the target must be (%%p)")
+    p.add_argument("--cooldown", metavar="SECONDS", help="minimum gap between switches")
+    p.add_argument(
+        "--cache-ttl", metavar="SECONDS", dest="cache_ttl", help="how long a reading stays fresh"
+    )
+    p.add_argument("--throttle", metavar="SECONDS", help="minimum gap between checks")
+
     p = sub.add_parser("credits", help="usage-reset credits per account, with expiry")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     # `use` 를 별도 명령이 아니라 `credits` 의 하위 동작으로 둔다. 되돌릴 수 없는 동작을
@@ -1214,6 +1329,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         refresh_all(settings)
                     return cmd_list_json(settings)
                 return cmd_list(settings, fresh=args.fresh)
+            case "auto":
+                return cmd_auto(settings, args.state)
+            case "policy":
+                return cmd_policy(settings, _policy_changes(args))
             case "credits":
                 if args.action == "use":
                     return cmd_credits_use(

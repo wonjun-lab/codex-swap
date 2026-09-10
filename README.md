@@ -136,8 +136,8 @@ effect from the next codex invocation.
 ### Turning it off
 
 ```bash
-mkdir -p ~/.claude && touch ~/.claude/.codex-rotate-off   # off
-rm ~/.claude/.codex-rotate-off                            # on
+codex-swap auto off
+codex-swap auto on
 ```
 
 The `o` key in the TUI toggles the same file. To skip a single run, set
@@ -267,6 +267,8 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `codex-swap add <label>` | Log in to a new slot (opens a browser) |
 | `codex-swap list [--fresh]` | Stored accounts and cached usage. `--fresh` probes every slot |
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
+| `codex-swap policy [--ladder …]` | Show or change the switching policy |
+| `codex-swap auto [on\|off]` | Turn automatic switching on or off |
 | `codex-swap credits` | Usage-reset credits per account, with the date each one expires |
 | `codex-swap credits use [label]` | Spend one credit. Asks first; `--dry-run` spends nothing |
 | `codex-swap use <label>` | Switch by hand |
