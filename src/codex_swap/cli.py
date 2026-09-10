@@ -921,10 +921,17 @@ def cmd_status(settings: config.Settings, *, fresh: bool, as_json: bool = False)
             print(_usage_line(_usage_from_cache(cached)))
             return 0
 
-    # 활성이 어느 슬롯에도 없으면 홈을 직접 고른다. bash 는 이 경우 가짜 라벨
-    # `__active__` 를 경로에 넣어 `CODEX_HOME=<root>/__active__` 로 프로브를 돌리는데,
-    # 자격증명은 실제로 기본 홈에 있으므로 그 파생은 결함이다 (설계문 §7.5 D3).
-    home = settings.default_home if active is None else store.slot_dir(settings, active)
+    # **언제나 기본 홈이다.** 이 명령이 보는 것은 활성 계정 하나뿐이고, 활성이라는 말이
+    # 곧 "자격증명이 기본 홈에 있다" 는 뜻이다 — 슬롯이 있든(`active` 가 라벨) 없든
+    # (`None`) 마찬가지다. bash 는 후자에 가짜 라벨 `__active__` 를 경로에 넣어
+    # `CODEX_HOME=<root>/__active__` 로 프로브를 돌렸는데, 자격증명은 거기 없으므로 그
+    # 파생은 결함이다 (설계문 §7.5 D3).
+    #
+    # 한동안 여기만 조건이 거꾸로 붙어, 슬롯이 **있을 때** 그 사본을 읽었다. 슬롯 사본은
+    # 전환 시점의 스냅숏이라 토큰이 갱신되며 뒤처지고, 그러면 `--fresh` 가 낡은 자격증명
+    # 으로 조회해 멀쩡한 계정을 못 읽은 것처럼 보고한다. `refresh_all`·`rotate`·`credits`·
+    # TUI 는 전부 반대로 골랐다 — **여기 하나만 달랐다.**
+    home = settings.default_home
 
     # 바이너리 해석을 프로브 호출의 **인자 안**에 두면 그 실패가 아래 `except` 에 걸려
     # "사용량 조회 실패" 로 접힌다. 그러면 codex 가 아예 없는 기기에서도 화면은 계정을

@@ -327,7 +327,10 @@ def test_status_fresh_ignores_a_live_cache(env, capsys, monkeypatch) -> None:
     out = capsys.readouterr().out
     assert "usage: 71%" in out and "38%" not in out
     assert len(calls) == 1
-    assert calls[0][1] == str(store.slot_dir(env, "a")), "활성 슬롯이 아닌 홈을 조회했다"
+    assert calls[0][1] == str(env.default_home), (
+        "활성 계정을 슬롯 **사본**에서 조회했다. 사본은 전환 시점의 스냅숏이라 토큰이 "
+        "갱신되며 뒤처진다 — `refresh_all`·`rotate`·`credits`·TUI 가 모두 기본 홈을 고른다"
+    )
 
 
 def test_status_probes_when_the_cache_is_stale(env, capsys, monkeypatch) -> None:
