@@ -18,6 +18,7 @@ codex-swap    gate 70% · margin 5%p
    Usage resets
    Adopt the account in use
    Automatic switching: on
+   Update codex-swap
    Quit
 
    enter select   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
@@ -58,6 +59,21 @@ Without uv, pip works too (a virtualenv is recommended):
 ```bash
 pip install git+https://github.com/wonjun-lab/codex-swap.git
 ```
+
+### Updating
+
+```bash
+codex-swap update          # or: pick "Update codex-swap" in the TUI
+codex-swap update --check  # say whether there is anything new, install nothing
+```
+
+It reads how it was installed — uv, pipx or pip, from git or from a path — and reuses
+that, so you do not have to remember. Since a git install keeps the same version number
+while the commit moves, it compares commits rather than versions and tells you when there
+is nothing to do.
+
+If it cannot tell where it came from it prints the command and stops rather than guessing:
+running the default URL over an install that came from a fork would quietly replace it.
 
 ## First run
 

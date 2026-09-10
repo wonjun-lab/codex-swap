@@ -176,6 +176,7 @@ MENU: tuple[tuple[str, str], ...] = (
     ("credits", "Usage resets"),
     ("adopt", "Adopt the account in use"),
     ("auto", "Automatic switching"),
+    ("update", "Update codex-swap"),
     ("quit", "Quit"),
 )
 """커서로 내려가 `enter` 로 들어가는 항목들.
@@ -185,6 +186,13 @@ MENU: tuple[tuple[str, str], ...] = (
 
 `(동작 이름, 표시 문자열)` 이다. 동작을 문자열로 두는 것은 `_loop` 이 키 처리와 같은
 분기로 흘려보내기 위해서다 — 같은 일을 두 벌로 구현하면 한쪽만 고쳐지는 날이 온다.
+"""
+
+
+_UPDATE_ASK = "  Leave the screen and update codex-swap? [y/N] "
+"""갱신은 화면을 닫고 나가야 하므로, **나간다는 것**을 먼저 말한다.
+
+묻지 않고 닫으면 메뉴를 잘못 고른 사람이 이유도 모른 채 화면 밖으로 튕겨 나간다.
 """
 
 
@@ -2124,7 +2132,7 @@ def probing_note(view: View, labels: Sequence[str]) -> View:
     return replace(view, message=f"{view.message}   {note}" if view.message else note)
 
 
-def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터미널 필요
+def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover - 터미널 필요
     # 커서 숨기기는 terminfo 에 `civis` 가 없는 터미널에서 실패한다. 화면을 못 여는
     # 이유로는 사소하므로 삼킨다.
     with contextlib.suppress(curses.error):
@@ -2178,14 +2186,14 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             if time.monotonic() - started < _TICK_MS / 2000:
                 errs += 1
                 if errs > 50:
-                    return
+                    return None
             continue
         errs = 0
 
         # q 는 어느 화면에서든 종료다. 정책 화면에서만 안 먹으면, 계정 화면이 "q 종료"
         # 라고 광고해 놓고 한 단계 들어가면 배신하는 셈이 된다.
         if key in (ord("q"), ord("Q")):
-            return
+            return None
         if key == curses.KEY_RESIZE:
             continue
 
@@ -2268,7 +2276,15 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 loader.start(settings)
                 continue
             if action == "quit":
-                return
+                return None
+            if action == "update":
+                # **여기서 실행하지 않는다.** 갈아치울 대상이 지금 돌고 있는 이 코드이고,
+                # 설치 도구가 쏟는 출력이 갈 자리는 화면이 쥐고 있다. 뜻만 들고 나간다.
+                if not credits_core.said_yes(_prompt(stdscr, _UPDATE_ASK, drawn)):
+                    view = replace(view, message="Left it alone")
+                    curses.flushinp()
+                    continue
+                return "update"
             if action == "refresh":
                 attempted.clear()
                 if not prober.start(settings, [r.label for r in view.rows]):
@@ -2302,9 +2318,23 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             )
 
 
+WANTS_UPDATE = 77
+"""`run` 이 이 값을 돌려주면 **화면을 닫고 갱신을 이어서** 하라는 뜻이다.
+
+curses 안에서 자기 자신을 갈아치울 수는 없다 — 설치 도구가 진행 상황을 쏟아내는데 그
+자리는 지금 화면이 쥐고 있고, 갈아치우는 대상이 바로 지금 돌고 있는 코드다. 그래서 화면은
+"하겠다" 는 뜻만 들고 나오고, 실행은 `cli` 가 터미널을 되찾은 뒤에 한다.
+
+값을 종료 코드로 흘려보내지 않는다 — `cli` 가 받아 챙기고, 사용자에게는 갱신의 결과가
+그대로 종료 코드가 된다.
+"""
+
+
 def run(settings: config.Settings) -> int:  # pragma: no cover - 터미널 필요
     try:
-        curses.wrapper(_loop, settings)
+        outcome = curses.wrapper(_loop, settings)
+        if outcome == "update":
+            return WANTS_UPDATE
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:

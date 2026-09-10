@@ -34,6 +34,7 @@ from codex_swap.core import (
     policy_edit,
     probe,
     rotate,
+    selfupdate,
     store,
 )
 from codex_swap.core import (
@@ -1229,6 +1230,79 @@ def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
     return decision_exit_code(decision)
 
 
+def cmd_update(*, check_only: bool = False, assume_yes: bool = False) -> int:
+    """새 판으로 갈아탄다. **무엇을 할지 먼저 보여 준다.**
+
+    이 명령이 실제로 하는 일은 한 줄짜리 재설치인데, 그 한 줄을 적으려면 uv 인지 pipx 인지
+    pip 인지, 깃에서 왔는지 경로에서 왔는지를 알아야 한다. 그것을 사람에게 묻는 대신
+    설치 기록에서 읽는다 — 그러라고 파이썬이 적어 두는 것이다.
+
+    **모르면 실행하지 않는다.** 출처를 못 읽었을 때 기본 주소로 밀어 넣으면, 포크나 사내
+    미러에서 깔아 쓰던 사람의 설치가 조용히 원본으로 바뀐다. 그때는 명령만 보여 주고 손을
+    뗀다 — 복사해서 그대로 쓸 수 있는 형태로.
+    """
+    install = selfupdate.detect()
+    if install is None:
+        print("cannot tell how codex-swap was installed, so it will not guess.")
+        print("If you installed it from git, this is the command:")
+        print(f"  uv tool install --force {selfupdate.FALLBACK_SOURCE}")
+        print("With pipx, swap `uv tool` for `pipx`. With pip, add --upgrade.")
+        return 1
+
+    where = install.source if not install.is_git else install.source[len("git+") :]
+    print(f"installed from {where} (via {install.manager})")
+
+    latest = selfupdate.latest_commit(install)
+    here = install.commit
+    if here and latest:
+        # 깃에서 온 판은 **버전 번호가 안 움직인다.** `0.1.0` 그대로 새 커밋이 오므로
+        # 견줄 것은 커밋뿐이다.
+        print(f"  have {selfupdate.short(here)} · latest {selfupdate.short(latest)}")
+        if here == latest:
+            print("already up to date.")
+            return 0
+        for line in selfupdate.changes_between(install, here, latest):
+            print(f"    {line}")
+    elif latest is None and install.is_git:
+        # 못 읽은 것을 "최신" 으로 접으면, 갱신이 있는데도 없다고 믿게 된다.
+        print("  could not reach the remote to compare — updating anyway")
+
+    try:
+        command = selfupdate.upgrade_command(install)
+    except selfupdate.UpdateError as exc:
+        raise CliError(str(exc)) from exc
+
+    shown = " ".join(command)
+    if check_only:
+        print(f"would run: {shown}")
+        return 0
+
+    if not assume_yes and sys.stdin.isatty():
+        print(f"about to run: {shown}")
+        try:
+            answer: str | None = input("Type y to continue: ")
+        except EOFError:
+            answer = None
+        if not credits_core.said_yes(answer):
+            print("Left it alone.")
+            return 1
+
+    print(f"running: {shown}")
+    try:
+        code = subprocess.run(command).returncode
+    except FileNotFoundError:
+        raise CliError(
+            f"{command[0]} is not on PATH. Install it, or run this by hand: {shown}"
+        ) from None
+    if code != 0:
+        raise CliError(f"the update command failed (exit {code}). Nothing else was changed")
+
+    # **새 판의 번호를 이 프로세스에서 읽지 않는다.** 지금 돌고 있는 것은 갈아치우기 전의
+    # 코드라, 여기서 판을 물으면 방금 설치한 것이 아니라 자기 자신을 말한다.
+    print("updated. Check it with: codex-swap --version")
+    return 0
+
+
 # ── 진입점 ───────────────────────────────────────────────────────────────────
 
 
@@ -1319,6 +1393,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
 
     sub.add_parser("clean", help="clear probe leftovers from the slots")
+
+    p = sub.add_parser("update", aliases=["upgrade"], help="get the newest codex-swap")
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="say whether an update is available, install nothing",
+    )
+    p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
     return parser
 
 
@@ -1336,7 +1418,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             except config.ConfigError as exc:
                 print(f"codex-swap: {exc}", file=sys.stderr)
                 return 1
-            return tui.run(settings)
+            code = tui.run(settings)
+            if code != tui.WANTS_UPDATE:
+                return code
+            # 화면은 "갱신하겠다" 는 뜻만 들고 나온다 — 갈아치울 대상이 방금까지 돌던
+            # 그 화면이고, 설치 도구가 쏟는 출력이 갈 자리도 화면이 쥐고 있었다.
+            # 여기는 터미널을 되찾은 뒤라 둘 다 걸리지 않는다.
+            try:
+                return cmd_update(assume_yes=True)
+            except CliError as exc:
+                print(f"codex-swap: {exc}", file=sys.stderr)
+                return 1
         parser.print_help()
         return 0
 
@@ -1396,6 +1488,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_remove(settings, args.label, assume_yes=args.yes)
             case "clean":
                 return cmd_clean(settings)
+            case "update" | "upgrade":
+                # 계정을 건드리지 않는 유일한 명령이라 `settings` 를 받지 않는다.
+                return cmd_update(check_only=args.check, assume_yes=args.yes)
             case _:
                 raise CliError(f"unknown command: {args.command}")
     except CliError as exc:
