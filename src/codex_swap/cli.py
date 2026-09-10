@@ -329,9 +329,15 @@ def _display_width(text: str) -> str | int:
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
 
-def _pad_to(text: str, cols: int) -> str:
-    """표시 폭 기준으로 채운다."""
-    return text + " " * max(0, cols - _display_width(text))
+def _pad_to(text: str, cols: int, *, right: bool = False) -> str:
+    """표시 폭 기준으로 채운다.
+
+    `right` 는 **숫자 열**에 쓴다. 왼쪽으로 붙이면 낡음 표시 `~` 한 글자 때문에 `5%` ·
+    `~66%` · `100%` 가 전부 다른 칸에서 시작해, 위아래로 읽는 유일한 열에서 자릿수가
+    어긋난다. TUI 의 `_cell(..., right=True)` 와 같은 이유로 같은 선택을 한다.
+    """
+    pad = " " * max(0, cols - _display_width(text))
+    return pad + text if right else text + pad
 
 
 def _age_text(seconds: int) -> str:
@@ -807,7 +813,7 @@ def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
             _pad_to(mark, 3),
             _pad_to(label, lw),
             _pad_to(email, ew),
-            _pad_to(used, uw),
+            _pad_to(used, uw, right=True),
             _pad_to(cred, cw),
             reset,
         ]

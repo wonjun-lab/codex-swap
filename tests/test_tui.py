@@ -1020,20 +1020,21 @@ def test_columns_are_separated_by_the_same_gutter(env) -> None:
     body = next(line for line in tui.render_lines(view, width=140) if line.startswith(" >"))
     bar = tui.usage_bar(70, 70)
     assert f"{tui._GUTTER}{bar}{tui._GUTTER}" in body, body
-    # 사용량 칸은 `~100%` 상한에 맞춘 5 칸이라, `70%` 뒤의 남는 자리는 두 칸이다.
-    # 그 뒤에 간격이 붙는다. 칸을 넓게 잡으면 이 열만 멀어 보인다.
-    assert f"70%  {tui._GUTTER}{bar}" in body, f"사용량 열과 다음 열 사이 간격이 다르다: {body!r}"
+    # 사용량 칸은 `~100%` 상한에 맞춘 5 칸이고 값은 **오른쪽**에 붙는다. `70%` 는 세 칸이라
+    # 남는 두 칸이 앞에 오고, 값과 바 사이에는 간격만 남는다 — 같은 값을 두 방식으로
+    # 보여 주는 둘이 값의 자릿수와 무관하게 같은 거리로 붙는다.
+    assert f"  70%{tui._GUTTER}{bar}" in body, f"사용량 열과 다음 열 사이 간격이 다르다: {body!r}"
 
 
-def test_the_used_column_does_not_leave_dead_space(env) -> None:
-    """자릿수 정렬(오른쪽 붙임)을 **되돌린 자리**다.
+def test_the_used_column_is_no_wider_than_its_largest_value(env) -> None:
+    """칸은 값의 상한(`~100%` = 5)에 딱 맞는다.
 
-    한때 이 열만 오른쪽으로 붙였다. `58%` 와 `~70%` 의 `%` 가 세로로 맞는 이점이 있었지만,
-    표에서 한 열만 반대 방향이라 어긋나 보였다. 계정이 두셋뿐인 화면에서 자릿수 정렬의
-    이득은 작고 그 인상은 매번 치른다.
+    폭과 정렬은 **다른 문제**다. 한때 이 둘을 묶어서, 칸을 좁히면 왼쪽 정렬로도 죽은
+    공백이 안 남으니 오른쪽 붙임이 필요 없다고 보았다. 실제로는 `~` 가 붙는 값과 안 붙는
+    값이 섞이는 순간 왼쪽 정렬에서 자릿수가 어긋난다 — 칸을 아무리 좁혀도 그렇다.
 
-    대신 칸을 값의 상한(`~100%` = 5)에 맞춰 좁혔다. 왼쪽 정렬로도 죽은 공백이 남지
-    않으므로, 오른쪽 붙임이 풀려던 문제가 애초에 생기지 않는다.
+    그래서 정렬은 오른쪽으로 옮겼고(`test_text_columns_go_left_and_the_number_column_goes_right`),
+    폭은 여기서 그대로 지킨다. 넓게 잡으면 이 열만 다음 열에서 멀어 보인다.
     """
     rows = (
         tui.Row("a", "a@x", "58%", "-", True, percent=58),
@@ -1254,11 +1255,15 @@ def test_the_axis_sits_directly_under_the_bars(env) -> None:
 # ── 열 정렬은 한 방향이다 ──────────────────────────────────────────────────
 
 
-def test_every_column_is_left_aligned(env) -> None:
-    """숫자만 오른쪽으로 붙이면 한 열만 반대로 보인다.
+def test_text_columns_go_left_and_the_number_column_goes_right(env) -> None:
+    """글자 열은 왼쪽, **숫자 열은 오른쪽**이다.
 
-    자릿수 정렬이라는 이점이 있지만, 계정이 두셋뿐인 화면에서 그 이득은 작고 어긋나
-    보이는 대가는 매번 치른다. 칸을 값에 맞춰 좁히면 죽은 공백도 같이 사라진다.
+    한동안 `USED` 도 왼쪽이었다. 근거는 "한 열만 반대 방향으로 보인다" 였는데, 두 방식을
+    나란히 그려 보니 그 인상이 관찰되지 않았다 — 숫자를 오른쪽에 붙이는 것은 표의 관례라
+    튀지 않는다.
+
+    왼쪽 정렬의 실제 대가는 `~` 였다. 낡음 표시 한 글자 때문에 `58%` 와 `~100%` 가 서로
+    다른 칸에서 시작해, **위아래로 읽는 유일한 열**에서 자릿수가 어긋났다.
     """
     rows = (
         tui.Row("a", "a@x", "58%", "-", True, percent=58),
@@ -1268,10 +1273,19 @@ def test_every_column_is_left_aligned(env) -> None:
     lines = tui.render_lines(view, width=140)
     header = next(ln for ln in lines if "USED" in ln)
     body = [ln for ln in lines if ln.startswith((" >", "  ")) and "@x" in ln]
-    # 값이 각 칸의 **왼쪽 끝**에서 시작한다 = 머리말과 같은 열에서 시작한다.
-    used_at = header.index("USED")
-    for ln in body:
-        assert ln[used_at] not in " ", f"USED 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
+
+    # 글자 열은 머리말과 같은 칸에서 시작한다.
+    for name in ("LABEL", "EMAIL"):
+        at = header.index(name)
+        for ln in body:
+            assert ln[at] != " ", f"{name} 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
+
+    # 숫자 열은 **끝이** 맞는다 — `%` 가 세로로 한 칸에 선다.
+    end = header.index("USED") + len("USED")
+    assert [ln[:end].rstrip()[-1] for ln in body] == ["%", "%"], [ln[:end] for ln in body]
+    assert body[0][:end].endswith("58%"), body[0]
+    assert body[1][:end].endswith("~100%"), body[1]
+
     cred_at = header.index("RESETS")
     assert body[1][cred_at] == "2", body[1]
 

@@ -601,9 +601,14 @@ BAR_COLS = 24
 _USED_COLS = 5
 """사용량 칸의 폭. `~100%` 가 상한이라 그 이상은 필요 없다.
 
-값을 오른쪽으로 붙였던 적이 있다 — 자릿수가 세로로 맞는 이점이 있지만, 계정이 두셋뿐인
-화면에서 그 이득은 작고 **한 열만 반대 방향으로 보이는** 대가는 매번 치른다. 칸을 값에
-맞춰 좁히면 죽은 공백도 같이 사라져서, 왼쪽 정렬로도 사용량과 바가 붙어 보인다.
+**값은 오른쪽으로 붙인다**(`right=True`). 한동안 왼쪽이었고, 그 근거는 "계정이 두셋뿐인
+화면에서 세로로 맞추는 이득은 작고 한 열만 반대 방향으로 보이는 대가는 매번 치른다"
+였다. 실제로 두 방식을 나란히 그려 보니 그 대가가 관찰되지 않았다 — 숫자 열을 오른쪽에
+붙이는 것은 표의 관례라 튀지 않고, 오히려 바로 옆에 바가 붙으면서 "숫자 → 바" 로 읽힌다.
+
+왼쪽 정렬의 실제 대가는 `~` 였다. 낡음 표시 한 글자 때문에 `5%` · `~66%` · `100%` ·
+`~100%` 가 **전부 다른 칸에서 시작한다.** 게다가 짧은 값 뒤에 죽은 공백이 남아, 같은
+값을 두 방식으로 보여 주는 숫자와 바 사이가 값마다 다른 거리로 벌어졌다.
 """
 
 _LABEL_COLS = 14
@@ -976,7 +981,7 @@ def render_screen(
 
     columns = (
         f"{_INDENT}{_cell('LABEL', label_cols)}{_GUTTER}"
-        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', _USED_COLS)}"
+        f"{_cell('EMAIL', email_cols)}{_GUTTER}{_cell('USED', _USED_COLS, right=True)}"
     )
     if with_bar:
         columns += f"{_GUTTER}{_cell('', BAR_COLS)}"
@@ -1040,7 +1045,7 @@ def render_screen(
         line = (
             f" {cursor}{mark}{_cell(row.label, label_cols, ellipsis=True)}{_GUTTER}"
             f"{_cell(row.email, email_cols, ellipsis=True)}{_GUTTER}"
-            f"{_cell(row.used, _USED_COLS)}"
+            f"{_cell(row.used, _USED_COLS, right=True)}"
         )
         if with_bar:
             line += f"{_GUTTER}{usage_bar(row.percent, view.current_rung)}"
