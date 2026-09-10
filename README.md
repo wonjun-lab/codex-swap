@@ -78,6 +78,41 @@ which of these you used and reuses it — with Homebrew it steps aside and tells
 `brew upgrade` instead, because reinstalling over a Cellar with pip would leave brew's
 idea of the world out of step with what is on disk.
 
+### Then run init
+
+```bash
+codex-swap init
+```
+
+It checks this machine and prints the next step, whatever that turns out to be: codex
+missing, shell not wired, no accounts yet. Run it again after each step; it stops telling
+you about things you have done. The installer calls it for you at the end.
+
+The one thing it asks you to add by hand is a single line in your shell profile:
+
+```bash
+eval "$(codex-swap shell-init)"        # fish: codex-swap shell-init | source
+```
+
+That line carries automatic switching, and on machines with the ChatGPT desktop app it
+also keeps your accounts out of the app's way — see below. It is one line rather than a
+block to paste because it is re-evaluated in every new shell: install the app a month
+from now and the wiring follows, where a pasted copy would quietly go stale.
+
+### Sharing a machine with the ChatGPT desktop app
+
+The desktop app runs its own codex with `CODEX_HOME=~/.codex` and keeps its account in
+`~/.codex/auth.json`. That file is the one codex-swap swaps. Both writing to it looks, from
+where you sit, like an account that keeps logging itself out — and the ledger fills up with
+switches that all start from the same account, because the app's are never recorded.
+
+**codex-swap is the third party here, so codex-swap moves.** When the app is installed, the
+wiring above puts the live credentials in `~/.codex-cli` and leaves `~/.codex` to the app.
+Your registered accounts stay where they are: the app never touches `~/.codex/accounts`, so
+there is nothing to migrate.
+
+`codex-swap doctor` reports it if the two ever drift apart again.
+
 ### When something looks wrong
 
 ```bash
@@ -109,8 +144,8 @@ running the default URL over an install that came from a fork would quietly repl
 
 ## First run
 
-Automatic switching needs **two or more** accounts. With one, `rotate` stops quietly at
-`only one account registered`.
+This is what `init` walks you through. Automatic switching needs **two or more** accounts;
+with one, `rotate` stops quietly at `only one account registered`.
 
 ```bash
 # 1. Keep the account you are logged in as
@@ -123,6 +158,11 @@ codex-swap add personal
 # 3. Check
 codex-swap list
 ```
+
+**Over SSH, run `add` while sitting at that machine.** It opens a browser for the OAuth
+callback, and a browser on your laptop cannot reach the listener waiting on the remote —
+the login half-finishes without saying so, leaving credentials that look present and are
+not. `codex-swap doctor` names this case if you hit it.
 
 `adopt` only **copies** the current credentials into a slot, so you stay logged in.
 `add` logs in against the new slot's own home, so it does not disturb the account you
