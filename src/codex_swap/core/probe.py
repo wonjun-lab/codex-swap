@@ -30,7 +30,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from codex_swap.core.types import ProbeResult, Usage
+from codex_swap.core.types import Credit, ProbeResult, Usage
 
 DEFAULT_TIMEOUT_MS = 20_000
 """요청**당** 타임아웃. 전역 데드라인이 아니다 (설계문 §6.3)."""
@@ -287,6 +287,7 @@ def _converse(proc: subprocess.Popen[bytes], timeout_s: float) -> Usage:
         reset_credits=_as_count(
             _prop(_prop(limits.get("result"), "rateLimitResetCredits"), "availableCount")
         ),
+        credits=_credits(_prop(limits.get("result"), "rateLimitResetCredits")),
         reached=_reached(_prop(rate_limits, "rateLimitReachedType")),
     )
 
@@ -470,6 +471,38 @@ def _reached(value: object) -> bool:
     이 docstring 을 믿고 잘못된 결론을 낸다. 세 값을 다 접는다.
     """
     return value is not None and value is not False and value != ""
+
+
+def _credits(node: object) -> tuple[Credit, ...]:
+    """`rateLimitResetCredits.credits[]` → `Credit` 들. 못 읽으면 빈 튜플.
+
+    `availableCount` 와 **따로** 읽는다. 둘이 어긋날 수 있는데(목록에 만료된 것이 남아
+    있거나, 세는 규칙이 서버 쪽에서 바뀌거나) 그때 개수를 목록에서 다시 계산하면 화면이
+    서버와 다른 말을 하게 된다. 개수는 서버가 준 것을 그대로 쓰고, 목록은 목록대로 보인다.
+
+    `id` 가 없거나 문자열이 아닌 항목은 버린다. 이 값의 존재 이유가 나중에 쿠폰을 지목하는
+    것이라, 지목할 수 없는 항목은 목록에 있어 봐야 사용자를 오해시킨다.
+    """
+    items = _prop(node, "credits")
+    if not isinstance(items, list):
+        return ()
+    out = []
+    for item in items:
+        ident = _prop(item, "id")
+        if not isinstance(ident, str) or not ident:
+            continue
+        status = _prop(item, "status")
+        title = _prop(item, "title")
+        out.append(
+            Credit(
+                id=ident,
+                status=status if isinstance(status, str) else None,
+                granted_at=_as_epoch(_prop(item, "grantedAt")),
+                expires_at=_as_epoch(_prop(item, "expiresAt")),
+                title=title if isinstance(title, str) else None,
+            )
+        )
+    return tuple(out)
 
 
 def _as_count(value: object) -> int | None:

@@ -17,9 +17,25 @@ from pathlib import Path
 import pytest
 
 from codex_swap.core import probe
-from codex_swap.core.types import ProbeOutcome, ProbeResult, Usage
+from codex_swap.core.types import Credit, ProbeOutcome, ProbeResult, Usage
 
 FIXTURES = Path(__file__).parent / "fixtures" / "probe"
+
+
+FIXTURE_CREDITS = (
+    Credit(
+        id="RateLimitResetCredit_fixture",
+        status="available",
+        granted_at=1788582048,
+        expires_at=1791174048,
+        title="Full reset",
+    ),
+)
+"""`ok.json` 이 싣고 있는 쿠폰. **한 곳에만 적는다.**
+
+기대값을 테스트마다 베끼면 `Usage` 에 필드가 늘 때 고칠 자리가 그만큼 는다 — 아래
+`ProbeResult.of(...)` 위의 주석이 이미 그 함정을 한 번 겪고 적힌 것이다.
+"""
 
 
 def captured(name: str = "ok") -> list[str]:
@@ -126,6 +142,7 @@ def test_captured_classification(server: Server, name: str) -> None:
             secondary_percent=None,
             resets_at=1789232459,
             reset_credits=1,
+            credits=FIXTURE_CREDITS,
             reached=False,
         )
     )
@@ -221,6 +238,7 @@ def test_unrelated_ids_noise_and_partial_reads(
         secondary_percent=None,
         resets_at=1789232459,
         reset_credits=1,
+        credits=FIXTURE_CREDITS,
         reached=False,
     )
 

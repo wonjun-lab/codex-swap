@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -40,8 +41,43 @@ def _opt(v: object) -> str:
     return "-" if v is None else str(v)
 
 
+def _clock_text(value: object, past: str, *, now: float | None = None) -> str:
+    """epoch 을 `MM-DD HH:MM (남은 시간)` 으로. 못 읽으면 `-`.
+
+    **남은 시간은 epoch 끼리 뺀다.** 로컬 시각으로 바꾼 뒤 빼면 서머타임 경계에서 한 시간이
+    통째로 어긋난다 — `America/New_York` 에서 2026-11-01 05:50 UTC 기준 06:10 UTC 만료는
+    실제로 20 분 남았는데 `(expired)` 로 나왔다. 시계를 되돌리는 그 한 시간이 뺄셈에서
+    사라지기 때문이다. 화면에 찍는 **시각**만 로컬로 바꾸고, 계산은 epoch 에서 한다.
+
+    정수로 만들기 **전에** 지났는지 본다. `int(-0.5)` 는 0 이라 만료 직후 1 초 동안
+    "곧 만료" 로 보였다.
+
+    범위 밖 값은 `-` 다. 밀리초 epoch(`1700000000000`) 하나가 섞이면 `fromtimestamp` 가
+    `ValueError` 를 던지는데, 행을 다 모은 뒤 찍는 구조라 **멀쩡한 슬롯의 결과까지** 화면에
+    못 나온다. 서버가 그런 값을 보내는지는 모르지만, 모르는 값 하나에 명령 전체를 걸 이유가
+    없다.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "-"
+    current = time.time() if now is None else now
+    left = value - current
+    try:
+        when = datetime.datetime.fromtimestamp(value)
+    except (ValueError, OSError, OverflowError):
+        return "-"
+    if left < 0:
+        rel = past
+    elif left < 3600:
+        rel = f"in {int(left) // 60}m"
+    elif left < 86400:
+        rel = f"in {int(left) // 3600}h"
+    else:
+        rel = f"in {int(left) // 86400}d"
+    return f"{when:%m-%d %H:%M} ({rel})"
+
+
 def _reset_text(resets_at: object, *, now: float | None = None) -> str:
-    """사용량이 되돌아오는 시각. epoch 을 사람이 읽을 형태로 바꾼다.
+    """사용량이 되돌아오는 시각.
 
     raw epoch 을 그대로 보여주면 "언제 풀리나" 를 계산기 없이 알 수 없다. 남은 시간을
     함께 적는 이유는 그것이 실제로 알고 싶은 값이기 때문이다 — 오늘 안에 풀리는지,
@@ -50,20 +86,7 @@ def _reset_text(resets_at: object, *, now: float | None = None) -> str:
     쿠폰으로 사용량을 리셋하면 이 값이 앞으로 당겨진다. 그래서 이 표시가 곧 "쿠폰이
     먹었나" 를 확인하는 자리이기도 하다.
     """
-    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
-        return "-"
-    when = datetime.datetime.fromtimestamp(resets_at)
-    current = datetime.datetime.now() if now is None else datetime.datetime.fromtimestamp(now)
-    secs = int((when - current).total_seconds())
-    if secs < 0:
-        rel = "past"
-    elif secs < 3600:
-        rel = f"in {secs // 60}m"
-    elif secs < 86400:
-        rel = f"in {secs // 3600}h"
-    else:
-        rel = f"in {secs // 86400}d"
-    return f"{when:%m-%d %H:%M} ({rel})"
+    return _clock_text(resets_at, "past", now=now)
 
 
 def _usage_line(u: Usage) -> str:
@@ -368,6 +391,186 @@ def refresh_all(settings: config.Settings) -> None:
                 "reached": u.reached,
             },
         )
+
+
+def _expiry_text(expires_at: object, *, now: float | None = None) -> str:
+    """쿠폰 만료 시각. `_reset_text` 와 같은 서식이되 **지난 것을 다르게 적는다.**
+
+    사용량 리셋은 지나면 좋은 일(이미 풀렸다)이지만 쿠폰 만료는 지나면 **잃은 것**이다.
+    같은 `past` 로 적으면 그 차이가 사라진다.
+    """
+    return _clock_text(expires_at, "expired", now=now)
+
+
+def _probe_credits(settings: config.Settings) -> list[tuple[str, str, Usage | None]]:
+    """슬롯마다 `(라벨, 이메일, 사용량)`. 못 읽은 슬롯은 사용량이 None.
+
+    **캐시를 쓰지 않고 매번 프로브한다.** 쿠폰 상세는 캐시에 없다 — 넣으려면
+    `resetCredits` 를 쓰는 여섯 자리에 키를 하나씩 더 얹어야 하고, 그중 한 곳이 빠져서
+    캐시 히트일 때만 크레딧이 사라진 적이 이미 있다.
+
+    비용은 사용자가 이 명령을 직접 쳤을 때만 든다. `list` 와 `rotate` 의 값싼 경로는
+    그대로다.
+    """
+    try:
+        codex_bin = str(discovery.resolve_codex_bin())
+    except Exception as exc:
+        raise CliError(
+            f"cannot run codex: {exc}. Check that `codex --version` works, "
+            "or set CODEX_ACCOUNT_BIN to its path"
+        ) from exc
+
+    active = store.active_label(settings)
+    out: list[tuple[str, str, Usage | None]] = []
+    for label in store.labels(settings):
+        email = identity.email_of(store.slot_auth(settings, label)) or "?"
+        home = settings.default_home if label == active else store.slot_dir(settings, label)
+        usage: Usage | None = None
+        try:
+            result = probe.probe(codex_bin, str(home))
+        except Exception:
+            result = None
+        if result is not None and result.outcome is ProbeOutcome.OK and result.usage is not None:
+            u = result.usage
+            # `refresh_all` 과 같은 신원 확인. 조회 도중 다른 rotate 가 전환을 끝내면
+            # 기본 홈에 이미 다른 계정이 들어 있어, 남의 쿠폰을 이 이름으로 적게 된다.
+            want = identity.email_of(store.slot_auth(settings, label))
+            if u.email is None or want is None or u.email == want:
+                usage = u
+        out.append((label, email, usage))
+    return out
+
+
+def cmd_credits(settings: config.Settings) -> int:
+    """계정별 리셋 쿠폰 — 개수·상태·만료.
+
+    `list` 의 `CRED` 열은 개수만 말한다. 쿠폰은 **만료되는 자원**이라 그것만으로는 쓸지
+    말지를 정할 수 없다 — 오늘 밤 사라질 쿠폰과 두 달 남은 쿠폰은 같은 `1` 로 보인다.
+    """
+    labels = store.labels(settings)
+    if not labels:
+        print("No accounts yet. Start with: codex-swap adopt <label>")
+        return 0
+
+    active = store.active_label(settings)
+    rows: list[tuple[str, str, str, str, str]] = []
+    unreadable: list[str] = []
+    # 목록을 그리면 서버가 준 개수가 화면에서 사라진다. 줄 수가 곧 개수처럼 읽히는데,
+    # 만료됐거나 `redeeming` 인 쿠폰이 섞이면 그 둘이 다르다 — 사용자는 세어 보고 더
+    # 많다고 믿는다. 어긋날 때만 말한다. 늘 떠 있는 안내는 곧 안 읽힌다.
+    disagree: list[str] = []
+    # 같은 계정이 두 라벨에 있으면 **같은 쿠폰이 두 번** 나온다. 줄이 둘이니 둘로 세는데
+    # 실제로는 하나다. `list` 는 같은 상황에 "두 라벨이 같은 계정을 들고 있다" 고 말하는데
+    # 여기만 조용했다 — 하필 세어 보는 화면이다.
+    seen_emails: dict[str, list[str]] = {}
+    for label, email, usage in _probe_credits(settings):
+        if email != "?":
+            seen_emails.setdefault(email, []).append(label)
+        mark = "*" if label == active else " "
+        if usage is None:
+            unreadable.append(label)
+            rows.append((mark, label, email, "?", "-"))
+            continue
+        if not usage.credits:
+            # 개수는 아는데 목록이 비었을 수 있다 — 서버가 상세를 안 줄 때다. 0 으로
+            # 단정하지 않고 아는 것만 적는다.
+            count = "-" if usage.reset_credits is None else str(usage.reset_credits)
+            rows.append((mark, label, email, count, "-"))
+            continue
+        # **보이는 줄 수와 견준다.** 쓸 수 있는 것끼리 세어 견주면 이 검사가 헛돈다 —
+        # 사용자가 오해하는 것은 "쓸 수 있는 게 몇 개인가" 가 아니라 **화면에 몇 줄이
+        # 있는가** 다. 만료된 쿠폰 두 줄이 함께 뜨면 셋으로 읽는다.
+        if usage.reset_credits is not None and usage.reset_credits != len(usage.credits):
+            shown = len(usage.credits)
+            disagree.append(
+                f"{label}: the server counts {usage.reset_credits} usable "
+                f"but sent detail for {shown}"
+                + (
+                    " (the rest are expired or already being redeemed)"
+                    if usage.reset_credits < shown
+                    else " (detail for the others did not arrive)"
+                )
+            )
+        for i, credit in enumerate(usage.credits):
+            title = credit.title or credit.status or "credit"
+            rows.append(
+                (
+                    mark if i == 0 else " ",
+                    label if i == 0 else "",
+                    email if i == 0 else "",
+                    title if credit.status == "available" else f"{title} ({credit.status})",
+                    _expiry_text(credit.expires_at),
+                )
+            )
+
+    def _w(values: list[str], header: str, lo: int) -> int:
+        widths = [_display_width(v) for v in values]
+        return max(lo, _display_width(header), *widths) if widths else lo
+
+    lw = _w([r[1] for r in rows], "LABEL", 6)
+    ew = _w([r[2] for r in rows], "EMAIL", 12)
+    cw = _w([r[3] for r in rows], "CREDIT", 6)
+
+    def _row(mark: str, label: str, email: str, credit: str, expires: str) -> str:
+        cells = [_pad_to(mark, 3), _pad_to(label, lw), _pad_to(email, ew), _pad_to(credit, cw)]
+        return " ".join([*cells, expires]).rstrip()
+
+    print(_row("", "LABEL", "EMAIL", "CREDIT", "EXPIRES"))
+    for row in rows:
+        print(_row(*row))
+    print()
+    if unreadable:
+        # `status --fresh` 로 보내면 안 된다 — 그것은 **활성 계정만** 조회하므로,
+        # 실패한 것이 비활성 슬롯이면 재시도가 그 슬롯에 닿지도 않는다.
+        print(f"could not read: {', '.join(unreadable)}. Try again, or: codex-swap list --fresh")
+    for note in disagree:
+        print(note)
+    for email, owners in sorted(seen_emails.items()):
+        if len(owners) > 1:
+            print(
+                f"note: {', '.join(owners)} hold the same account ({email}). "
+                "Their credits are the same credits, counted once"
+            )
+    print("A credit resets that account's usage window. Spending one cannot be undone.")
+    return 0
+
+
+def cmd_credits_json(settings: config.Settings) -> int:
+    """`credits` 의 기계용 판. **이 모양이 계약이다.**
+
+    `id` 를 싣는 것은 나중에 쿠폰을 지목해 쓰기 위해서다. 다만 이 출력은 **그 순간의
+    조회 결과**이지 저장된 값이 아니다 — 쿠폰을 쓸 때는 다시 조회해야 한다.
+    """
+    active = store.active_label(settings)
+    accounts = []
+    # 슬롯이 하나도 없으면 프로브할 것도 없다. 그런데 `_probe_credits` 는 먼저 codex 를
+    # 찾으므로, 빈 목록을 물었을 뿐인데 바이너리가 없다고 실패했다 — 사람용 판은 안내 한
+    # 줄을 내고 0 으로 끝나는데 기계용 판만 그랬다.
+    found = _probe_credits(settings) if store.labels(settings) else []
+    for label, email, usage in found:
+        accounts.append(
+            {
+                "label": label,
+                "email": email if email != "?" else None,
+                "active": label == active,
+                "availableCount": None if usage is None else usage.reset_credits,
+                "readable": usage is not None,
+                "credits": []
+                if usage is None
+                else [
+                    {
+                        "id": c.id,
+                        "status": c.status,
+                        "title": c.title,
+                        "grantedAt": c.granted_at,
+                        "expiresAt": c.expires_at,
+                    }
+                    for c in usage.credits
+                ],
+            }
+        )
+    print(json.dumps({"active": active, "accounts": accounts}, indent=2))
+    return 0
 
 
 def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
@@ -783,6 +986,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="store_true", help="probe every slot before printing")
     p.add_argument("--json", action="store_true", help="machine-readable output")
 
+    p = sub.add_parser("credits", help="usage-reset credits per account, with expiry")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+
     p = sub.add_parser("status", help="active account and its usage")
     p.add_argument("--fresh", action="store_true", help="ignore the cache and probe now")
     p.add_argument("--json", action="store_true", help="machine-readable output")
@@ -855,6 +1061,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         refresh_all(settings)
                     return cmd_list_json(settings)
                 return cmd_list(settings, fresh=args.fresh)
+            case "credits":
+                return cmd_credits_json(settings) if args.json else cmd_credits(settings)
             case "status":
                 return cmd_status(settings, fresh=args.fresh, as_json=args.json)
             case "use" | "switch":

@@ -12,6 +12,29 @@ from enum import Enum
 
 
 @dataclass(frozen=True)
+class Credit:
+    """사용량 리셋 쿠폰 하나.
+
+    `account/rateLimits/read` 의 `rateLimitResetCredits.credits[]` 다. 지금까지는 이
+    목록에서 `availableCount` 하나만 꺼내 쓰고 나머지를 버렸다. 그래서 화면은 "2 개 있다"
+    까지만 말하고 **언제까지인지**는 말하지 못했다 — 쿠폰은 만료되는 자원이라 그 한 줄이
+    쓸지 말지를 가른다.
+
+    `id` 를 캐시에 남기지 않는 것은 의도다. 쿠폰을 쓰는 것은 되돌릴 수 없는 동작이라,
+    그때는 낡은 식별자가 아니라 **그 순간 조회한 것**을 써야 한다. 캐시에 두면 그 규율이
+    코드가 아니라 습관에 걸린다.
+    """
+
+    id: str
+    status: str | None = None
+    """`available` · `redeeming` 등. 서버가 정하는 문자열이라 열거형으로 좁히지 않는다."""
+
+    granted_at: int | None = None
+    expires_at: int | None = None
+    title: str | None = None
+
+
+@dataclass(frozen=True)
 class Usage:
     """한 계정의 사용량. bash 프로브가 뱉던 한 줄 JSON 과 같은 내용이다."""
 
@@ -35,6 +58,15 @@ class Usage:
     쓰지 않는다 — 쿠폰을 쓰는 것은 사람의 결정이고, 자동 전환이 대신 판단할 일이 아니다.
     표시만 한다. 소진된 계정에 쿠폰이 남아 있으면 전환하는 대신 그것을 쓰는 선택지가
     생기는데, 지금까지는 화면에 그 정보가 없어서 그 선택 자체가 보이지 않았다.
+    """
+
+    credits: tuple[Credit, ...] = ()
+    """쿠폰 하나하나의 상세. `reset_credits` 는 그중 쓸 수 있는 것의 개수다.
+
+    **캐시에 싣지 않는다.** `resetCredits` 하나를 캐시에 넣는 데도 쓰는 곳이 여섯 군데고,
+    한 곳이 빠뜨려서 캐시 히트일 때만 크레딧이 사라진 적이 있다. 키를 하나 더 얹으면 그
+    자리가 여섯 개 더 생긴다. 상세가 필요한 화면은 `credits` 하나뿐이고 그것은 사용자가
+    직접 친 명령이라, 그때 프로브하면 된다.
     """
 
     reached: bool = False
