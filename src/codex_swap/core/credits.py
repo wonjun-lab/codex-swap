@@ -20,10 +20,7 @@ from pathlib import Path
 from codex_swap.core import config, discovery, identity, probe, store
 from codex_swap.core.types import Credit, ProbeOutcome, Usage
 
-
-SPENT_NOTHING = frozenset(
-    {probe.CreditOutcome.NOTHING_TO_RESET, probe.CreditOutcome.NO_CREDIT}
-)
+SPENT_NOTHING = frozenset({probe.CreditOutcome.NOTHING_TO_RESET, probe.CreditOutcome.NO_CREDIT})
 """**아무것도 쓰이지 않았고 사용량도 그대로**인 결과들.
 
 캐시를 비울지 가르는 데 쓴다. 이 둘은 사용량 창을 건드리지 않았으므로 캐시에 있는 숫자가
@@ -34,6 +31,20 @@ SPENT_NOTHING = frozenset(
 
 `cli` 와 `tui` 가 각자 이 목록을 적으면 갈린다. 한쪽만 `NO_CREDIT` 을 빠뜨리는 식으로.
 """
+
+
+def said_yes(answer: str | None) -> bool:
+    """되돌릴 수 없는 일을 해도 좋다는 대답인가.
+
+    **두 표면이 같은 어휘를 쓰게 하려고** 여기 둔다. 한동안 화면만 라벨을 그대로 치게
+    했는데(`Type shared to spend:`), 되돌릴 수 없으니 더 세게 막자는 뜻이었다. 실제로는
+    무엇을 치라는 것인지부터 애매했고 — 계정 이름? `use`? 쿠폰 이름? — 파이프에서는 `y`
+    면 되는 일이 화면에서만 달랐다.
+
+    답을 못 받은 것(`None`)은 **거절이다.** 프롬프트가 끊기거나 사용자가 빠져나온 자리라,
+    침묵을 승낙으로 읽으면 아무도 승인하지 않은 소비가 일어난다.
+    """
+    return answer is not None and answer.strip().lower() in {"y", "yes"}
 
 
 class CreditError(Exception):

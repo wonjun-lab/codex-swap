@@ -24,6 +24,7 @@ import pytest
 
 from codex_swap import cli, tui
 from codex_swap.core import config, store
+from codex_swap.core import credits as credits_core
 
 KNOWN_ASYMMETRY = {
     "rotate": "훅이 부르는 명령이다. 사람이 화면에서 누를 일이 없다",
@@ -197,20 +198,48 @@ def _usage_with(*credits: tui.Credit):
     )
 
 
-@pytest.mark.parametrize("typed", [None, "", "y", "yes", "maste", "MASTER", " master x"])
-def test_the_screen_spends_nothing_unless_the_label_is_typed(screen, typed: str | None) -> None:
-    """`y` 로는 안 된다. 화면에는 `--yes` 같은 다른 관문이 없어서, 이 입력이 유일한 문턱이다."""
+@pytest.mark.parametrize("typed", [None, "", "n", "no", "master", "ye", "yolo"])
+def test_the_screen_spends_nothing_without_a_yes(screen, typed: str | None) -> None:
+    """무응답·거절·**옛 어휘**(라벨) 어느 것도 소비로 읽히면 안 된다."""
     view, spent = screen
     after = tui.apply_spend(view, typed)
     assert spent == [], typed
     assert "Left it alone" in after.message, after.message
 
 
-def test_typing_the_label_spends(screen) -> None:
+@pytest.mark.parametrize("typed", ["y", "yes", "Y", "YES", " y "])
+def test_a_yes_spends(screen, typed: str) -> None:
     view, spent = screen
-    after = tui.apply_spend(view, "master")
-    assert spent == ["soon"]
+    after = tui.apply_spend(view, typed)
+    assert spent == ["soon"], typed
     assert "spent" in after.message, after.message
+
+
+@pytest.mark.parametrize(
+    ("answer", "ok"),
+    [
+        ("y", True),
+        ("yes", True),
+        ("Y", True),
+        (" yes ", True),
+        (None, False),  # 프롬프트가 끊겼다. 침묵은 승낙이 아니다
+        ("", False),
+        ("n", False),
+        ("master", False),  # 옛 어휘
+        ("ye", False),
+    ],
+)
+def test_both_surfaces_take_the_same_word_for_yes(answer: str | None, ok: bool) -> None:
+    """**같은 동작을 두 표면이 같은 어휘로 물어야 한다.**
+
+    화면만 라벨을 그대로 치게 하던 때가 있었다(`Type shared to spend:`). 되돌릴 수 없으니 더
+    세게 막자는 뜻이었는데, 무엇을 치라는 것인지부터 애매했고 — 계정 이름? `use`? 쿠폰
+    이름? — 파이프에서는 `y` 면 되는 일이 화면에서만 달랐다.
+
+    판정을 `core` 에 두면 갈릴 자리가 없어진다. 두 표면이 각자 적으면 한쪽만 `YES` 를
+    받거나 한쪽만 `None` 을 승낙으로 읽는 식으로 어긋난다.
+    """
+    assert credits_core.said_yes(answer) is ok
 
 
 def test_the_screen_will_not_offer_a_credit_that_is_not_available(_isolated_home: Path) -> None:
@@ -223,16 +252,21 @@ def test_the_screen_will_not_offer_a_credit_that_is_not_available(_isolated_home
     accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(BUSY)),)
     view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
     assert tui.spend_prompt(view) is None
-    assert "usable reset" in tui.apply_spend(view, "master").message
+    assert "usable reset" in tui.apply_spend(view, "y").message
 
 
-def test_the_prompt_asks_for_the_label_not_a_keypress(screen) -> None:
+def test_the_prompt_names_the_account_and_asks_a_yes_or_no(screen) -> None:
+    """**무엇을 쓰는지**와 **무엇을 치면 되는지**가 한 줄에 다 있어야 한다.
+
+    `Type shared to spend:` 는 둘 다 흐렸다 — 치라는 것이 계정 이름인지 `use` 인지 알 수
+    없었고, 그 이름이 쓰이는 대상인지 확인 문구인지도 겹쳐 읽혔다.
+    """
     view, _ = screen
     asked = tui.spend_prompt(view)
     assert asked is not None
-    prompt, expected = asked
-    assert expected == "master"
-    assert "master" in prompt
+    assert "master" in asked  # 어느 계정의 리셋인지
+    assert "[y/N]" in asked  # 무엇을 누르면 되는지
+    assert "Type" not in asked
 
 
 @pytest.mark.parametrize(
@@ -261,7 +295,7 @@ def test_the_screen_clears_the_stale_usage_exactly_when_the_cli_does(
     )
     accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
     view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
-    tui.apply_spend(view, "master")
+    tui.apply_spend(view, "y")
     assert (cache.read_stale(s, "master") is None) is cleared
 
 
@@ -280,7 +314,7 @@ def test_the_screen_reports_a_refusal_from_core_instead_of_claiming_success(
     monkeypatch.setattr(credits_core, "spend", refuse)
     accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
     view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
-    after = tui.apply_spend(view, "master")
+    after = tui.apply_spend(view, "y")
     assert "Nothing was spent" in after.message, after.message
 
 

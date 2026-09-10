@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
+import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -555,7 +558,63 @@ def test_consume_sends_the_credit_id_the_caller_named(monkeypatch: pytest.Monkey
     probe._consume(None, "cred_abc", 1.0)
     method, params = next(x for x in conn.sent if str(x[0]).endswith("/consume"))
     assert method == "account/rateLimitResetCredit/consume"
-    assert params == {"creditId": "cred_abc"}
+    assert params["creditId"] == "cred_abc"
+
+
+def test_consume_sends_an_idempotency_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """서버가 **필수**로 요구한다. 빠뜨려서 리셋을 아예 못 쓴 적이 있다.
+
+    그때 이 자리를 지키던 테스트는 `params == {"creditId": ...}` 를 기대했다. 필드가 하나도
+    없는 것이 정답이라고 못박아 둔 셈이라, 서버가 요구하는 것을 안 보내는 상태를 **통과**
+    시켰다. 페이로드 검사는 "우리가 보내는 것" 이 아니라 "받는 쪽이 요구하는 것" 을 기준으로
+    적어야 한다.
+    """
+    conn = _reply(monkeypatch, {"result": {"outcome": "reset"}})
+    probe._consume(None, "cred_abc", 1.0)
+    _, params = next(x for x in conn.sent if str(x[0]).endswith("/consume"))
+    assert set(params) == {"creditId", "idempotencyKey"}
+    # 스키마가 UUID 를 권한다. 형식이 깨지면 서버가 다시 `Invalid request` 로 돌려보낸다.
+    assert uuid.UUID(params["idempotencyKey"])
+
+
+def test_the_same_credit_keeps_the_same_attempt_key() -> None:
+    """`UNKNOWN` 뒤의 재시도가 **쿠폰을 하나 더 태우지 않게** 하는 것이 이 키의 전부다.
+
+    요청은 나갔는데 결과를 못 읽은 자리라 실제로는 이미 쓰였을 수 있다. 매번 새 키를 만들면
+    서버는 그것을 별개의 시도로 보고 두 번째를 태운다.
+    """
+    assert probe.attempt_key("cred_abc") == probe.attempt_key("cred_abc")
+
+
+def test_a_different_credit_gets_a_different_attempt_key() -> None:
+    """반대쪽 실패도 막아야 한다. 키가 고정되면 **다른 쿠폰**을 쓰려는 것까지 접힌다."""
+    assert probe.attempt_key("cred_abc") != probe.attempt_key("cred_xyz")
+
+
+def test_the_attempt_key_survives_a_restart() -> None:
+    """프로세스가 죽었다 살아나도, `cli` 와 `tui` 사이에서도 같아야 한다.
+
+    난수를 기억해 두는 방식이었다면 이 성질이 저장 위치와 그 파일의 수명에 달렸을 것이다.
+    쿠폰 id 에서 유도하면 아무 상태 없이 나온다 — 별도 프로세스에서 같은 값이 나온다는 것이
+    그 증거다.
+    """
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from codex_swap.core import probe; print(probe.attempt_key('cred_abc'))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.strip() == probe.attempt_key("cred_abc")
+
+
+def test_consume_refuses_an_empty_credit_before_naming_an_attempt() -> None:
+    """빈 id 로는 키도 만들 수 없다. 서버는 `creditId` 가 없으면 **아무거나 고른다.**"""
+    with pytest.raises(probe.ProbeError):
+        probe.attempt_key("")
 
 
 def test_consume_greets_the_server_before_asking(monkeypatch: pytest.MonkeyPatch) -> None:

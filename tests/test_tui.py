@@ -1122,7 +1122,7 @@ def test_the_span_offsets_are_character_indices_not_columns(env) -> None:
 def test_the_account_screen_carries_the_key_spans(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter open" in text)
+    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter select" in text)
     assert keys.spans and keys.tone == "dim"
 
 
@@ -1320,12 +1320,23 @@ def test_enter_on_a_menu_item_goes_in(env) -> None:
     assert after.mode == "policy"
 
 
-def test_enter_on_an_account_does_not_switch_but_says_what_does(env) -> None:
-    """전환은 `s` 다. 조용히 아무 일도 안 하면 사용자는 키가 죽은 줄 안다."""
-    before = _view(env, cursor=1)
-    after = tui.activate(before)
+def test_enter_on_an_account_takes_the_same_path_as_s(env) -> None:
+    """**커서가 놓인 줄이 말하는 일을 한다.**
+
+    한동안 여기서만 아무 일도 안 하고 "`s` 를 누르라" 고 안내했다. `enter` 를 "들어간다"
+    하나로 두려던 것인데, 그 규칙이 이 화면에서만 깨져 보였다 — 메뉴 줄에서는 `enter` 가
+    정책을 열고 자동 전환을 토글하는데 계정 줄에서만 죽은 키였다.
+
+    두 키가 **같은 함수**를 지나는지를 잰다. 갈라 두면 한쪽에만 가드가 붙는다 — 이 프로젝트가
+    반복해서 겪은 결함이 정확히 그 모양이다. 실제로 전환이 일어나는 것은 pty 테스트
+    (`test_enter_switches_to_the_account_under_the_cursor`) 가 진짜 키를 눌러 확인한다.
+    """
+    view = _view(env, cursor=1)
+    assert tui.selected_row(view) is not None, "전제가 깨졌다 — 커서가 계정 위가 아니다"
+    after = tui.activate(view)
     assert after.mode == "accounts"
-    assert "s" in after.message and "switch" in after.message.lower(), after.message
+    assert after.message == tui.do_switch(view).message
+    assert "press s" not in after.message.lower(), after.message
 
 
 def test_s_still_switches(env) -> None:
@@ -1345,7 +1356,7 @@ def test_s_on_a_menu_row_is_refused_gently(env) -> None:
 def test_the_key_line_teaches_the_new_layout(env) -> None:
     text, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=140)
     assert "s switch" in text, text
-    assert "enter open" in text, text
+    assert "enter select" in text, text
 
 
 # ── 방향키는 방향키로 보여야 한다 ──────────────────────────────────────────

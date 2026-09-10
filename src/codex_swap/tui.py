@@ -178,7 +178,9 @@ MENU: tuple[tuple[str, str], ...] = (
 
 
 ACCOUNT_KEYS = (
-    ("enter", "open"),
+    # `open` 이었다. 계정 줄에서는 전환이고 메뉴 줄에서는 화면을 여는데, 그중 하나만
+    # 적어 두면 나머지 자리에서 `enter` 가 무슨 키인지 알 수 없다.
+    ("enter", "select"),
     ("s", "switch"),
     ("r", "usage"),
     ("a", "adopt"),
@@ -1794,7 +1796,7 @@ def apply_spend(view: View, typed: str | None) -> View:
     if asked is None or picked is None:
         return replace(view, message="Move to a usable reset first")
     account, credit = picked
-    if typed is None or typed.strip().lower() not in {"y", "yes"}:
+    if not credits_core.said_yes(typed):
         return replace(view, message="Left it alone")
     assert credit is not None
 

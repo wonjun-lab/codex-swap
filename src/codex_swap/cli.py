@@ -618,10 +618,10 @@ def cmd_credits_use(
         print(f"About to spend: {headline}")
         print("This cannot be undone.")
         try:
-            answer = input("Type y to continue: ")
+            answer: str | None = input("Type y to continue: ")
         except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
+            answer = None
+        if not credits_core.said_yes(answer):
             print("Left it alone.")
             return 1
 
@@ -1146,10 +1146,10 @@ def cmd_remove(settings: config.Settings, label: str, *, assume_yes: bool = Fals
         who = identity.email_of(store.slot_auth(settings, label)) or "email unknown"
         print(f"About to delete slot '{label}' ({who}). This cannot be undone.")
         try:
-            answer = input("Type y to continue: ")
+            answer: str | None = input("Type y to continue: ")
         except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
+            answer = None
+        if not credits_core.said_yes(answer):
             print("Left it alone.")
             return 1
 
