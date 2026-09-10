@@ -11,6 +11,7 @@ bash `codex_account_switch` 의 마지막 append 한 줄을 옮긴 것이다. �
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
 from codex_swap.core import paths
@@ -98,3 +99,35 @@ def append(
     except OSError:
         return False
     return True
+
+
+def last_switch(settings: Settings) -> str | None:
+    """원장이 기억하는 **마지막으로 걸어 둔 라벨**. 기록이 없으면 None.
+
+    이것과 지금 활성이 어긋나면 누군가 우리를 거치지 않고 자격증명을 바꾼 것이다. 실제로
+    그런 환경이 있다 — ChatGPT 데스크톱 앱이 자기 codex 를 `CODEX_HOME=~/.codex` 로 띄워
+    두고 같은 `auth.json` 을 쓴다. 그쪽이 자기 세션으로 파일을 되돌려 놓으면 우리 원장에는
+    `A -> B` 만 남고 `B -> A` 는 남지 않아, 출발점이 계속 A 인 이상한 이력이 된다.
+
+    **마지막 줄만 읽는다.** 원장은 계속 자라는 파일이고 여기서 필요한 것은 한 줄뿐이라,
+    통째로 읽으면 오래 쓴 기기에서 이 검사 하나가 가장 비싼 일이 된다.
+    """
+    try:
+        with paths.log_path(settings).open("rb") as fh:
+            try:
+                fh.seek(-4096, os.SEEK_END)
+            except OSError:
+                fh.seek(0)  # 4KB 보다 짧은 파일
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+
+    for line in reversed(tail.splitlines()):
+        # `시각 \t 출발 -> 도착 \t 사유`
+        parts = line.split("\t")
+        if len(parts) < 2 or "->" not in parts[1]:
+            continue
+        arrived = parts[1].split("->", 1)[1].strip()
+        if arrived and arrived != UNKNOWN_LABEL:
+            return arrived
+    return None

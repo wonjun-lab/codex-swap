@@ -27,7 +27,18 @@ import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from codex_swap.core import cache, config, identity, paths, policy, policy_edit, probe, store
+from codex_swap.core import (
+    cache,
+    config,
+    doctor,
+    identity,
+    paths,
+    policy,
+    policy_edit,
+    probe,
+    store,
+    theme,
+)
 from codex_swap.core import credits as credits_core
 from codex_swap.core.discovery import resolve_codex_bin
 from codex_swap.core.types import Credit, ProbeOutcome
@@ -72,7 +83,10 @@ class View:
     settings: config.Settings
     message: str = ""
     mode: str = "accounts"
-    """accounts | policy"""
+    """accounts | policy | credits | doctor"""
+
+    findings: tuple[doctor.Finding, ...] | None = None
+    """점검 결과. `None` 은 **아직 안 읽었다**이지 "문제 없다" 가 아니다."""
 
     policy_cursor: int = 0
 
@@ -176,6 +190,8 @@ MENU: tuple[tuple[str, str], ...] = (
     ("credits", "Usage resets"),
     ("adopt", "Adopt the account in use"),
     ("auto", "Automatic switching"),
+    ("doctor", "Check accounts"),
+    ("update", "Update codex-swap"),
     ("quit", "Quit"),
 )
 """커서로 내려가 `enter` 로 들어가는 항목들.
@@ -185,6 +201,13 @@ MENU: tuple[tuple[str, str], ...] = (
 
 `(동작 이름, 표시 문자열)` 이다. 동작을 문자열로 두는 것은 `_loop` 이 키 처리와 같은
 분기로 흘려보내기 위해서다 — 같은 일을 두 벌로 구현하면 한쪽만 고쳐지는 날이 온다.
+"""
+
+
+_UPDATE_ASK = "  Leave the screen and update codex-swap? [y/N] "
+"""갱신은 화면을 닫고 나가야 하므로, **나간다는 것**을 먼저 말한다.
+
+묻지 않고 닫으면 메뉴를 잘못 고른 사람이 이유도 모른 채 화면 밖으로 튕겨 나간다.
 """
 
 
@@ -517,6 +540,7 @@ class Style:
 
 _PLAIN = Style()
 _DIM = Style("dim")
+_WARN = Style("warn")
 
 _KEY_STYLE = Style("accent", bold=True)
 """단축키 글자에 입힐 속성. **설명이 아니라 키에만** 붙는다.
@@ -922,6 +946,8 @@ def render_screen(
         return _render_policy(view, height=height, width=width)
     if view.mode == "credits":
         return _render_credits(view, height=height, width=width)
+    if view.mode == "doctor":
+        return _render_doctor(view, height=height, width=width)
 
     s = view.settings
     # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
@@ -1179,6 +1205,58 @@ def _credit_note(account: credits_core.Account, credit: Credit | None) -> str:
     if not account.readable:
         return "?"
     return "-" if account.count is None else str(account.count)
+
+
+DOCTOR_KEYS = (("r", "recheck"), ("esc", "back"), ("q", "quit"))
+
+
+def _render_doctor(
+    view: View, *, height: int | None = None, width: int | None = None
+) -> list[tuple[str, Style]]:
+    """점검 결과. **고치는 방법을 결과 바로 밑에 둔다.**
+
+    진단이 병명만 말하고 끝나면 사용자는 결국 검색을 해야 한다. 원인과 조치가 떨어져 있으면
+    둘을 잇는 일이 사용자 몫이 된다 — 그 이음이 이 화면의 존재 이유다.
+    """
+    out: list[tuple[str, Style]] = [("codex-swap · account check", _PLAIN), ("", _PLAIN)]
+
+    if view.findings is None:
+        out.append((_note("Checking each account…", width), _DIM))
+    elif not view.findings:
+        out.append((_note("No accounts yet.", width), _PLAIN))
+    else:
+        for f in view.findings:
+            mark = "ok" if f.ok else "!!"
+            out.append((_note(f"{mark}  {f.label}: {f.detail}", width), _PLAIN if f.ok else _WARN))
+            if f.fix:
+                # 조치는 한 줄에 다 안 들어간다. 잘라 버리면 정작 필요한 부분이 사라지므로
+                # 접어서 이어 놓는다.
+                for line in _wrap(f.fix, width):
+                    out.append((_note(f"      {line}", width), _DIM))
+        out.append(("", _PLAIN))
+        out.append((_note(doctor.summary(list(view.findings)), width), _PLAIN))
+
+    keys_text, keys_spans = keys_line(DOCTOR_KEYS, width=width)
+    out += [("", _PLAIN), (keys_text, Style("dim", spans=keys_spans))]
+    if view.message:
+        out.append((_note(view.message, width), _PLAIN))
+    return out
+
+
+def _wrap(text: str, width: int | None) -> list[str]:
+    """조치 문구를 화면 폭에 맞춰 접는다. 낱말 단위로만 자른다."""
+    room = max((width or 100) - 12, 20)
+    words, lines, line = text.split(), [], ""
+    for word in words:
+        candidate = f"{line} {word}".strip()
+        if _width(candidate) > room and line:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    return lines
 
 
 def _render_credits(
@@ -1652,22 +1730,15 @@ _TONE_COLORS = {"ok": 1, "warn": 2, "danger": 3, "accent": 4}
 """tone → color pair 번호. 0 은 curses 가 예약한 기본 쌍이라 1 부터 쓴다."""
 
 
-def _tone_fg() -> dict[str, int]:  # pragma: no cover - curses 상수
-    return {
-        "ok": curses.COLOR_GREEN,
-        "warn": curses.COLOR_YELLOW,
-        "danger": curses.COLOR_RED,
-        # 상태가 아니라 **조작**이라 상태 삼색과 겹치지 않는 색을 쓴다. 초록·노랑·빨강
-        # 중 하나를 쓰면 단축키가 계정 상태를 말하는 것처럼 읽힌다.
-        "accent": curses.COLOR_CYAN,
-    }
-
-
-def _init_colors() -> bool:  # pragma: no cover - 터미널 필요
+def _init_colors(want: str = theme.DARK) -> bool:  # pragma: no cover - 터미널 필요
     """색을 쓸 수 있으면 쌍을 등록하고 True.
 
     `use_default_colors` 로 배경을 -1 로 둔다. 검정으로 칠하면 밝은 테마 터미널에서
     글자만 남기고 배경이 뒤집혀 읽기 어려워진다.
+
+    **전경은 테마를 탄다.** 배경을 건드리지 않는 것만으로는 부족했다 — 기본 8 색의 노랑은
+    흰 바탕에서 거의 사라지고 시안도 옅어서, 밝은 테마를 쓰는 사람에게는 경고가 경고로
+    안 보였다. 어두운 바탕에 맞춘 색을 그대로 쓴 탓이다.
     """
     if not curses.has_colors():
         return False
@@ -1682,8 +1753,10 @@ def _init_colors() -> bool:  # pragma: no cover - 터미널 필요
             # 배경 -1 은 `use_default_colors` 가 성립해야 유효하다. 실패했으면 검정으로
             # 내린다 — 색을 통째로 포기하는 것보다 낫다.
             background = curses.COLOR_BLACK
+        colors = getattr(curses, "COLORS", 8)
+        fg = theme.palette(want, colors)
         for tone, pair in _TONE_COLORS.items():
-            curses.init_pair(pair, _tone_fg()[tone], background)
+            curses.init_pair(pair, fg[tone], background)
         return True
     return False
 
@@ -1999,6 +2072,45 @@ class _CreditsLoader:
             self._queue.put((None, f"Could not read usage resets: {exc}"))
 
 
+class _DoctorLoader:
+    """계정 점검을 별도 스레드에서 돌린다. `_CreditsLoader` 와 같은 이유, 같은 모양이다.
+
+    슬롯마다 실제 조회가 나가므로 동기로 돌리면 그 시간만큼 화면이 키를 안 받는다.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[tuple[tuple[doctor.Finding, ...] | None, str]] = queue.Queue()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._thread is not None
+
+    def start(self, settings: config.Settings) -> bool:
+        if self._thread is not None:
+            return False
+        self._thread = threading.Thread(target=self._run, args=(settings,), daemon=True)
+        self._thread.start()
+        return True
+
+    def take(self) -> tuple[tuple[doctor.Finding, ...] | None, str] | None:
+        try:
+            got = self._queue.get_nowait()
+        except queue.Empty:
+            return None
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        return got
+
+    def _run(self, settings: config.Settings) -> None:
+        # 무엇이 됐든 하나는 넣어야 화면이 "Checking…" 에 영원히 굳지 않는다.
+        try:
+            self._queue.put((tuple(doctor.run(settings)), ""))
+        except Exception as exc:  # pragma: no cover - 방어
+            self._queue.put((None, f"Could not check the accounts: {exc}"))
+
+
 class _Prober:
     """사용량 조회를 별도 스레드에서 돌린다.
 
@@ -2124,7 +2236,9 @@ def probing_note(view: View, labels: Sequence[str]) -> View:
     return replace(view, message=f"{view.message}   {note}" if view.message else note)
 
 
-def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터미널 필요
+def _loop(
+    stdscr, settings: config.Settings, want: str = theme.DARK
+) -> str | None:  # pragma: no cover - 터미널 필요
     # 커서 숨기기는 terminfo 에 `civis` 가 없는 터미널에서 실패한다. 화면을 못 여는
     # 이유로는 사소하므로 삼킨다.
     with contextlib.suppress(curses.error):
@@ -2132,7 +2246,14 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     # 기본 ESCDELAY 는 1 초라 esc 를 누르면 화면이 멈춘 것처럼 보인다.
     if hasattr(curses, "set_escdelay"):
         curses.set_escdelay(25)
-    colored = _init_colors()
+    colored = _init_colors(want)
+
+    # **화면을 열기 전에 버퍼를 비운다.** 배경색 질의(OSC 11)의 응답이 우리 타임아웃보다
+    # 늦게 오면 그 바이트가 stdin 에 남고, curses 가 그것을 **첫 키 입력**으로 읽는다.
+    # 응답은 `\033]...` 이라 esc 를 누른 것처럼, 혹은 알 수 없는 키 시퀀스로 해석된다.
+    # 0.12 초는 로컬에서는 넉넉하지만 ssh 왕복에는 짧다 — 하필 원격에서 화면이 이상하게
+    # 열리는 셈이라, 이 한 줄이 없으면 감지 기능이 제 발등을 찍는다.
+    curses.flushinp()
 
     # 조회가 도는 동안에도 키를 읽어야 하므로 getch 를 논블로킹으로 만든다. 이 값이
     # 곧 조회 결과가 화면에 반영되는 지연이고, 사람이 못 느끼는 범위에서 가장 크게 잡는다.
@@ -2143,6 +2264,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     attempted: set[str] = set()
     prober = _Prober()
     loader = _CreditsLoader()
+    checker = _DoctorLoader()
     view = build_view(settings)
 
     def kick(labels: Sequence[str]) -> None:
@@ -2153,6 +2275,14 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     kick(auto_probe_targets(view, attempted))
     errs = 0
     while True:
+        checked = checker.take()
+        if checked is not None:
+            findings, failed = checked
+            view = replace(
+                view,
+                findings=findings if findings is not None else (),
+                message=failed or view.message,
+            )
         got = loader.take()
         if got is not None:
             accounts, failed = got
@@ -2178,15 +2308,23 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             if time.monotonic() - started < _TICK_MS / 2000:
                 errs += 1
                 if errs > 50:
-                    return
+                    return None
             continue
         errs = 0
 
         # q 는 어느 화면에서든 종료다. 정책 화면에서만 안 먹으면, 계정 화면이 "q 종료"
         # 라고 광고해 놓고 한 단계 들어가면 배신하는 셈이 된다.
         if key in (ord("q"), ord("Q")):
-            return
+            return None
         if key == curses.KEY_RESIZE:
+            continue
+
+        if view.mode == "doctor":
+            if key == 27:  # esc — 계정 화면으로
+                view = build_view(settings, cursor=view.cursor, carry=_carry(view))
+            elif key in (ord("r"), ord("R")):
+                view = replace(view, findings=None, message="")
+                checker.start(settings)
             continue
 
         if view.mode == "credits":
@@ -2267,8 +2405,20 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
                 view = open_credits(view)
                 loader.start(settings)
                 continue
+            if action == "doctor":
+                view = replace(view, mode="doctor", findings=None, message="")
+                checker.start(settings)
+                continue
             if action == "quit":
-                return
+                return None
+            if action == "update":
+                # **여기서 실행하지 않는다.** 갈아치울 대상이 지금 돌고 있는 이 코드이고,
+                # 설치 도구가 쏟는 출력이 갈 자리는 화면이 쥐고 있다. 뜻만 들고 나간다.
+                if not credits_core.said_yes(_prompt(stdscr, _UPDATE_ASK, drawn)):
+                    view = replace(view, message="Left it alone")
+                    curses.flushinp()
+                    continue
+                return "update"
             if action == "refresh":
                 attempted.clear()
                 if not prober.start(settings, [r.label for r in view.rows]):
@@ -2302,9 +2452,26 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             )
 
 
+WANTS_UPDATE = 77
+"""`run` 이 이 값을 돌려주면 **화면을 닫고 갱신을 이어서** 하라는 뜻이다.
+
+curses 안에서 자기 자신을 갈아치울 수는 없다 — 설치 도구가 진행 상황을 쏟아내는데 그
+자리는 지금 화면이 쥐고 있고, 갈아치우는 대상이 바로 지금 돌고 있는 코드다. 그래서 화면은
+"하겠다" 는 뜻만 들고 나오고, 실행은 `cli` 가 터미널을 되찾은 뒤에 한다.
+
+값을 종료 코드로 흘려보내지 않는다 — `cli` 가 받아 챙기고, 사용자에게는 갱신의 결과가
+그대로 종료 코드가 된다.
+"""
+
+
 def run(settings: config.Settings) -> int:  # pragma: no cover - 터미널 필요
+    # **화면을 켜기 전에 묻는다.** curses 가 올라온 뒤에 물으면 터미널의 응답이 화면
+    # 한복판에 찍히고, 그것을 지우는 것은 그리기 순서와 싸우는 일이 된다.
+    want = theme.detect(background=theme.ask_background() if theme.chosen() is None else None)
     try:
-        curses.wrapper(_loop, settings)
+        outcome = curses.wrapper(_loop, settings, want)
+        if outcome == "update":
+            return WANTS_UPDATE
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
