@@ -32,8 +32,6 @@ KNOWN_ASYMMETRY = {
     "add": "브라우저 로그인을 띄운다. curses 를 벗어났다 돌아오는 경로가 따로 필요하다",
     "rename": "아직 없다. TUI 에 넣을 값어치는 있지만 이번 범위가 아니다",
     "remove": "아직 없다. 위와 같다",
-    "policy(cli)": "정책 편집이 TUI 에만 있다. CLI 사용자는 config.json 을 손으로 고쳐야 한다",
-    "auto(cli)": "자동 전환 토글이 TUI 에만 있다. README 가 파일을 직접 만들라고 안내한다",
 }
 """**적혀 있다고 괜찮다는 뜻은 아니다.** 아는 채로 두었다는 뜻이다."""
 
@@ -346,3 +344,21 @@ def test_core_goes_through_when_the_account_is_still_the_one_approved(
         is credits_core.probe.CreditOutcome.RESET
     )
     assert sent == ["went"]
+
+
+def test_the_screen_has_nothing_the_command_line_cannot_reach(_isolated_home: Path) -> None:
+    """**역방향도 본다.** 지금까지 TUI 에만 있던 것이 둘 있었다 — 정책 편집과 자동 전환.
+
+    그 둘은 화면을 못 쓰는 환경(ssh 파이프·스크립트)에서 아예 손댈 수 없었고, README 는
+    `touch ~/.claude/.codex-rotate-off` 라고 **내부 파일을 직접 만들라**고 안내했다.
+    """
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if getattr(a, "choices", None))
+    commands = set(sub.choices)
+    for action, title in tui.MENU:
+        if action == "quit":
+            continue  # 화면을 닫는 것이지 기능이 아니다
+        if action == "refresh":
+            assert "list" in commands, "화면의 새로고침에 대응하는 명령이 없다"
+            continue
+        assert action in commands, f"화면에만 있는 기능: {title}"

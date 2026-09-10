@@ -27,7 +27,7 @@ import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from codex_swap.core import cache, config, identity, paths, policy, probe, store
+from codex_swap.core import cache, config, identity, paths, policy, policy_edit, probe, store
 from codex_swap.core import credits as credits_core
 from codex_swap.core.discovery import resolve_codex_bin
 from codex_swap.core.types import Credit, ProbeOutcome
@@ -1426,19 +1426,13 @@ def activate(view: View) -> View:
 
 def do_toggle_auto(view: View) -> View:
     """자동 전환 on/off. off-switch 파일 하나가 그 스위치다 — bash 와 같은 파일이다."""
-    sw = view.settings.off_switch
     picked = selected_row(view)
     select = picked.label if picked is not None else None
     try:
-        if sw.exists():
-            sw.unlink()
-            msg = "Automatic switching on"
-        else:
-            sw.parent.mkdir(parents=True, exist_ok=True)
-            sw.touch()
-            msg = "Automatic switching off"
+        now_on = policy_edit.set_auto(view.settings, not policy_edit.auto_on(view.settings))
     except OSError as exc:
         return replace(view, message=f"Could not toggle the switch: {exc}")
+    msg = f"Automatic switching {'on' if now_on else 'off'}"
     return build_view(view.settings, select=select, message=msg, carry=_carry(view))
 
 
@@ -1533,10 +1527,11 @@ def leave_policy(view: View) -> View:
 
 
 def save_policy(view: View) -> View:
+    """정책을 저장한다. 판단은 `core.policy_edit` 에 있다 — CLI 와 같은 함수를 지난다."""
     s = view.settings
     try:
-        path = config.save_policy(
-            s.accounts_dir,
+        saved = policy_edit.save(
+            s,
             ladder=list(s.ladder),
             margin=s.margin,
             cooldown=s.cooldown,
@@ -1546,13 +1541,11 @@ def save_policy(view: View) -> View:
     except OSError as exc:
         return replace(view, message=f"Save failed: {exc}")
 
-    # 환경변수가 파일을 이긴다(설계상). 저장했는데 안 먹는 값이 있으면 말해 준다 —
-    # 아무 말 없이 "저장했다" 만 띄우면 사용자는 반영된 줄 안다.
-    fresh = config.load()
-    shadowed = [title for key, title, _ in POLICY_FIELDS if getattr(fresh, key) != getattr(s, key)]
-    msg = f"Saved: {path}"
-    if shadowed:
-        msg += f" (environment variables win: {', '.join(shadowed)})"
+    msg = f"Saved: {saved.path}"
+    if saved.shadowed:
+        # 저장했는데 안 먹는 값이 있으면 말해 준다 — 아무 말 없이 "저장했다" 만 띄우면
+        # 사용자는 반영된 줄 알고 같은 값을 다시 넣는다.
+        msg += f" (environment variables win: {', '.join(saved.shadowed)})"
     return replace(view, saved_settings=s, message=msg)
 
 
