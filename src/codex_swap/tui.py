@@ -1529,23 +1529,33 @@ def leave_policy(view: View) -> View:
 def save_policy(view: View) -> View:
     """정책을 저장한다. 판단은 `core.policy_edit` 에 있다 — CLI 와 같은 함수를 지난다."""
     s = view.settings
+    # **바꾼 노브만 저장한다.** 다섯을 통째로 넘기면, 화면을 열어 둔 사이에 CLI 나 다른
+    # 창이 고친 값을 이 저장이 **되돌린다** — 그쪽을 건드린 적도 없는데. 게다가 환경변수로
+    # 읽어 온 값(파일에는 없던 값)까지 파일에 영구히 박힌다.
+    #
+    # 기준은 화면을 열 때의 값이다. `saved_settings` 가 없으면(있을 수 없는 경로지만)
+    # 예전처럼 전부 넘긴다 — 저장이 아예 안 되는 것보다 낫다.
+    base = view.saved_settings
+    changes: dict[str, object] = {}
+    for key, _, _ in POLICY_FIELDS:
+        value = list(s.ladder) if key == "ladder" else getattr(s, key)
+        if base is None or value != (list(base.ladder) if key == "ladder" else getattr(base, key)):
+            changes[key] = value
+    if not changes:
+        return replace(view, saved_settings=s, message="Nothing to save")
     try:
-        saved = policy_edit.save(
-            s,
-            ladder=list(s.ladder),
-            margin=s.margin,
-            cooldown=s.cooldown,
-            cache_ttl=s.cache_ttl,
-            check_interval=s.check_interval,
-        )
+        saved = policy_edit.save(s, **changes)
+    except policy_edit.CreditsFileError as exc:
+        return replace(view, message=str(exc))
     except OSError as exc:
         return replace(view, message=f"Save failed: {exc}")
 
     msg = f"Saved: {saved.path}"
     if saved.shadowed:
         # 저장했는데 안 먹는 값이 있으면 말해 준다 — 아무 말 없이 "저장했다" 만 띄우면
-        # 사용자는 반영된 줄 알고 같은 값을 다시 넣는다.
-        msg += f" (environment variables win: {', '.join(saved.shadowed)})"
+        # 사용자는 반영된 줄 알고 같은 값을 다시 넣는다. 원인은 대개 환경변수지만
+        # 단정하지 않는다.
+        msg += f" (not in effect: {', '.join(saved.shadowed)})"
     return replace(view, saved_settings=s, message=msg)
 
 

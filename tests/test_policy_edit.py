@@ -59,7 +59,7 @@ def test_the_cli_says_it_out_loud_and_fails(
 ) -> None:
     """rc 0 으로 끝내면 스크립트가 성공으로 읽는다."""
     monkeypatch.setenv("CODEX_ROTATE_LADDER", "11,22")
-    with pytest.raises(cli.CliError, match="environment variables win"):
+    with pytest.raises(cli.CliError, match="not in effect"):
         cli.cmd_policy(env, {"ladder": [50, 70]})
     assert "saved:" in capsys.readouterr().out, "파일에 들어간 사실은 말해야 한다"
 
@@ -191,3 +191,115 @@ def test_the_tui_and_the_cli_write_through_the_same_function(
     cli.cmd_policy(env, {"margin": 7})
     tui.save_policy(tui.build_view(config.load()))
     assert len(calls) == 2, calls
+
+
+# ── codex 교차 검토가 잡은 것들 ─────────────────────────────────────────────
+
+
+def test_both_surfaces_normalise_the_ladder_the_same_way(env: config.Settings) -> None:
+    """정렬을 한쪽만 하면 **같은 사다리가 다른 관문**을 낸다.
+
+    정책은 첫 상회 항목을 관문으로 고른다. `90,50,70` 을 그대로 두면 후보 40% 에서 관문이
+    90 인데, 정렬하면 50 이다 — 표시가 아니라 **판단**이 갈린다. codex 가 잡았다.
+    """
+    policy_edit.save(env, ladder=[90, 50, 70])
+    assert config.load().ladder == (50, 70, 90)
+
+    view = tui.replace(tui.build_view(config.load()), mode="policy", policy_cursor=0)
+    typed = tui.edit_policy(view, "90,50,70")
+    assert typed.settings.ladder == (50, 70, 90), "두 표면이 다르게 정규화한다"
+
+
+def test_a_repeated_rung_is_stored_once(env: config.Settings) -> None:
+    policy_edit.save(env, ladder=[70, 50, 70, 50])
+    assert config.load().ladder == (50, 70)
+
+
+def test_saving_onto_a_file_we_cannot_read_is_refused(env: config.Settings) -> None:
+    """깨진 파일을 `{}` 로 접고 그 위에 병합하면 **거기 있던 키가 통째로 사라진다.**
+
+    그러고 나면 정상 JSON 이라 경고할 기회도 없다. 읽기 경로의 침묵(rotate 핫패스를 위한
+    옳은 선택)을 편집 경로까지 가져온 결과였다 — codex 가 잡았다.
+    """
+    path = env.accounts_dir / config.CONFIG_NAME
+    path.write_text('{"margin": 9, "busy_window": 77,}')  # 마지막 쉼표 하나
+    with pytest.raises(policy_edit.CreditsFileError, match="cannot be read"):
+        policy_edit.save(env, cooldown=1200)
+    assert path.read_text() == '{"margin": 9, "busy_window": 77,}', "파일이 바뀌었다"
+
+
+def test_the_cli_turns_that_into_a_message_not_a_traceback(env: config.Settings) -> None:
+    (env.accounts_dir / config.CONFIG_NAME).write_text("{ broken")
+    assert cli.main(["policy", "--cooldown", "1200"]) == 1
+
+
+def test_the_tui_only_saves_the_knobs_it_changed(env: config.Settings) -> None:
+    """화면을 열어 둔 사이에 CLI 가 고친 값을 이 저장이 되돌리면 안 된다.
+
+    다섯을 통째로 넘기던 때는, margin 만 바꿔 저장해도 cooldown 이 화면을 열 때의 값으로
+    돌아갔다 — 그쪽을 건드린 적도 없는데. codex 가 잡았다.
+    """
+    view = tui.replace(tui.build_view(env), mode="policy", saved_settings=env)
+    # 화면을 열어 둔 사이에 다른 곳에서 cooldown 을 바꿨다.
+    policy_edit.save(env, cooldown=1200)
+    # 화면에서는 margin 만 고쳤다.
+    edited = tui.replace(view, settings=config.load().__class__(**{**vars(env), "margin": 7}))
+    tui.save_policy(tui.replace(edited, saved_settings=env))
+    fresh = config.load()
+    assert fresh.margin == 7
+    assert fresh.cooldown == 1200, "건드리지도 않은 값이 되돌아갔다"
+
+
+def test_saving_with_nothing_changed_says_so(env: config.Settings) -> None:
+    view = tui.replace(tui.build_view(env), mode="policy", saved_settings=env)
+    after = tui.save_policy(view)
+    assert "Nothing to save" in after.message
+    assert not (env.accounts_dir / config.CONFIG_NAME).exists()
+
+
+def test_the_wording_does_not_blame_the_environment_without_evidence(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """아는 것은 "요청한 값이 실효값과 다르다" 까지다. 원인 단정은 틀릴 수 있다."""
+    monkeypatch.setenv("CODEX_ROTATE_MARGIN", "9")
+    with pytest.raises(cli.CliError) as exc:
+        cli.cmd_policy(env, {"margin": 7})
+    assert "not in effect" in str(exc.value)
+    assert "usually" in str(exc.value), "원인을 단정했다"
+
+
+def test_auto_says_when_an_env_var_makes_the_switch_meaningless(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`CODEX_ROTATE_SKIP` 이 걸리면 스위치가 켜져 있어도 **한 번도 안 돈다.**
+
+    파일만 보고 "on" 이라고 말하면 화면은 정상이라는데 실제로는 아무 일도 안 일어난다.
+    codex 가 잡았다.
+    """
+    monkeypatch.setenv("CODEX_ROTATE_SKIP", "1")
+    assert cli.main(["auto"]) == 0
+    out = capsys.readouterr().out
+    assert "on" in out
+    assert "CODEX_ROTATE_SKIP" in out, out
+
+
+def test_auto_stays_quiet_about_the_env_when_it_is_not_set(env: config.Settings, capsys) -> None:
+    assert cli.main(["auto"]) == 0
+    assert "CODEX_ROTATE_SKIP" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad", ["--1", "²", "1_0", "+5"])
+def test_a_number_that_int_would_choke_on_is_a_message_not_a_traceback(bad: str) -> None:
+    """`parse_int` 는 **환경변수도** 지난다. 여기서 새면 `rotate` 가 매 codex 호출마다 죽는다.
+
+    `lstrip("-")` 이 부호를 전부 벗겨 `"--1"` 이 `"1"` 로 보였고, `str.isdigit()` 이 참인
+    `"²"` 도 통과해 `int()` 에서 `ValueError` 가 됐다 — codex 가 잡았다.
+    """
+    with pytest.raises(config.ConfigError):
+        config.parse_int(bad)
+
+
+def test_the_throttle_flag_actually_reaches_the_knob(env: config.Settings) -> None:
+    """이름 검사만으로는 `--throttle` 의 매핑이 끊겨도 통과한다 — codex 가 지목한 구멍."""
+    assert cli.main(["policy", "--throttle", "45"]) == 0
+    assert config.load().check_interval == 45

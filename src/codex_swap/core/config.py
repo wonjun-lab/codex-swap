@@ -97,8 +97,21 @@ def parse_int(text: str) -> int:
     bash 는 `(( ))` 안에서 음수도 받았다. 여기서도 받아 두어야 `MARGIN=-5` 에서 우리만
     거부하는 일이 없다 — 값의 의미 검사는 여기가 아니라 정책의 몫이다.
     """
+    # **부호는 하나만, 나머지는 ASCII 숫자만.** 예전에는 `lstrip("-")` 으로 부호를 **전부**
+    # 벗겨서 `"--1"` 이 `"1"` 로 보였고, `str.isdigit()` 이 참인 `"²"` 도 통과했다. 둘 다
+    # `int()` 에서 `ValueError` 가 되어 그대로 새어 나갔다.
+    #
+    # `int()` 에 통째로 맡기지 않는 것은 그러면 받는 값이 **넓어지기** 때문이다 —
+    # `"1_0"`·`"٣"`·`"+5"` 가 전부 통과한다. 이 함수는 bash 의 `(( ))` 를 재현하는 자리라
+    # 관용을 늘리면 그쪽과 갈린다.
+    #
+    # 그 유출이 CLI 오류 메시지 하나로 끝나지 않는다. 이 함수는 **환경변수도** 지나고,
+    # `config.load()` 는 `rotate` 가 매 codex 호출에 부른다 — `CODEX_ROTATE_MARGIN=--1`
+    # 하나로 모든 호출이 트레이스백을 낸다. `cache._seconds` 는 같은 함정을 알고
+    # `isascii()` 를 걸어 두었는데 이쪽은 빠져 있었다.
     stripped = text.strip()
-    if not (stripped.lstrip("-").isdigit() and stripped.lstrip("-") != ""):
+    body = stripped[1:] if stripped.startswith("-") else stripped
+    if not (body.isascii() and body.isdigit()):
         raise ConfigError(f"not an integer: {text!r}")
     return int(stripped)
 

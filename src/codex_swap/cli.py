@@ -965,6 +965,20 @@ def cmd_status(settings: config.Settings, *, fresh: bool, as_json: bool = False)
     return 1
 
 
+def _print_auto(settings: config.Settings) -> None:
+    """스위치 상태와, **환경변수가 그것을 무의미하게 만들고 있는지**를 함께 적는다.
+
+    파일 스위치만 보고 "on" 이라고 말하면, `CODEX_ROTATE_SKIP` 이 걸린 기기에서는 실제로
+    한 번도 안 도는데 화면은 정상이라고 한다.
+    """
+    on = policy_edit.auto_on(settings)
+    print(f"automatic switching: {'on' if on else 'off'}")
+    if not on:
+        print(f"  the switch is {settings.off_switch}")
+    if on and policy_edit.auto_blocked_by_env(settings):
+        print("  but CODEX_ROTATE_SKIP is set, so rotate stops before it decides anything")
+
+
 def cmd_auto(settings: config.Settings, want: str | None = None) -> int:
     """자동 전환을 켜거나 끈다. 인자가 없으면 지금 상태만 말한다.
 
@@ -974,16 +988,13 @@ def cmd_auto(settings: config.Settings, want: str | None = None) -> int:
     않는데 **조용히** 그렇다.
     """
     if want is None:
-        on = policy_edit.auto_on(settings)
-        print(f"automatic switching: {'on' if on else 'off'}")
-        if not on:
-            print(f"  the switch is {settings.off_switch}")
+        _print_auto(settings)
         return 0
     try:
-        now_on = policy_edit.set_auto(settings, want == "on")
+        policy_edit.set_auto(settings, want == "on")
     except OSError as exc:
         raise CliError(f"could not change the switch: {exc}") from exc
-    print(f"automatic switching: {'on' if now_on else 'off'}")
+    _print_auto(settings)
     return 0
 
 
@@ -1008,14 +1019,19 @@ def cmd_policy(settings: config.Settings, changes: dict[str, object]) -> int:
 
     try:
         saved = policy_edit.save(settings, **changes)
+    except policy_edit.CreditsFileError as exc:
+        raise CliError(str(exc)) from exc
     except OSError as exc:
         raise CliError(f"could not save the policy: {exc}") from exc
 
     print(f"saved: {saved.path}")
     if saved.shadowed:
         # 저장은 됐는데 안 먹는다. 조용히 두면 사용자는 반영된 줄 알고 같은 값을 다시 넣는다.
+        # 원인을 단정하지 않는다. 대개 환경변수지만 파일을 다른 프로세스가 방금
+        # 깨뜨렸을 수도 있다 — 아는 것은 "요청한 값이 실효값과 다르다" 까지다.
         raise CliError(
-            f"environment variables win, so these are not in effect: {', '.join(saved.shadowed)}"
+            f"saved, but these are not in effect: {', '.join(saved.shadowed)}. "
+            "An environment variable usually wins over the file"
         )
     return 0
 
