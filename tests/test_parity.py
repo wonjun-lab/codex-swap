@@ -275,6 +275,8 @@ def test_the_prompt_names_the_account_and_asks_a_yes_or_no(screen) -> None:
         ("RESET", True),
         ("UNKNOWN", True),  # 썼는지 모르는 채로 낡은 숫자를 믿는 것이 더 나쁘다
         ("NOTHING_TO_RESET", False),  # 아무 일도 안 일어났다
+        ("ALREADY_REDEEMED", True),  # 같은 시도가 이미 창을 되살렸다
+        ("NO_CREDIT", False),  # 쓸 것이 없었다 — 사용량은 그대로다
     ],
 )
 def test_the_screen_clears_the_stale_usage_exactly_when_the_cli_does(
@@ -297,6 +299,57 @@ def test_the_screen_clears_the_stale_usage_exactly_when_the_cli_does(
     view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
     tui.apply_spend(view, "y")
     assert (cache.read_stale(s, "master") is None) is cleared
+    # 위 표가 화면 쪽 구현과 **따로 놀지 않는지** 같이 잰다. 두 표면이 각자 목록을 적으면
+    # 한쪽만 새 갈래를 빠뜨린다 — `NO_CREDIT` 이 실제로 그렇게 추가됐다.
+    expected = getattr(tui.probe.CreditOutcome, outcome) not in credits_core.SPENT_NOTHING
+    assert expected is cleared, f"{outcome}: SPENT_NOTHING 과 이 표가 어긋난다"
+
+
+@pytest.mark.parametrize("outcome", list(tui.probe.CreditOutcome), ids=lambda o: o.name)
+def test_every_outcome_says_something_instead_of_crashing(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch, outcome
+) -> None:
+    """**서버가 갈래를 하나 더 보내면 화면이 죽었다.**
+
+    문구를 dict 로 두고 `[outcome]` 으로 꺼내는데, 열거형에 갈래를 추가하고 이 표에 넣는
+    것을 잊으면 그 자리에서 `KeyError` 다 — 하필 되돌릴 수 없는 동작 직후, 사용자가 결과를
+    가장 알고 싶은 순간에.
+
+    실제로 `noCredit` 이 그랬다. 서버는 처음부터 보내고 있었고 우리만 몰랐다.
+    """
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    monkeypatch.setattr(credits_core, "spend", lambda *_, **__: outcome)
+    accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+
+    after = tui.apply_spend(view, "y")
+    assert after.message.strip(), f"{outcome.name} 에서 아무 말이 없다"
+
+
+def test_no_credit_is_not_reported_as_maybe_spent(
+    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**확정된 사실을 불확실로 접으면 안 된다.**
+
+    `UNKNOWN` 을 실패로 접으면 안 되는 것과 같은 무게의, 반대 방향 오분류다. 아무 일도
+    없었는데 "썼는지 모른다" 고 하면 사용자는 잃지도 않은 쿠폰을 걱정한다.
+    """
+    from codex_swap.core import credits as credits_core
+
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    monkeypatch.setattr(credits_core, "spend", lambda *_, **__: tui.probe.CreditOutcome.NO_CREDIT)
+    accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(SOON)),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+
+    said = tui.apply_spend(view, "y").message
+    assert "may or may not" not in said, said
+    assert "Nothing was spent" in said, said
 
 
 def test_the_screen_reports_a_refusal_from_core_instead_of_claiming_success(

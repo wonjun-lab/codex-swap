@@ -351,6 +351,22 @@ def test_nothing_to_reset_says_the_credit_is_still_yours(
     assert "still yours" in capsys.readouterr().out
 
 
+def test_no_credit_says_nothing_was_spent_not_that_it_might_have_been(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """**확정된 사실을 불확실로 접으면 안 된다.**
+
+    `UNKNOWN` 을 실패로 접으면 안 되는 것과 같은 무게의, 반대 방향 오분류다. 이 갈래가
+    열거형에 없던 동안 `UNKNOWN` 으로 떨어져 "썼는지 모른다" 고 안내했다.
+    """
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.NO_CREDIT)
+    assert cli.cmd_credits_use(env, assume_yes=True) == 1
+    said = capsys.readouterr().out
+    assert "Nothing was spent" in said, said
+    assert "may or may not" not in said, said
+
+
 def test_an_unreadable_outcome_does_not_claim_it_failed(
     env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
@@ -409,13 +425,16 @@ def test_an_unknown_outcome_also_clears_the_cache(
     assert cache.read_stale(env, "master") is None
 
 
-def test_nothing_to_reset_keeps_the_cache(
-    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "outcome", [probe.CreditOutcome.NOTHING_TO_RESET, probe.CreditOutcome.NO_CREDIT]
+)
+def test_the_outcomes_that_spent_nothing_keep_the_cache(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, outcome: probe.CreditOutcome
 ) -> None:
     """아무 일도 안 일어났다. 지우면 다음 호출이 이유 없이 프로브를 한 번 더 한다."""
     cache.write(env, "master", {"usedPercent": 98}, now=1000)
     _has(monkeypatch, SOON)
-    _outcome(monkeypatch, probe.CreditOutcome.NOTHING_TO_RESET)
+    _outcome(monkeypatch, outcome)
     cli.cmd_credits_use(env, assume_yes=True)
     assert cache.read_stale(env, "master") is not None
 
@@ -462,10 +481,15 @@ def test_probe_refuses_an_empty_credit_id() -> None:
 
 
 def test_the_outcome_enum_covers_what_the_server_names() -> None:
-    """서버가 쓰는 문자열이 이 열거형과 같아야 파싱이 성립한다."""
+    """서버가 쓰는 문자열이 이 열거형과 같아야 파싱이 성립한다.
+
+    `noCredit` 은 한동안 빠져 있었다. 서버는 처음부터 보내고 있었고, 우리는 그것을 "모르는
+    이름" 으로 접어 `UNKNOWN` 이라고 적었다 — 아무 일도 없었는데 "썼는지 모른다" 가 된다.
+    """
     assert {o.value for o in probe.CreditOutcome} >= {
         "reset",
         "nothingToReset",
+        "noCredit",
         "alreadyRedeemed",
     }
 
@@ -510,6 +534,7 @@ def _reply(monkeypatch: pytest.MonkeyPatch, doc: dict[str, object]) -> _FakeConn
     [
         ("reset", probe.CreditOutcome.RESET),
         ("nothingToReset", probe.CreditOutcome.NOTHING_TO_RESET),
+        ("noCredit", probe.CreditOutcome.NO_CREDIT),
         ("alreadyRedeemed", probe.CreditOutcome.ALREADY_REDEEMED),
     ],
 )
