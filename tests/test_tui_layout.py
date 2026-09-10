@@ -165,3 +165,64 @@ def test_a_message_outlives_the_rows_it_was_about(_isolated_home: Path) -> None:
     view = tui.replace(_many(config.load(), 19), message="Switch failed: something broke")
     lines = tui.render_lines(view, height=8, width=90)
     assert any("Switch failed" in line for line in lines), "\n".join(lines)
+
+
+# ── 열 사이가 눈에 띄게 떨어져 있는가 ───────────────────────────────────────
+
+
+def _gap_between(header: str, left: str, right: str) -> int:
+    """머리말에서 두 열 이름 사이의 공백 수."""
+    start = header.index(left) + len(left)
+    return header.index(right, start) - start
+
+
+def test_the_columns_do_not_crowd_each_other(_isolated_home: Path) -> None:
+    """두 칸이면 이메일처럼 긴 값 옆에서 열이 붙어 보인다 — 눈이 경계를 못 찾는다.
+
+    라벨·이메일을 짧게 두면 열 폭이 머리말 폭과 같아지므로, 머리말 사이의 공백이 곧
+    칼럼 간격이다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+    header = next(ln for ln in tui.render_lines(tui.build_view(s), width=140) if "LABEL" in ln)
+    assert _gap_between(header, "LABEL", "EMAIL") >= 4, header
+    assert _gap_between(header, "EMAIL", "USED") >= 4, header
+
+
+def test_the_usage_reset_screen_uses_the_same_gap(_isolated_home: Path) -> None:
+    """두 표가 다른 간격이면 화면을 옮길 때마다 눈이 다시 맞춘다."""
+    from codex_swap.core import credits as credits_core
+    from codex_swap.core.types import Usage
+
+    s = config.load()
+    accounts = (credits_core.Account("a", "a@x", True, Usage(used_percent=50, email="a@x")),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    header = next(ln for ln in tui.render_lines(view, width=140) if "LABEL" in ln)
+    assert _gap_between(header, "LABEL", "EMAIL") >= 4, header
+    assert _gap_between(header, "EMAIL", "RESET") >= 4, header
+
+
+def test_automatic_switching_is_quiet_while_it_is_on(_isolated_home: Path) -> None:
+    """**정상은 조용해야 한다.**
+
+    꺼졌을 때 색을 주는 것은 "왜 안 바뀌지" 의 첫 번째 원인이기 때문이다. 켜졌을 때도
+    똑같이 강조하면 평상시 화면에서 가장 시끄러운 줄이 되고, 그러면 정작 꺼졌을 때
+    그 신호가 안 읽힌다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+
+    on = tui.build_view(s)
+    line, style = next(
+        pair for pair in tui.render_screen(on, width=140) if "Automatic switching" in pair[0]
+    )
+    assert "on" in line
+    assert style.tone != "warn", f"켜져 있는데 경고색이다: {line!r}"
+
+    off = tui.replace(on, auto_off=True)
+    _, off_style = next(
+        pair for pair in tui.render_screen(off, width=140) if "Automatic switching" in pair[0]
+    )
+    assert off_style.tone == "warn", "꺼짐이 켜짐과 같은 밝기다"
