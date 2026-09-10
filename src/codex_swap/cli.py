@@ -657,7 +657,7 @@ def cmd_credits_use(
     # 않으면 방금 되살린 계정을 최대 TTL 동안 소진된 것으로 취급한다.
     #
     # `UNKNOWN` 에서도 지운다 — 썼는지 모르는 상태에서 낡은 숫자를 믿는 것이 더 나쁘다.
-    if outcome is not probe.CreditOutcome.NOTHING_TO_RESET:
+    if outcome not in credits_core.SPENT_NOTHING:
         cache.clear(settings)
 
     if outcome is probe.CreditOutcome.RESET:
@@ -665,10 +665,15 @@ def cmd_credits_use(
         print(f"{target}'s usage window was reset. Check it with: codex-swap status --fresh")
         return 0
     if outcome is probe.CreditOutcome.ALREADY_REDEEMED:
-        print("that credit was already redeemed. Nothing changed. See: codex-swap credits")
+        # 서버 스키마상 이것은 "**같은 시도**가 이미 성공했다" 다. 재시도가 쿠폰을 하나 더
+        # 태우지 않고 여기로 접힌 것이므로, 잃은 것은 없다.
+        print("that reset was already redeemed by this same attempt. Nothing more was spent")
         return 1
     if outcome is probe.CreditOutcome.NOTHING_TO_RESET:
         print(f"{target} had nothing to reset, so the credit was not needed and is still yours")
+        return 1
+    if outcome is probe.CreditOutcome.NO_CREDIT:
+        print(f"{target} has no usage reset left to spend. Nothing was spent")
         return 1
     # UNKNOWN 을 "실패" 로 적으면 안 된다. 쿠폰이 이미 쓰였을 수 있는데 사용자가 하나 더
     # 쓴다 — 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.

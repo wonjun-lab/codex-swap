@@ -21,6 +21,21 @@ from codex_swap.core import config, discovery, identity, probe, store
 from codex_swap.core.types import Credit, ProbeOutcome, Usage
 
 
+SPENT_NOTHING = frozenset(
+    {probe.CreditOutcome.NOTHING_TO_RESET, probe.CreditOutcome.NO_CREDIT}
+)
+"""**아무것도 쓰이지 않았고 사용량도 그대로**인 결과들.
+
+캐시를 비울지 가르는 데 쓴다. 이 둘은 사용량 창을 건드리지 않았으므로 캐시에 있는 숫자가
+여전히 맞다 — 지우면 다음 `rotate` 가 공짜로 프로브를 한 번 더 돈다.
+
+나머지는 전부 비운다. `UNKNOWN` 도 포함이다 — 썼는지 모르는 상태에서 낡은 숫자를 믿는
+쪽이 더 나쁘다.
+
+`cli` 와 `tui` 가 각자 이 목록을 적으면 갈린다. 한쪽만 `NO_CREDIT` 을 빠뜨리는 식으로.
+"""
+
+
 class CreditError(Exception):
     """쿠폰을 다루다 멈췄다. **소비는 일어나지 않았다.**
 

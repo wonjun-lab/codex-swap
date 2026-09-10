@@ -202,14 +202,20 @@ STALE_LEGENDS = (
 """판마다 **들여쓰기를 적지 않는다.** `_help_line` 이 `_INDENT` 로 붙인다."""
 
 CREDIT_KEYS = (
-    ("u", "use"),
+    ("enter", "spend"),
     ("r", "reload"),
     ("esc", "back"),
     ("q", "quit"),
     ("↑↓", "move"),
 )
-"""쿠폰 화면의 조작법. 소비 키를 `s` 로 두지 않는다 — 계정 화면에서 `s` 는 **전환**이고,
-같은 손가락이 다른 화면에서 다른 되돌릴 수 없는 일을 하면 안 된다.
+"""쿠폰 화면의 조작법.
+
+`enter` 는 양쪽 화면에서 **커서가 놓인 줄이 말하는 일을 한다** — 계정 화면에서는 그 계정으로
+전환, 여기서는 그 리셋을 쓴다. 한동안 여기만 `u` 였는데, 목록에서 항목을 고르고 `enter` 를
+눌렀더니 아무 일도 안 일어나고 다른 키를 또 찾아야 하는 흐름이었다.
+
+소비 키를 `s` 로 두지 않는 것은 그대로다 — 계정 화면에서 `s` 는 **전환**이고, 같은 손가락이
+다른 화면에서 다른 되돌릴 수 없는 일을 하면 안 된다.
 """
 
 POLICY_KEYS = (
@@ -1457,12 +1463,17 @@ def auto_probe_targets(view: View, attempted: Collection[str] = ()) -> tuple[str
 
 
 def activate(view: View) -> View:
-    """`enter`. **순수하게 끝낼 수 있는 것만** 여기서 한다.
+    """`enter` — **커서가 놓인 줄이 말하는 일을 한다.**
 
-    계정 위에서는 전환하지 않는다. 전환은 `s` 다 — 그렇게 가른 이유는 `enter` 를
-    "들어간다" 하나로 두기 위해서다. 한 키가 자리에 따라 "화면을 연다" 와 "자격증명을
-    바꾼다" 를 오가면, 커서가 어디 있는지 잘못 본 순간의 대가가 너무 크다. 다만 조용히
-    아무 일도 안 하면 키가 죽은 줄 아니 무엇을 눌러야 하는지 말해 준다.
+    계정 위에서는 그 계정으로 전환한다. 한동안 여기서만 아무 일도 안 하고 "`s` 를 누르라"
+    고 안내했는데, `enter` 를 "들어간다" 하나로 두려던 것이었다. 실제로는 그 규칙이 이
+    화면에서만 깨져 보였다 — 메뉴 줄에서는 `enter` 가 정책을 열고 자동 전환을 토글하는데,
+    계정 줄에서만 죽은 키였다. 목록에서 항목을 고르고 `enter` 를 누르는 것은 사용자가
+    가장 먼저 시도하는 동작이다.
+
+    전환은 되돌릴 수 있다(다시 전환하면 된다). 되돌릴 수 없는 것은 **등록 안 된 활성
+    계정을 버리는 경우** 하나인데, 그것은 `do_switch` 의 두 번 누르기 가드가 막는다 —
+    `enter` 로 와도 같은 가드를 지난다.
 
     `refresh`·`adopt`·`quit` 는 프로브·프롬프트·루프 종료가 걸려 순수 함수로 끝낼 수
     없다. `_loop` 이 **이 함수를 부르기 전에** 가로챈다 — 분기를 두 벌로 두지 않으려고
@@ -1470,7 +1481,7 @@ def activate(view: View) -> View:
     """
     action = selected_menu(view)
     if action is None:
-        return replace(view, message="Press s to switch to this account")
+        return do_switch(view)
     if action == "policy":
         return replace(
             view, mode="policy", policy_cursor=0, saved_settings=view.settings, message=""
@@ -1752,13 +1763,16 @@ def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
         fn(*args)
 
 
-def spend_prompt(view: View) -> tuple[str, str] | None:
-    """`u` 를 눌렀을 때 물을 것. `(문구, 기대하는 입력)`. 물을 것이 없으면 None.
+def spend_prompt(view: View) -> str | None:
+    """`enter` 를 눌렀을 때 물을 것. 물을 것이 없으면 None.
 
-    **라벨을 그대로 치게 한다.** 계정 화면의 `s`(전환)는 한 번 더 누르면 되지만 여기는
-    되돌릴 수 없다 — 키를 두 번 누르는 것은 손가락이 미끄러져도 통과한다. 이름을 치는
-    것은 미끄러지지 않는다. CLI 가 `y` 를 받는 것과 다른 것은, 파이프에는 `--yes` 라는
-    다른 관문이 있고 화면에는 그것이 없기 때문이다.
+    **묻는 방식은 CLI 와 같은 `y` 다.** 한동안 여기서만 라벨을 그대로 치게 했는데, 되돌릴
+    수 없으니 더 세게 막자는 뜻이었다. 실제로는 반대로 나빴다 — `Type shared to spend:` 는
+    무엇을 치라는 것인지부터 애매하고(계정 이름? `use`? 쿠폰 이름?), 같은 동작을 두 표면이
+    서로 다른 어휘로 물었다. 이 프로젝트에서 CLI 와 TUI 가 갈리면 언제나 대가를 치렀다.
+
+    세기는 다른 데서 확보한다. 목록에서 **그 쿠폰 위로 커서를 옮겨야** 하고, 그러고서
+    `enter`, 그러고서 `y` 다. 지나가다 눌러서 통과할 수 있는 경로가 아니다.
     """
     picked = selected_credit(view)
     if picked is None:
@@ -1766,7 +1780,7 @@ def spend_prompt(view: View) -> tuple[str, str] | None:
     account, credit = picked
     if credit is None or credit.status != "available":
         return None
-    return (f"  Type {account.label} to spend: ", account.label)
+    return f"  Spend {account.label}'s usage reset? [y/N] "
 
 
 def apply_spend(view: View, typed: str | None) -> View:
@@ -1780,7 +1794,7 @@ def apply_spend(view: View, typed: str | None) -> View:
     if asked is None or picked is None:
         return replace(view, message="Move to a usable reset first")
     account, credit = picked
-    if typed is None or typed.strip() != asked[1]:
+    if typed is None or typed.strip().lower() not in {"y", "yes"}:
         return replace(view, message="Left it alone")
     assert credit is not None
 
@@ -1791,15 +1805,22 @@ def apply_spend(view: View, typed: str | None) -> View:
 
     # 쿠폰이 먹었으면 사용량 창이 방금 바뀌었는데 캐시에는 직전 숫자가 남는다. `rotate` 가
     # 그것을 정책 입력으로 읽는다. `UNKNOWN` 에서도 지운다 — 썼는지 모르는 채로 낡은
-    # 숫자를 믿는 것이 더 나쁘다.
-    if outcome is not probe.CreditOutcome.NOTHING_TO_RESET:
+    # 숫자를 믿는 것이 더 나쁘다. 무엇을 남길지는 `cli` 와 **같은 목록**을 본다.
+    if outcome not in credits_core.SPENT_NOTHING:
         cache.clear(view.settings)
 
     said = {
         probe.CreditOutcome.RESET: f"spent — {account.label}'s usage window was reset",
-        probe.CreditOutcome.ALREADY_REDEEMED: "that reset was already redeemed. Nothing changed",
+        # 서버 스키마상 이것은 "**같은 시도**가 이미 성공했다" 다 — 재시도가 쿠폰을 하나 더
+        # 태우지 않고 여기로 접힌 것이므로, 잃은 것은 없다.
+        probe.CreditOutcome.ALREADY_REDEEMED: (
+            "that reset was already redeemed by this same attempt. Nothing more was spent"
+        ),
         probe.CreditOutcome.NOTHING_TO_RESET: (
             f"{account.label} had nothing to reset, so it is still yours"
+        ),
+        probe.CreditOutcome.NO_CREDIT: (
+            f"{account.label} has no usage reset left to spend. Nothing was spent"
         ),
         probe.CreditOutcome.UNKNOWN: (
             "the server did not say what happened. The reset may or may not have been spent"
@@ -1813,7 +1834,7 @@ def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - �
     asked = spend_prompt(view)
     if asked is None:
         return replace(view, message="Move to a usable reset first")
-    return apply_spend(view, _prompt(stdscr, asked[0], drawn))
+    return apply_spend(view, _prompt(stdscr, asked, drawn))
 
 
 def _adopt_label(view: View) -> str:
@@ -2112,7 +2133,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             elif key in (ord("r"), ord("R")):
                 view = replace(view, credit_accounts=None, credit_cursor=0, message="")
                 loader.start(settings)
-            elif key in (ord("u"), ord("U")):
+            elif key in (curses.KEY_ENTER, 10, 13):
                 view = _spend_here(stdscr, view, drawn)
                 curses.flushinp()
             # 소비·`r` 이 자료를 비웠으면 다시 읽는다. 한 곳에 모아 두면 비우는 쪽이
