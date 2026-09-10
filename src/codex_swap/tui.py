@@ -770,7 +770,7 @@ def ladder_axis(ladder: Sequence[int], rung: int | None) -> tuple[str, str]:
     return "".join(axis), "".join(labels)
 
 
-def menu_title(action: str, view: View) -> str:
+def menu_title(action: str, view: View, *, width: int | None = None) -> str:
     """메뉴 한 줄의 문구. **상태가 있는 항목은 그 상태를 담는다.**
 
     `Toggle automatic switching` 은 무엇이 켜지고 꺼지는지도, 지금 어느 쪽인지도 말하지
@@ -780,11 +780,19 @@ def menu_title(action: str, view: View) -> str:
     `enter` 가 무엇을 할지는 상태에서 따라온다 — `on` 이면 끄고 `off` 면 켠다.
     """
     base = next(title for name, title in MENU if name == action)
-    if action == "auto":
-        # 상태를 **덧붙인다.** 문구를 따로 적으면 `MENU` 의 이름과 화면의 이름이 갈려서,
-        # 문서·테스트가 어느 쪽을 봐야 하는지 알 수 없게 된다.
-        return f"{base}: {'off' if view.auto_off else 'on'}"
-    return base
+    if action != "auto":
+        return base
+    # 상태를 **덧붙인다.** 문구를 따로 적으면 `MENU` 의 이름과 화면의 이름이 갈려서,
+    # 문서·테스트가 어느 쪽을 봐야 하는지 알 수 없게 된다.
+    #
+    # 좁으면 **이름을 줄이고 상태는 남긴다.** 그냥 자르면 `Automatic switching: of` 처럼
+    # 하필 상태가 먼저 잘린다 — 이 줄에서 정작 필요한 것이 그 두 글자다.
+    state = "off" if view.auto_off else "on"
+    for name in (base, "Auto switching", "Auto"):
+        text = f"{name}: {state}"
+        if width is None or _width(text) + 4 <= width:  # ` > ` + 여유 한 칸
+            return text
+    return state
 
 
 def cursor_limit(view: View) -> int:
@@ -847,7 +855,11 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
         gate = f"{now} of {ladder}"
     else:
         gate = now
-    parts = [gate]
+    # **자동 전환이 꺼진 것은 여기 있어야 한다.** 이 줄은 이미 "왜 안 바뀌었나" 에 답하는
+    # 자리고(관문·쿨다운), 꺼짐은 그 질문의 가장 큰 답이다. 메뉴에도 상태가 있지만 그쪽은
+    # **조작**이라 본문이 잘리면 함께 사라진다 — 계정이 많고 화면이 짧으면 실제로 그랬다.
+    parts = ["auto off"] if view.auto_off else []
+    parts.append(gate)
     if view.cooldown_left is not None:
         parts.append(f"cooldown {_duration(view.cooldown_left)} left")
     parts.append(f"margin {s.margin}%p")
@@ -1055,7 +1067,7 @@ def render_screen(
         picked = view.cursor - len(view.rows) == i
         if picked:
             cursor_at = menu_at + len(menu_lines)
-        title = menu_title(action, view)
+        title = menu_title(action, view, width=width)
         text = f" {'>' if picked else ' '} {title}"
         line = _clip(text, width) if width else text
         spans = ((1, 2, _KEY_STYLE),) if picked else ()
@@ -1156,7 +1168,7 @@ def _render_credits(
     if view.credit_accounts is None:
         # **"없다" 가 아니라 "아직" 이다.** 하나로 두면 읽는 중에 "쿠폰 없음" 이 떠서
         # 사용자가 그것을 사실로 읽는다.
-        out.append((_note("Reading credits…", width), _DIM))
+        out.append((_note("Reading usage resets…", width), _DIM))
     elif not view.credit_accounts:
         out.append((_note("No accounts yet.", width), _PLAIN))
     else:
@@ -1167,6 +1179,17 @@ def _render_credits(
         lw = max(5, *(_width(x) for x in labels)) if labels else 5
         ew = max(5, *(_width(x) for x in emails)) if emails else 5
         cw = max(5, *(_width(x) for x in notes)) if notes else 5
+        # **줄여야 하면 이메일부터 줄인다.** 만료는 이 화면이 존재하는 이유다. 간격을 네
+        # 칸으로 넓히자 긴 이메일 옆에서 만료가 `(i` 까지만 남았다 — 이메일 칸 폭이 가장 긴
+        # 주소 길이 그대로라 말줄임이 걸릴 틈이 없었고, 넘친 것은 줄 **끝**에서 잘렸다.
+        #
+        # 예산은 실제로 그릴 만료 문자열의 최대 폭으로 잡는다. 추정치로 잡으면 `(expired)`
+        # 와 `(in 100d)` 처럼 길이가 다른 값에서 다시 어긋난다.
+        if width is not None:
+            expiries = [_expiry_text(None if c is None else c.expires_at) for _, c in rows]
+            xw = max((_width(x) for x in expiries), default=1)
+            fixed = 3 + lw + len(_GUTTER) * 3 + cw + xw
+            ew = max(min(ew, width - fixed), min(ew, 12))
 
         header = (
             f"{_INDENT}{_pad('LABEL', lw)}{_GUTTER}{_pad('EMAIL', ew)}{_GUTTER}"
@@ -1183,7 +1206,7 @@ def _render_credits(
             line = (
                 f" {'>' if picked else ' '}{mark}"
                 f"{_pad(account.label if first else '', lw)}{_GUTTER}"
-                f"{_pad(account.email if first else '', ew)}{_GUTTER}"
+                f"{_cell(account.email if first else '', ew, ellipsis=True)}{_GUTTER}"
                 f"{_pad(_credit_note(account, credit), cw)}{_GUTTER}"
                 f"{_expiry_text(None if credit is None else credit.expires_at)}"
             ).rstrip()
@@ -1880,7 +1903,7 @@ class _CreditsLoader:
 
     def _run(self, settings: config.Settings) -> None:
         # 이 스레드에서 나가는 예외는 아무도 못 본다. 무엇이 됐든 하나는 큐에 넣어야
-        # 화면이 "Reading credits…" 에 영원히 굳지 않는다.
+        # 화면이 "Reading usage resets…" 에 영원히 굳지 않는다.
         try:
             self._queue.put((tuple(credits_core.load(settings)), ""))
         except credits_core.CreditError as exc:

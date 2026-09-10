@@ -226,3 +226,71 @@ def test_automatic_switching_is_quiet_while_it_is_on(_isolated_home: Path) -> No
         pair for pair in tui.render_screen(off, width=140) if "Automatic switching" in pair[0]
     )
     assert off_style.tone == "warn", "꺼짐이 켜짐과 같은 밝기다"
+
+
+def test_the_headline_carries_the_off_switch_so_clipping_cannot_hide_it(
+    _isolated_home: Path,
+) -> None:
+    """자동 전환이 꺼진 것은 **본문이 잘려도** 보여야 한다.
+
+    상태를 메뉴로 옮겼더니, 계정이 많고 화면이 짧을 때 그 줄까지 잘려 꺼짐 표시가 화면에서
+    통째로 사라졌다 — 꼬리말에 있던 시절에는 남던 것이다. 머리말은 이미 "왜 안 바뀌었나"
+    에 답하는 자리(관문·쿨다운)고, 꺼짐은 그 질문의 가장 큰 답이다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+    rows = tuple(
+        tui.Row(f"acct{n:02d}", f"a{n}@x", f"{n}%", "-", n == 0, percent=n) for n in range(20)
+    )
+    off = tui.replace(tui.build_view(s), rows=rows, cursor=0, auto_off=True)
+
+    short = tui.render_lines(off, height=10, width=90)
+    assert not any("Automatic switching" in ln for ln in short), "전제가 깨졌다 — 메뉴가 안 잘렸다"
+    assert "auto off" in short[0], short
+
+    on = tui.replace(off, auto_off=False)
+    assert "auto off" not in tui.render_lines(on, height=10, width=90)[0], "정상인데 시끄럽다"
+
+
+@pytest.mark.parametrize(("width", "want"), [(20, "Auto: off"), (26, "Auto switching: off")])
+def test_a_narrow_screen_keeps_the_state_and_shortens_the_name(
+    _isolated_home: Path, width: int, want: str
+) -> None:
+    """그냥 자르면 하필 **상태가 먼저** 잘린다 — `Automatic switching: of`.
+
+    이 줄에서 정작 필요한 것이 그 두 글자다. 이름을 줄이고 상태를 남긴다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+    off = tui.replace(tui.build_view(s), auto_off=True)
+    line = next(ln for ln in tui.render_lines(off, width=width) if "uto" in ln and ":" in ln)
+    assert line.strip() == want, line
+
+
+def test_the_usage_reset_screen_gives_way_on_the_email_not_the_expiry(
+    _isolated_home: Path,
+) -> None:
+    """간격을 넓히자 긴 이메일 옆에서 **만료 시각**이 잘렸다 — `(i` 까지만 남았다.
+
+    만료는 이 화면이 존재하는 이유다. 줄여야 하면 이메일을 말줄임으로 줄인다. codex 가 잡았다.
+    """
+    from codex_swap.core import credits as credits_core
+    from codex_swap.core.types import Credit, Usage
+
+    s = config.load()
+    long_email = "a" * 27 + "@example.com"
+    credit = Credit(id="c", status="available", expires_at=2_000_000_000, title="Full reset")
+    accounts = (
+        credits_core.Account(
+            "productionteam",
+            long_email,
+            True,
+            Usage(used_percent=50, email=long_email, reset_credits=1, credits=(credit,)),
+        ),
+    )
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    for width in (92, 97, 110):
+        row = next(ln for ln in tui.render_lines(view, width=width) if "Full reset" in ln)
+        assert row.rstrip().endswith(")"), f"@ {width}: 만료가 잘렸다 {row!r}"

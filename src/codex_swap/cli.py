@@ -107,7 +107,7 @@ def _usage_line(u: Usage) -> str:
         f"usage: {u.used_percent}% "
         f"(primary {_opt(u.primary_percent)}%, secondary {_opt(u.secondary_percent)}%) "
         f"· plan {_opt(u.plan_type)} · resets {_opt(u.reset_credits)} "
-        f"· resets {_reset_text(u.resets_at)}"
+        f"· renews {_reset_text(u.resets_at)}"
     )
 
 
@@ -429,7 +429,7 @@ def _accounts(settings: config.Settings) -> list[credits_core.Account]:
 def cmd_credits(settings: config.Settings) -> int:
     """계정별 리셋 쿠폰 — 개수·상태·만료.
 
-    `list` 의 `CRED` 열은 개수만 말한다. 쿠폰은 **만료되는 자원**이라 그것만으로는 쓸지
+    `list` 의 `RESETS` 열은 개수만 말한다. 쿠폰은 **만료되는 자원**이라 그것만으로는 쓸지
     말지를 정할 수 없다 — 오늘 밤 사라질 쿠폰과 두 달 남은 쿠폰은 같은 `1` 로 보인다.
     """
     labels = store.labels(settings)
@@ -672,7 +672,7 @@ def cmd_credits_use(
         return 1
     # UNKNOWN 을 "실패" 로 적으면 안 된다. 쿠폰이 이미 쓰였을 수 있는데 사용자가 하나 더
     # 쓴다 — 되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
-    print("the server did not say what happened. The credit may or may not have been spent")
+    print("the server did not say what happened. The reset may or may not have been spent")
     print("check before trying again: codex-swap credits")
     return 1
 
@@ -783,7 +783,7 @@ def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
     lw = _w([r[1] for r in printed], "LABEL", 6)
     ew = _w([r[2] for r in printed], "EMAIL", 12)
     uw = _w([r[3] for r in printed], "USED", 4)
-    cw = _w([r[4] for r in printed], "CRED", 4)
+    cw = _w([r[4] for r in printed], "RESETS", 6)
 
     def _row(mark: str, label: str, email: str, used: str, cred: str, reset: str) -> str:
         cells = [
@@ -796,7 +796,7 @@ def cmd_list(settings: config.Settings, *, fresh: bool = False) -> int:
         ]
         return " ".join(cells).rstrip()
 
-    print(_row("", "LABEL", "EMAIL", "USED", "CRED", "RESET"))
+    print(_row("", "LABEL", "EMAIL", "USED", "RESETS", "RENEWS"))
     for mark, label, email, used, cred in printed:
         print(_row(mark, label, email, used, cred, reset_of[label]))
     print()
@@ -1253,10 +1253,10 @@ def build_parser() -> argparse.ArgumentParser:
     # 최상위에 두면 `codex-swap use` 와 두 글자 차이가 되는데, 그 둘은 각각 "계정을
     # 바꾼다" 와 "쿠폰을 태운다" 다. 오타 한 번의 대가가 너무 다르다.
     p.add_argument(
-        "action", nargs="?", choices=["use"], help="use: spend one credit (cannot be undone)"
+        "action", nargs="?", choices=["use"], help="use: spend one usage reset (cannot be undone)"
     )
     p.add_argument("label", nargs="?", help="which account. Defaults to the active one")
-    p.add_argument("--credit", metavar="ID", help="spend this exact credit (see --json)")
+    p.add_argument("--credit", metavar="ID", help="spend this exact reset (see --json)")
     p.add_argument("--dry-run", action="store_true", help="say what would be spent, spend nothing")
     p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
 

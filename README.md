@@ -230,7 +230,7 @@ codex-swap credits use shared     # a named one
 codex-swap credits use --dry-run  # say what would happen, spend nothing
 ```
 
-The TUI has the same screen: `Credits` in the menu, `u` to spend. There it asks you to
+The TUI has the same screen: `Usage resets` in the menu, `u` to spend. There it asks you to
 **type the label** rather than press a key — a keypress next to `s` (switch) is one slip
 away from an action that cannot be undone, and a name is not something you slip into.
 
