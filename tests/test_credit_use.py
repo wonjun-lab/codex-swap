@@ -1,0 +1,472 @@
+"""`credits use` — **되돌릴 수 없는** 유일한 동작.
+
+이 파일이 지키는 것은 "쿠폰을 쓴다" 가 아니라 **안 쓸 때 안 쓰는 것**이다. 슬롯 삭제는
+살아 있는 자격증명을 건드리지 않아 되돌릴 여지가 있지만, 쿠폰은 재발급이 없다.
+
+그래서 여기서 재는 것 대부분은 성공 경로가 아니라 **멈추는 경로**다 — 확인 없이는 안
+간다, tty 가 아니면 거부한다, 신원이 어긋나면 멈춘다, 결과를 모르면 모른다고 말한다.
+
+실제 쿠폰은 이 파일 어디에서도 쓰이지 않는다. `probe.consume_credit` 은 전부 가짜다.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from pathlib import Path
+
+import pytest
+
+from codex_swap import cli
+from codex_swap.core import cache, config, identity, probe
+from codex_swap.core.types import Credit, ProbeOutcome, ProbeResult, Usage
+
+
+def _auth(path: Path, email: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    claims = base64.urlsafe_b64encode(json.dumps({"email": email}).encode())
+    path.write_text(json.dumps({"tokens": {"id_token": f"h.{claims.decode().rstrip('=')}.s"}}))
+
+
+SOON = Credit(id="soon", status="available", expires_at=1_800_000_000, title="Full reset")
+LATER = Credit(id="later", status="available", expires_at=1_900_000_000, title="Bonus reset")
+BUSY = Credit(id="busy", status="redeeming", expires_at=1_700_000_000, title="Full reset")
+
+
+@pytest.fixture
+def env(_isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> config.Settings:
+    s = config.load()
+    _auth(s.accounts_dir / "master/auth.json", "a@example.com")
+    _auth(s.accounts_dir / "shared/auth.json", "b@example.com")
+    _auth(s.default_home / "auth.json", "a@example.com")
+    monkeypatch.setattr(cli.discovery, "resolve_codex_bin", lambda: Path("/bin/true"))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    return s
+
+
+@pytest.fixture
+def spent(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """실제로 소비 요청이 나간 쿠폰 id. **비어 있어야 하는 테스트가 대부분이다.**"""
+    calls: list[str] = []
+
+    def fake(_bin: object, _home: object, credit_id: str, **_: object) -> probe.CreditOutcome:
+        calls.append(credit_id)
+        return probe.CreditOutcome.RESET
+
+    monkeypatch.setattr(probe, "consume_credit", fake)
+    return calls
+
+
+def _has(monkeypatch: pytest.MonkeyPatch, *credits: Credit, count: int | None = None) -> None:
+    def fake(_bin: object, home: str) -> ProbeResult:
+        return ProbeResult.of(
+            Usage(
+                used_percent=98,
+                email=identity.email_of(Path(home) / "auth.json"),
+                reset_credits=len(credits) if count is None else count,
+                credits=credits,
+            )
+        )
+
+    monkeypatch.setattr(probe, "probe", fake)
+
+
+def _answer(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    monkeypatch.setattr("builtins.input", lambda _="": text)
+
+
+# ── 안 쓰는 경로 ────────────────────────────────────────────────────────────
+
+
+def test_saying_anything_but_yes_spends_nothing(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _has(monkeypatch, SOON)
+    _answer(monkeypatch, "n")
+    assert cli.cmd_credits_use(env) == 1
+    assert spent == []
+    assert "Left it alone" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer", ["", " ", "no", "Y ES", "yes please", "1"])
+def test_only_a_bare_yes_counts(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch, answer: str
+) -> None:
+    """`y`·`yes` 말고는 전부 거절이다. 되돌릴 수 없는 동작에서 관대할 이유가 없다."""
+    _has(monkeypatch, SOON)
+    _answer(monkeypatch, answer)
+    assert cli.cmd_credits_use(env) == 1
+    assert spent == []
+
+
+def test_an_interrupted_prompt_spends_nothing(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """파이프가 끊겨 `EOFError` 가 나면 그것은 승인이 아니다."""
+
+    def eof(_: str = "") -> str:
+        raise EOFError
+
+    _has(monkeypatch, SOON)
+    monkeypatch.setattr("builtins.input", eof)
+    assert cli.cmd_credits_use(env) == 1
+    assert spent == []
+
+
+def test_a_script_without_a_terminal_is_refused(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`remove` 는 같은 상황에 묻지 않고 진행한다. 여기는 다르다.
+
+    슬롯 삭제는 **사본**을 지우는 것이라 살아 있는 자격증명이 남지만, 쿠폰은 재발급이
+    없다. 스크립트가 실수로 태우면 되돌릴 방법이 아예 없다.
+    """
+    _has(monkeypatch, SOON)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    with pytest.raises(cli.CliError, match="--yes"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_dry_run_spends_nothing_and_says_so(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _has(monkeypatch, SOON)
+    assert cli.cmd_credits_use(env, dry_run=True) == 0
+    assert spent == []
+    out = capsys.readouterr().out
+    assert "would spend" in out
+    assert "nothing was spent" in out
+
+
+def test_dry_run_does_not_ask(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """묻지 않는 것이 맞다 — 아무것도 안 하는 명령에 확인을 붙이면 그 확인이 값싸진다."""
+
+    def never(_: str = "") -> str:
+        raise AssertionError("dry-run 인데 물었다")
+
+    _has(monkeypatch, SOON)
+    monkeypatch.setattr("builtins.input", never)
+    assert cli.cmd_credits_use(env, dry_run=True) == 0
+    assert spent == []
+
+
+def test_an_account_with_no_credit_stops_before_asking(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _has(monkeypatch, count=0)
+    with pytest.raises(cli.CliError, match="no credit to spend"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_a_count_without_usable_detail_does_not_guess(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """개수는 있는데 상세가 없다. 지목할 수 없으면 **쓰지 않는다.**"""
+    _has(monkeypatch, count=2)
+    with pytest.raises(cli.CliError, match="no usable detail"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_a_credit_that_is_being_redeemed_is_not_usable(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`redeeming` 은 이미 쓰이는 중이다. 그것을 또 쓰면 하나를 헛되이 태운다."""
+    _has(monkeypatch, BUSY, count=0)
+    with pytest.raises(cli.CliError, match="no credit to spend"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_naming_a_credit_that_is_not_there_spends_nothing_else(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """지목한 것이 없다고 **아무거나** 쓰면 안 된다. 사용자는 그것을 골랐다."""
+    _has(monkeypatch, SOON, LATER)
+    with pytest.raises(cli.CliError, match="no usable credit with id"):
+        cli.cmd_credits_use(env, credit_id="gone")
+    assert spent == []
+
+
+def test_the_account_changing_under_us_stops_the_spend(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조회와 소비 사이에 다른 rotate 가 전환을 끝내면 기본 홈에 이미 다른 계정이 있다.
+
+    그대로 진행하면 **남의 쿠폰을 쓴다.** `credits` 가 같은 이유로 같은 검사를 한다.
+    """
+
+    def someone_else(_bin: object, _home: object) -> ProbeResult:
+        return ProbeResult.of(
+            Usage(used_percent=98, email="stranger@example.com", reset_credits=1, credits=(SOON,))
+        )
+
+    monkeypatch.setattr(probe, "probe", someone_else)
+    with pytest.raises(cli.CliError, match="Nothing was spent"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_a_slot_we_cannot_read_stops_the_spend(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(probe, "probe", lambda *_: ProbeResult.unknown())
+    with pytest.raises(cli.CliError, match="could not read"):
+        cli.cmd_credits_use(env)
+    assert spent == []
+
+
+def test_an_unknown_label_stops_before_touching_the_network(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def never(*_: object, **__: object) -> ProbeResult:
+        raise AssertionError("없는 라벨인데 조회했다")
+
+    monkeypatch.setattr(probe, "probe", never)
+    with pytest.raises(cli.CliError, match="no such label"):
+        cli.cmd_credits_use(env, "nope")
+    assert spent == []
+
+
+# ── 쓰는 경로 ───────────────────────────────────────────────────────────────
+
+
+def test_yes_spends_the_credit_that_expires_first(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """먼저 잃을 것부터 쓴다. 어차피 곧 사라질 것이다."""
+    _has(monkeypatch, LATER, SOON)
+    _answer(monkeypatch, "y")
+    assert cli.cmd_credits_use(env) == 0
+    assert spent == ["soon"]
+    assert "spent:" in capsys.readouterr().out
+
+
+def test_a_credit_with_no_expiry_is_not_treated_as_urgent(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """모르는 것을 급한 것으로 취급하면, 날짜가 찍힌 쿠폰을 놔두고 정체 모를 것을 태운다."""
+    nameless = Credit(id="nameless", status="available", expires_at=None)
+    _has(monkeypatch, nameless, LATER)
+    assert cli.cmd_credits_use(env, assume_yes=True) == 0
+    assert spent == ["later"]
+
+
+def test_naming_a_credit_overrides_the_choice(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _has(monkeypatch, SOON, LATER)
+    assert cli.cmd_credits_use(env, credit_id="later", assume_yes=True) == 0
+    assert spent == ["later"]
+
+
+def test_the_confirmation_names_the_account_and_the_expiry(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """라벨만 보여 주면 어느 계정인지 확신할 수 없다. 만료일이 없으면 왜 이것인지 모른다."""
+    seen: list[str] = []
+    _has(monkeypatch, SOON)
+    monkeypatch.setattr("builtins.input", lambda _="": "y")
+    cli.cmd_credits_use(env)
+    seen.append(capsys.readouterr().out)
+    assert "master" in seen[0]
+    assert "a@example.com" in seen[0]
+    assert "Full reset" in seen[0]
+    assert "cannot be undone" in seen[0]
+
+
+def test_spending_uses_the_active_account_by_default(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """쿠폰을 쓰고 싶은 순간은 대개 **지금 쓰는 계정**이 막힌 때다."""
+    homes: list[str] = []
+
+    def record(_bin: object, home: str) -> ProbeResult:
+        homes.append(home)
+        return ProbeResult.of(
+            Usage(
+                used_percent=98,
+                email=identity.email_of(Path(home) / "auth.json"),
+                reset_credits=1,
+                credits=(SOON,),
+            )
+        )
+
+    monkeypatch.setattr(probe, "probe", record)
+    cli.cmd_credits_use(env, assume_yes=True)
+    assert homes == [str(env.default_home)], homes
+
+
+def test_naming_an_inactive_label_reads_its_slot_copy(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    homes: list[str] = []
+
+    def record(_bin: object, home: str) -> ProbeResult:
+        homes.append(home)
+        return ProbeResult.of(
+            Usage(
+                used_percent=98,
+                email=identity.email_of(Path(home) / "auth.json"),
+                reset_credits=1,
+                credits=(SOON,),
+            )
+        )
+
+    monkeypatch.setattr(probe, "probe", record)
+    cli.cmd_credits_use(env, "shared", assume_yes=True)
+    assert homes == [str(env.accounts_dir / "shared")], homes
+
+
+# ── 결과를 어떻게 읽는가 ────────────────────────────────────────────────────
+
+
+def _outcome(monkeypatch: pytest.MonkeyPatch, value: probe.CreditOutcome) -> None:
+    monkeypatch.setattr(probe, "consume_credit", lambda *_, **__: value)
+
+
+def test_already_redeemed_is_not_reported_as_success(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.ALREADY_REDEEMED)
+    assert cli.cmd_credits_use(env, assume_yes=True) == 1
+    assert "already redeemed" in capsys.readouterr().out
+
+
+def test_nothing_to_reset_says_the_credit_is_still_yours(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """쓸 것이 없어서 안 썼다. 이것을 실패로만 적으면 사용자는 쿠폰을 잃은 줄 안다."""
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.NOTHING_TO_RESET)
+    assert cli.cmd_credits_use(env, assume_yes=True) == 1
+    assert "still yours" in capsys.readouterr().out
+
+
+def test_an_unreadable_outcome_does_not_claim_it_failed(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`UNKNOWN` 을 실패로 적으면 사용자가 하나 더 쓴다.
+
+    되돌릴 수 없는 동작에서 그 오분류의 대가가 가장 크다.
+    """
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.UNKNOWN)
+    assert cli.cmd_credits_use(env, assume_yes=True) == 1
+    out = capsys.readouterr().out
+    assert "may or may not" in out
+    assert "check before trying again" in out.lower()
+
+
+def test_a_transport_failure_says_it_could_not_spend(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """확정된 실패는 `UNKNOWN` 과 다르다 — 쓰지도 않은 쿠폰을 잃었다고 믿게 하면 안 된다."""
+
+    def boom(*_: object, **__: object) -> probe.CreditOutcome:
+        raise probe.ProbeError("chatgpt authentication required")
+
+    _has(monkeypatch, SOON)
+    monkeypatch.setattr(probe, "consume_credit", boom)
+    with pytest.raises(cli.CliError, match="could not spend"):
+        cli.cmd_credits_use(env, assume_yes=True)
+
+
+# ── 캐시 ────────────────────────────────────────────────────────────────────
+
+
+def test_a_spent_credit_clears_the_stale_usage(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """쿠폰이 먹으면 사용량 창이 방금 바뀌었는데 캐시에는 쓰기 직전 숫자가 남는다.
+
+    `rotate` 는 그것을 정책 입력으로 읽으므로, 지우지 않으면 방금 되살린 계정을 최대 TTL
+    동안 소진된 것으로 취급한다.
+    """
+    cache.write(env, "master", {"usedPercent": 98}, now=1000)
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.RESET)
+    cli.cmd_credits_use(env, assume_yes=True)
+    assert cache.read_stale(env, "master") is None
+
+
+def test_an_unknown_outcome_also_clears_the_cache(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """썼는지 모르는 상태에서 낡은 숫자를 믿는 것이 더 나쁘다."""
+    cache.write(env, "master", {"usedPercent": 98}, now=1000)
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.UNKNOWN)
+    cli.cmd_credits_use(env, assume_yes=True)
+    assert cache.read_stale(env, "master") is None
+
+
+def test_nothing_to_reset_keeps_the_cache(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """아무 일도 안 일어났다. 지우면 다음 호출이 이유 없이 프로브를 한 번 더 한다."""
+    cache.write(env, "master", {"usedPercent": 98}, now=1000)
+    _has(monkeypatch, SOON)
+    _outcome(monkeypatch, probe.CreditOutcome.NOTHING_TO_RESET)
+    cli.cmd_credits_use(env, assume_yes=True)
+    assert cache.read_stale(env, "master") is not None
+
+
+# ── 배선 ────────────────────────────────────────────────────────────────────
+
+
+def test_the_command_line_reaches_the_spend(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """함수를 직접 부르는 테스트만 있으면 배선이 끊겨도 전부 통과한다."""
+    _has(monkeypatch, SOON)
+    assert cli.main(["credits", "use", "--yes"]) == 0
+    assert spent == ["soon"]
+
+
+def test_the_command_line_dry_run_spends_nothing(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _has(monkeypatch, SOON)
+    assert cli.main(["credits", "use", "--dry-run"]) == 0
+    assert spent == []
+
+
+def test_a_stray_word_after_credits_is_rejected_not_guessed(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`codex-swap credits master` 는 뜻이 둘로 읽힌다 — 목록인가, 그 계정에 쓰는 것인가.
+
+    argparse 가 거절하는 것이 맞다. 조용히 목록으로 처리하면 "쓰려 했는데 안 썼다" 를
+    사용자가 모르고, 반대로 알아서 쓰면 **묻지도 않고 태운다.**
+    """
+    _has(monkeypatch, SOON)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["credits", "master"])
+    assert exc.value.code == 2
+    assert spent == []
+
+
+def test_probe_refuses_an_empty_credit_id() -> None:
+    """빈 문자열을 서버까지 보내면 무엇이 일어날지 모른다. 여기서 막는다."""
+    with pytest.raises(probe.ProbeError, match="must not be empty"):
+        probe.consume_credit("/bin/true", None, "")
+
+
+def test_the_outcome_enum_covers_what_the_server_names() -> None:
+    """서버가 쓰는 문자열이 이 열거형과 같아야 파싱이 성립한다."""
+    assert {o.value for o in probe.CreditOutcome} >= {
+        "reset",
+        "nothingToReset",
+        "alreadyRedeemed",
+    }
+
+
+def test_probe_outcome_is_untouched_by_the_new_enum() -> None:
+    """이름이 비슷한 두 열거형이 섞이면 결과 판정이 통째로 어긋난다."""
+    assert probe.CreditOutcome is not ProbeOutcome

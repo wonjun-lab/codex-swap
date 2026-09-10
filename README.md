@@ -222,8 +222,24 @@ This probes every account, so it takes a moment and needs the network — unlike
 which only reads the cache. Credits are not cached: they change rarely and the detail is
 only wanted when you ask for it.
 
-Spending a credit is not automated. Automatic switching never spends one — that is a
-decision with a cost, and the policy has no way to know whether you would rather switch.
+### Spending one
+
+```
+codex-swap credits use            # the active account
+codex-swap credits use shared     # a named one
+codex-swap credits use --dry-run  # say what would happen, spend nothing
+```
+
+It asks before spending, naming the account and the credit's expiry date. **A spent credit
+cannot be recovered**, so without a terminal it refuses rather than guessing — pass `--yes`
+if you mean it from a script. `remove` is more relaxed about this because deleting a slot
+leaves the live credentials alone; a credit has no such second copy.
+
+When several are available it spends the one that **expires first** — the one you would
+lose anyway. Override with `--credit <id>`; `credits --json` prints the ids.
+
+Automatic switching never spends a credit. That is a decision with a cost, and the policy
+has no way to know whether you would rather switch accounts instead.
 
 ## Policy
 
@@ -247,6 +263,7 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `codex-swap list [--fresh]` | Stored accounts and cached usage. `--fresh` probes every slot |
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
 | `codex-swap credits` | Usage-reset credits per account, with the date each one expires |
+| `codex-swap credits use [label]` | Spend one credit. Asks first; `--dry-run` spends nothing |
 | `codex-swap use <label>` | Switch by hand |
 | `codex-swap rotate [--dry-run]` | Run the policy |
 | `codex-swap rename <old> <new>` | Give a slot a different name |
