@@ -445,6 +445,10 @@ def cmd_credits(settings: config.Settings) -> int:
     active = store.active_label(settings)
     rows: list[tuple[str, str, str, str, str]] = []
     unreadable: list[str] = []
+    # 목록을 그리면 서버가 준 개수가 화면에서 사라진다. 줄 수가 곧 개수처럼 읽히는데,
+    # 만료됐거나 `redeeming` 인 쿠폰이 섞이면 그 둘이 다르다 — 사용자는 세어 보고 더
+    # 많다고 믿는다. 어긋날 때만 말한다. 늘 떠 있는 안내는 곧 안 읽힌다.
+    disagree: list[str] = []
     for label, email, usage in _probe_credits(settings):
         mark = "*" if label == active else " "
         if usage is None:
@@ -457,6 +461,14 @@ def cmd_credits(settings: config.Settings) -> int:
             count = "-" if usage.reset_credits is None else str(usage.reset_credits)
             rows.append((mark, label, email, count, "-"))
             continue
+        # **보이는 줄 수와 견준다.** 쓸 수 있는 것끼리 세어 견주면 이 검사가 헛돈다 —
+        # 사용자가 오해하는 것은 "쓸 수 있는 게 몇 개인가" 가 아니라 **화면에 몇 줄이
+        # 있는가** 다. 만료된 쿠폰 두 줄이 함께 뜨면 셋으로 읽는다.
+        if usage.reset_credits is not None and usage.reset_credits != len(usage.credits):
+            disagree.append(
+                f"{label}: {usage.reset_credits} usable of {len(usage.credits)} shown "
+                "(the rest are expired or already being redeemed)"
+            )
         for i, credit in enumerate(usage.credits):
             title = credit.title or credit.status or "credit"
             rows.append(
@@ -487,6 +499,8 @@ def cmd_credits(settings: config.Settings) -> int:
     print()
     if unreadable:
         print(f"could not read: {', '.join(unreadable)}. Try: codex-swap status --fresh")
+    for note in disagree:
+        print(note)
     print("A credit resets that account's usage window. Spending one cannot be undone.")
     return 0
 

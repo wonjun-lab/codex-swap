@@ -313,3 +313,49 @@ def test_credit_detail_never_reaches_the_cache(
     raw = (env.accounts_dir / ".usage-cache.json").read_text()
     assert "secret_credit_id" not in raw, raw
     assert "credits" not in raw, raw
+
+
+def test_the_server_count_is_not_lost_when_the_list_is_shown(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """목록을 그리면 줄 수가 곧 개수처럼 읽힌다.
+
+    만료됐거나 `redeeming` 인 쿠폰이 섞이면 그 둘이 다르다 — 세 줄이 보이는데 쓸 수 있는
+    것은 하나일 수 있다. 그때 아무 말이 없으면 사용자는 셋이라고 믿는다.
+    """
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com",
+                Credit(id="c1", status="available", expires_at=2_000_000_000),
+                Credit(id="c2", status="redeeming", expires_at=2_000_000_000),
+                Credit(id="c3", status="expired", expires_at=1_600_000_000),
+                count=1,
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    out = capsys.readouterr().out
+    assert "1 usable of 3 shown" in out, out
+    assert len([ln for ln in out.splitlines() if "05-18" in ln or "09-13" in ln]) >= 2, out
+
+
+def test_nothing_is_said_when_the_count_matches_the_list(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """늘 떠 있는 안내는 곧 안 읽힌다. 어긋날 때만 말한다."""
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com",
+                Credit(id="c1", status="available", expires_at=2_000_000_000),
+                Credit(id="c2", status="available", expires_at=2_100_000_000),
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    assert "usable of" not in capsys.readouterr().out
