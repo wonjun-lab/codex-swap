@@ -261,8 +261,8 @@ def test_auto_switching_being_off_is_not_whispered(tmp_path: Path) -> None:
     (s.home / ".claude/.codex-rotate-off").touch()
 
     screen = s.run([b"q"])
-    assert "Auto switch: off" in screen.text, screen.text
-    assert "33" in screen.attrs_of("Auto switch: off"), "꺼짐이 켜짐과 같은 밝기다"
+    assert "Automatic switching: off" in screen.text, screen.text
+    assert "33" in screen.attrs_of("Automatic switching: off"), "꺼짐이 켜짐과 같은 밝기다"
 
 
 def test_only_the_key_glyphs_are_coloured(session: Session) -> None:

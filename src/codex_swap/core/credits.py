@@ -1,4 +1,4 @@
-"""사용량 리셋 쿠폰 — 읽기와 **소비**.
+"""사용량 리셋 — 읽기와 **소비**.
 
 `cli` 와 `tui` 가 **같은 함수**를 지나야 하는 자리다. 화면과 파이프가 각자 구현하면 갈리고,
 갈렸을 때 약한 쪽이 이 도구의 실제 안전 수준이 된다 — 이 프로젝트에서 여러 번 그랬다.
@@ -135,21 +135,6 @@ def pick(
     return min(fresh, key=lambda c: (c.expires_at is None, c.expires_at or 0))
 
 
-def why_not(account: Account) -> str:
-    """쿠폰을 못 고르는 이유. 셋이 갈린다.
-
-    뭉뚱그리면 사용자가 엉뚱한 조치를 한다 — "상세가 없다" 는 다시 시도하라는 뜻이지만
-    "전부 만료" 는 아무리 다시 해도 같다.
-    """
-    if not account.readable:
-        return f"could not read {account.label}"
-    if [c for c in account.credits if c.status == "available"]:
-        return f"{account.label}'s usable credits have all expired"
-    if account.count:
-        return f"{account.label} reports {account.count} credit(s) but sent no usable detail"
-    return f"{account.label} has no credit to spend"
-
-
 def spend(
     settings: config.Settings, label: str, credit: Credit, expect: str
 ) -> probe.CreditOutcome:
@@ -182,4 +167,4 @@ def spend(
     except probe.ProbeError as exc:
         # 여기 오는 것은 소비 요청 **전**의 실패뿐이다. 요청 뒤의 불확실은
         # `consume_credit` 이 `UNKNOWN` 으로 돌려준다.
-        raise CreditError(f"could not spend the credit: {exc}") from exc
+        raise CreditError(f"could not spend the usage reset: {exc}") from exc

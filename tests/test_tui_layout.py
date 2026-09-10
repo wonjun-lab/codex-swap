@@ -165,3 +165,132 @@ def test_a_message_outlives_the_rows_it_was_about(_isolated_home: Path) -> None:
     view = tui.replace(_many(config.load(), 19), message="Switch failed: something broke")
     lines = tui.render_lines(view, height=8, width=90)
     assert any("Switch failed" in line for line in lines), "\n".join(lines)
+
+
+# ── 열 사이가 눈에 띄게 떨어져 있는가 ───────────────────────────────────────
+
+
+def _gap_between(header: str, left: str, right: str) -> int:
+    """머리말에서 두 열 이름 사이의 공백 수."""
+    start = header.index(left) + len(left)
+    return header.index(right, start) - start
+
+
+def test_the_columns_do_not_crowd_each_other(_isolated_home: Path) -> None:
+    """두 칸이면 이메일처럼 긴 값 옆에서 열이 붙어 보인다 — 눈이 경계를 못 찾는다.
+
+    라벨·이메일을 짧게 두면 열 폭이 머리말 폭과 같아지므로, 머리말 사이의 공백이 곧
+    칼럼 간격이다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+    header = next(ln for ln in tui.render_lines(tui.build_view(s), width=140) if "LABEL" in ln)
+    assert _gap_between(header, "LABEL", "EMAIL") >= 4, header
+    assert _gap_between(header, "EMAIL", "USED") >= 4, header
+
+
+def test_the_usage_reset_screen_uses_the_same_gap(_isolated_home: Path) -> None:
+    """두 표가 다른 간격이면 화면을 옮길 때마다 눈이 다시 맞춘다."""
+    from codex_swap.core import credits as credits_core
+    from codex_swap.core.types import Usage
+
+    s = config.load()
+    accounts = (credits_core.Account("a", "a@x", True, Usage(used_percent=50, email="a@x")),)
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    header = next(ln for ln in tui.render_lines(view, width=140) if "LABEL" in ln)
+    assert _gap_between(header, "LABEL", "EMAIL") >= 4, header
+    assert _gap_between(header, "EMAIL", "RESET") >= 4, header
+
+
+def test_automatic_switching_is_quiet_while_it_is_on(_isolated_home: Path) -> None:
+    """**정상은 조용해야 한다.**
+
+    꺼졌을 때 색을 주는 것은 "왜 안 바뀌지" 의 첫 번째 원인이기 때문이다. 켜졌을 때도
+    똑같이 강조하면 평상시 화면에서 가장 시끄러운 줄이 되고, 그러면 정작 꺼졌을 때
+    그 신호가 안 읽힌다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+
+    on = tui.build_view(s)
+    line, style = next(
+        pair for pair in tui.render_screen(on, width=140) if "Automatic switching" in pair[0]
+    )
+    assert "on" in line
+    assert style.tone != "warn", f"켜져 있는데 경고색이다: {line!r}"
+
+    off = tui.replace(on, auto_off=True)
+    _, off_style = next(
+        pair for pair in tui.render_screen(off, width=140) if "Automatic switching" in pair[0]
+    )
+    assert off_style.tone == "warn", "꺼짐이 켜짐과 같은 밝기다"
+
+
+def test_the_headline_carries_the_off_switch_so_clipping_cannot_hide_it(
+    _isolated_home: Path,
+) -> None:
+    """자동 전환이 꺼진 것은 **본문이 잘려도** 보여야 한다.
+
+    상태를 메뉴로 옮겼더니, 계정이 많고 화면이 짧을 때 그 줄까지 잘려 꺼짐 표시가 화면에서
+    통째로 사라졌다 — 꼬리말에 있던 시절에는 남던 것이다. 머리말은 이미 "왜 안 바뀌었나"
+    에 답하는 자리(관문·쿨다운)고, 꺼짐은 그 질문의 가장 큰 답이다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+    rows = tuple(
+        tui.Row(f"acct{n:02d}", f"a{n}@x", f"{n}%", "-", n == 0, percent=n) for n in range(20)
+    )
+    off = tui.replace(tui.build_view(s), rows=rows, cursor=0, auto_off=True)
+
+    short = tui.render_lines(off, height=10, width=90)
+    assert not any("Automatic switching" in ln for ln in short), "전제가 깨졌다 — 메뉴가 안 잘렸다"
+    assert "auto off" in short[0], short
+
+    on = tui.replace(off, auto_off=False)
+    assert "auto off" not in tui.render_lines(on, height=10, width=90)[0], "정상인데 시끄럽다"
+
+
+@pytest.mark.parametrize(("width", "want"), [(20, "Auto: off"), (26, "Auto switching: off")])
+def test_a_narrow_screen_keeps_the_state_and_shortens_the_name(
+    _isolated_home: Path, width: int, want: str
+) -> None:
+    """그냥 자르면 하필 **상태가 먼저** 잘린다 — `Automatic switching: of`.
+
+    이 줄에서 정작 필요한 것이 그 두 글자다. 이름을 줄이고 상태를 남긴다.
+    """
+    s = config.load()
+    _auth(s.accounts_dir / "a/auth.json", "a@x")
+    _auth(s.default_home / "auth.json", "a@x")
+    off = tui.replace(tui.build_view(s), auto_off=True)
+    line = next(ln for ln in tui.render_lines(off, width=width) if "uto" in ln and ":" in ln)
+    assert line.strip() == want, line
+
+
+def test_the_usage_reset_screen_gives_way_on_the_email_not_the_expiry(
+    _isolated_home: Path,
+) -> None:
+    """간격을 넓히자 긴 이메일 옆에서 **만료 시각**이 잘렸다 — `(i` 까지만 남았다.
+
+    만료는 이 화면이 존재하는 이유다. 줄여야 하면 이메일을 말줄임으로 줄인다. codex 가 잡았다.
+    """
+    from codex_swap.core import credits as credits_core
+    from codex_swap.core.types import Credit, Usage
+
+    s = config.load()
+    long_email = "a" * 27 + "@example.com"
+    credit = Credit(id="c", status="available", expires_at=2_000_000_000, title="Full reset")
+    accounts = (
+        credits_core.Account(
+            "productionteam",
+            long_email,
+            True,
+            Usage(used_percent=50, email=long_email, reset_credits=1, credits=(credit,)),
+        ),
+    )
+    view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
+    for width in (92, 97, 110):
+        row = next(ln for ln in tui.render_lines(view, width=width) if "Full reset" in ln)
+        assert row.rstrip().endswith(")"), f"@ {width}: 만료가 잘렸다 {row!r}"

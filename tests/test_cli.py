@@ -940,7 +940,7 @@ def test_list_shows_reset_credits(env, capsys) -> None:
     cache.write(env, "b", {"usedPercent": 40, "resetsAt": None, "resetCredits": 0})
     assert cli.main(["list"]) == 0
     out = capsys.readouterr().out
-    assert "CRED" in out, out
+    assert "RESETS" in out, out
     row_a = next(ln for ln in out.splitlines() if " a " in ln)
     assert "2" in row_a.split("95%")[1], row_a
 
@@ -967,7 +967,7 @@ def test_status_shows_reset_credits(env, capsys, monkeypatch) -> None:
         _probe_recorder(ProbeResult.of(Usage(used_percent=96, reset_credits=1)), []),
     )
     assert cli.main(["status", "--fresh"]) == 0
-    assert "credits 1" in capsys.readouterr().out
+    assert "resets 1" in capsys.readouterr().out
 
 
 def test_list_says_what_to_do_when_every_account_is_spent(env, capsys) -> None:
@@ -1200,3 +1200,23 @@ def test_list_columns_survive_a_wide_character_email(env, capsys) -> None:
     # 각 행에서 사용량 값이 **몇 번째 칸에서** 시작하는가. 글자 수가 아니라 표시 폭이다.
     starts = {cli._display_width(ln[: ln.index("42%")]) for ln in lines}
     assert len(starts) == 1, f"USED 열이 행마다 다른 칸에서 시작한다: {starts}\n" + "\n".join(lines)
+
+
+def test_status_does_not_call_the_count_and_the_time_the_same_thing(env, capsys) -> None:
+    """`resets 1 · resets 09-11` — 개수와 시각이 같은 단어였다. codex 가 잡았다.
+
+    화면에서는 `RESETS`(몇 장)와 `RENEWS`(언제)로 갈라 놓았는데 CLI 한 줄에서 다시 합쳐졌다.
+    """
+    line = cli._usage_line(Usage(used_percent=50, reset_credits=1, resets_at=2_000_000_000))
+    assert "resets 1" in line, line
+    assert "renews " in line, line
+    assert line.count("resets") == 1, line
+
+
+def test_list_uses_the_same_column_names_as_the_screen(env, capsys) -> None:
+    """이름을 바꾸면서 **CLI `list` 표만 옛 이름**으로 남았다 — 가장 많이 쓰는 표면이다."""
+    cache.write(env, "a", {"usedPercent": 40, "resetsAt": 2_000_000_000, "resetCredits": 1})
+    assert cli.main(["list"]) == 0
+    header = capsys.readouterr().out.splitlines()[0]
+    assert "RESETS" in header and "RENEWS" in header, header
+    assert "CRED" not in header, header

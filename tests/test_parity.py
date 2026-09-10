@@ -223,7 +223,7 @@ def test_the_screen_will_not_offer_a_credit_that_is_not_available(_isolated_home
     accounts = (credits_core.Account("master", "a@example.com", True, _usage_with(BUSY)),)
     view = tui.replace(tui.build_view(s), mode="credits", credit_accounts=accounts)
     assert tui.spend_prompt(view) is None
-    assert "usable credit" in tui.apply_spend(view, "master").message
+    assert "usable reset" in tui.apply_spend(view, "master").message
 
 
 def test_the_prompt_asks_for_the_label_not_a_keypress(screen) -> None:

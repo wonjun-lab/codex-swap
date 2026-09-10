@@ -157,7 +157,7 @@ def test_an_account_with_no_credit_stops_before_asking(
     env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _has(monkeypatch, count=0)
-    with pytest.raises(cli.CliError, match="no credit to spend"):
+    with pytest.raises(cli.CliError, match="no usage reset to spend"):
         cli.cmd_credits_use(env)
     assert spent == []
 
@@ -177,7 +177,7 @@ def test_a_credit_that_is_being_redeemed_is_not_usable(
 ) -> None:
     """`redeeming` 은 이미 쓰이는 중이다. 그것을 또 쓰면 하나를 헛되이 태운다."""
     _has(monkeypatch, BUSY, count=0)
-    with pytest.raises(cli.CliError, match="no credit to spend"):
+    with pytest.raises(cli.CliError, match="no usage reset to spend"):
         cli.cmd_credits_use(env)
     assert spent == []
 
@@ -187,7 +187,7 @@ def test_naming_a_credit_that_is_not_there_spends_nothing_else(
 ) -> None:
     """지목한 것이 없다고 **아무거나** 쓰면 안 된다. 사용자는 그것을 골랐다."""
     _has(monkeypatch, SOON, LATER)
-    with pytest.raises(cli.CliError, match="no usable credit with id"):
+    with pytest.raises(cli.CliError, match="no usable reset with id"):
         cli.cmd_credits_use(env, credit_id="gone")
     assert spent == []
 
@@ -660,7 +660,7 @@ def test_an_account_that_will_not_say_who_it_is_does_not_get_charged(
         return ProbeResult.of(Usage(used_percent=98, email=None, reset_credits=1, credits=(SOON,)))
 
     monkeypatch.setattr(probe, "probe", nameless)
-    with pytest.raises(cli.CliError, match="could not confirm whose credit"):
+    with pytest.raises(cli.CliError, match="could not confirm whose usage reset"):
         cli.cmd_credits_use(env, assume_yes=True)
     assert spent == []
 

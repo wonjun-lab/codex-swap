@@ -162,9 +162,9 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 MENU: tuple[tuple[str, str], ...] = (
     ("policy", "Policy settings"),
     ("refresh", "Refresh usage"),
-    ("credits", "Credits"),
+    ("credits", "Usage resets"),
     ("adopt", "Adopt the account in use"),
-    ("auto", "Toggle automatic switching"),
+    ("auto", "Automatic switching"),
     ("quit", "Quit"),
 )
 """커서로 내려가 `enter` 로 들어가는 항목들.
@@ -562,8 +562,15 @@ AXIS_TICK_CURRENT = "┻"
 만들 때 그 교훈을 적용하지 않았다. 테스트가 이 불변식을 지킨다 — 눈으로는 안 보인다.
 """
 
-_GUTTER = "  "
-"""칼럼 사이 간격. 한 칸이면 `USED`·바·`RESET` 이 서로 붙어 읽힌다."""
+_GUTTER = "    "
+"""칼럼 사이 간격.
+
+한 칸이면 열이 서로 붙어 읽히고, 두 칸이어도 이메일처럼 긴 값 옆에서는 여전히 붙어
+보인다 — 눈이 열의 경계를 못 찾는다. 네 칸이면 값이 길어도 열이 떨어져 보인다.
+
+대가는 폭이다. 계정 표는 바 그래프까지 들어가야 해서, 이 값을 늘리면 바가 나오는 최소
+폭이 함께 올라간다(`_BAR_MIN_WIDTH`). 좁은 터미널에서는 바가 먼저 빠진다.
+"""
 
 BAR_COLS = 24
 """사용량 바의 칸 수. 0~100% 를 이만큼에 눌러 담는다.
@@ -595,8 +602,15 @@ _EMAIL_MIN = 20
 
 # 바가 있는 줄의 고정 소비: 커서·활성 표시(3) + 라벨(14) + 공백 + 공백 + 사용량(6) +
 # 공백 + 바 + 공백 + 쿠폰 + 공백 + 리셋. 이메일은 남는 자리를 받는다.
-_CREDIT_COLS = 4
-"""리셋 크레딧 열의 폭. 머리말 `CRED` 가 4 칸이고 값은 한 자리다."""
+_CREDIT_COLS = 6
+"""남은 사용량 리셋 표의 개수 열. 머리말 `RESETS` 가 6 칸이고 값은 한 자리다.
+
+머리말이 `CRED` 였을 때는 그것이 결제 크레딧으로 읽혔다 — 서버 응답에 **그 이름의 다른
+값**이 실제로 있다(`credits.balance`). 그리고 옆 열 `RESET` 은 시각이라, 같은 화면에서
+`CRED` 와 `RESET` 이 각각 다른 것을 가리켰다.
+
+이제 `RESETS` 는 **몇 장 남았나**, `RENEWS` 는 **언제 저절로 돌아오나** 다.
+"""
 
 _RESET_COLS = 20
 """리셋 시각 열의 폭. `_reset_text` 가 만드는 **가장 긴 문자열**에서 나온 값이다.
@@ -756,6 +770,31 @@ def ladder_axis(ladder: Sequence[int], rung: int | None) -> tuple[str, str]:
     return "".join(axis), "".join(labels)
 
 
+def menu_title(action: str, view: View, *, width: int | None = None) -> str:
+    """메뉴 한 줄의 문구. **상태가 있는 항목은 그 상태를 담는다.**
+
+    `Toggle automatic switching` 은 무엇이 켜지고 꺼지는지도, 지금 어느 쪽인지도 말하지
+    않았다. 그래서 상태는 꼬리말이 따로 들고 있었고, 같은 사실을 두 곳이 다른 어휘로
+    말하게 됐다.
+
+    `enter` 가 무엇을 할지는 상태에서 따라온다 — `on` 이면 끄고 `off` 면 켠다.
+    """
+    base = next(title for name, title in MENU if name == action)
+    if action != "auto":
+        return base
+    # 상태를 **덧붙인다.** 문구를 따로 적으면 `MENU` 의 이름과 화면의 이름이 갈려서,
+    # 문서·테스트가 어느 쪽을 봐야 하는지 알 수 없게 된다.
+    #
+    # 좁으면 **이름을 줄이고 상태는 남긴다.** 그냥 자르면 `Automatic switching: of` 처럼
+    # 하필 상태가 먼저 잘린다 — 이 줄에서 정작 필요한 것이 그 두 글자다.
+    state = "off" if view.auto_off else "on"
+    for name in (base, "Auto switching", "Auto"):
+        text = f"{name}: {state}"
+        if width is None or _width(text) + 4 <= width:  # ` > ` + 여유 한 칸
+            return text
+    return state
+
+
 def cursor_limit(view: View) -> int:
     """커서가 갈 수 있는 마지막 자리. 계정 다음에 메뉴가 이어진다."""
     return max(len(view.rows) + len(MENU) - 1, 0)
@@ -816,7 +855,11 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
         gate = f"{now} of {ladder}"
     else:
         gate = now
-    parts = [gate]
+    # **자동 전환이 꺼진 것은 여기 있어야 한다.** 이 줄은 이미 "왜 안 바뀌었나" 에 답하는
+    # 자리고(관문·쿨다운), 꺼짐은 그 질문의 가장 큰 답이다. 메뉴에도 상태가 있지만 그쪽은
+    # **조작**이라 본문이 잘리면 함께 사라진다 — 계정이 많고 화면이 짧으면 실제로 그랬다.
+    parts = ["auto off"] if view.auto_off else []
+    parts.append(gate)
     if view.cooldown_left is not None:
         parts.append(f"cooldown {_duration(view.cooldown_left)} left")
     parts.append(f"margin {s.margin}%p")
@@ -873,11 +916,10 @@ def render_screen(
     # 꺼져 있을 때만 색을 준다. 자동 전환이 꺼진 것은 "왜 안 바뀌지" 의 첫 번째 원인인데,
     # 켜짐과 같은 dim 으로 두면 그 줄이 배경으로 읽혀 끝까지 눈에 안 들어온다. 반대로
     # 켜짐까지 강조하면 평상시 화면에서 가장 시끄러운 줄이 된다 — 정상은 조용해야 한다.
+    # 자동 전환 상태는 **메뉴가 들고 있다.** 꼬리말에도 두던 때는 같은 사실을 두 곳이
+    # 서로 다른 어휘로 말했다 — 메뉴는 "Toggle automatic switching", 꼬리말은
+    # "Auto switch: on". 둘을 본 사람은 그것이 같은 것인지부터 확인해야 했다.
     droppable: list[tuple[str, Style]] = [
-        (
-            _help_line(*(AUTO_OFF_LINES if view.auto_off else AUTO_ON_LINES), width=width),
-            Style("warn") if view.auto_off else _DIM,
-        ),
         (keys_text, Style("dim", spans=keys_spans)),
     ]
     # `~` 는 낡은 값이라는 표시다. 범례가 없으면 사용자는 그 기호를 오류로 읽는다.
@@ -920,7 +962,7 @@ def render_screen(
     if with_bar:
         columns += f"{_GUTTER}{_cell('', BAR_COLS)}"
     if with_reset:
-        columns += f"{_GUTTER}{_cell('CRED', _CREDIT_COLS)}{_GUTTER}RESET"
+        columns += f"{_GUTTER}{_cell('RESETS', _CREDIT_COLS)}{_GUTTER}RENEWS"
     header = [*head, (columns.rstrip() if not with_reset else columns, _DIM)]
 
     # ── 뷰포트 ──
@@ -1021,17 +1063,19 @@ def render_screen(
     # 메뉴. 커서가 계정 구간을 지나면 여기로 이어진다.
     menu_at = len(body)
     menu_lines: list[tuple[str, Style]] = [("", _PLAIN)]
-    for i, (_, title) in enumerate(MENU):
+    for i, (action, _) in enumerate(MENU):
         picked = view.cursor - len(view.rows) == i
         if picked:
             cursor_at = menu_at + len(menu_lines)
-        line = (
-            _clip(f" {'>' if picked else ' '} {title}", width)
-            if width
-            else f" {'>' if picked else ' '} {title}"
-        )
+        title = menu_title(action, view, width=width)
+        text = f" {'>' if picked else ' '} {title}"
+        line = _clip(text, width) if width else text
         spans = ((1, 2, _KEY_STYLE),) if picked else ()
-        menu_lines.append((line, Style("plain" if picked else "dim", spans=spans)))
+        # 자동 전환이 꺼져 있으면 이 줄에 색을 준다. "왜 안 바뀌지" 의 첫 번째 원인인데,
+        # 켜짐과 같은 밝기로 두면 배경으로 읽혀 끝까지 눈에 안 들어온다. 켜짐까지
+        # 강조하면 평상시 화면에서 가장 시끄러운 줄이 된다 — 정상은 조용해야 한다.
+        tone = "warn" if action == "auto" and view.auto_off else ("plain" if picked else "dim")
+        menu_lines.append((line, Style(tone, spans=spans)))
     body += menu_lines
 
     # 최종 클램프. 아주 짧은 화면에서는 스크롤 표시까지 합한 바닥(머리말 3 + 표시 2 +
@@ -1119,12 +1163,12 @@ def _render_credits(
     # `build_view` 가 `_reset_text` 를 같은 방식으로 쓴다.
     from codex_swap.cli import _expiry_text
 
-    out: list[tuple[str, Style]] = [("codex-swap · credits", _PLAIN), ("", _PLAIN)]
+    out: list[tuple[str, Style]] = [("codex-swap · usage resets", _PLAIN), ("", _PLAIN)]
 
     if view.credit_accounts is None:
         # **"없다" 가 아니라 "아직" 이다.** 하나로 두면 읽는 중에 "쿠폰 없음" 이 떠서
         # 사용자가 그것을 사실로 읽는다.
-        out.append((_note("Reading credits…", width), _DIM))
+        out.append((_note("Reading usage resets…", width), _DIM))
     elif not view.credit_accounts:
         out.append((_note("No accounts yet.", width), _PLAIN))
     else:
@@ -1134,11 +1178,22 @@ def _render_credits(
         notes = [_credit_note(a, c) for a, c in rows]
         lw = max(5, *(_width(x) for x in labels)) if labels else 5
         ew = max(5, *(_width(x) for x in emails)) if emails else 5
-        cw = max(6, *(_width(x) for x in notes)) if notes else 6
+        cw = max(5, *(_width(x) for x in notes)) if notes else 5
+        # **줄여야 하면 이메일부터 줄인다.** 만료는 이 화면이 존재하는 이유다. 간격을 네
+        # 칸으로 넓히자 긴 이메일 옆에서 만료가 `(i` 까지만 남았다 — 이메일 칸 폭이 가장 긴
+        # 주소 길이 그대로라 말줄임이 걸릴 틈이 없었고, 넘친 것은 줄 **끝**에서 잘렸다.
+        #
+        # 예산은 실제로 그릴 만료 문자열의 최대 폭으로 잡는다. 추정치로 잡으면 `(expired)`
+        # 와 `(in 100d)` 처럼 길이가 다른 값에서 다시 어긋난다.
+        if width is not None:
+            expiries = [_expiry_text(None if c is None else c.expires_at) for _, c in rows]
+            xw = max((_width(x) for x in expiries), default=1)
+            fixed = 3 + lw + len(_GUTTER) * 3 + cw + xw
+            ew = max(min(ew, width - fixed), min(ew, 12))
 
         header = (
             f"{_INDENT}{_pad('LABEL', lw)}{_GUTTER}{_pad('EMAIL', ew)}{_GUTTER}"
-            f"{_pad('CREDIT', cw)}{_GUTTER}EXPIRES"
+            f"{_pad('RESET', cw)}{_GUTTER}EXPIRES"
         )
         out.append((_clip(header, width) if width else header, _DIM))
 
@@ -1151,7 +1206,7 @@ def _render_credits(
             line = (
                 f" {'>' if picked else ' '}{mark}"
                 f"{_pad(account.label if first else '', lw)}{_GUTTER}"
-                f"{_pad(account.email if first else '', ew)}{_GUTTER}"
+                f"{_cell(account.email if first else '', ew, ellipsis=True)}{_GUTTER}"
                 f"{_pad(_credit_note(account, credit), cw)}{_GUTTER}"
                 f"{_expiry_text(None if credit is None else credit.expires_at)}"
             ).rstrip()
@@ -1165,7 +1220,8 @@ def _render_credits(
         (keys_text, Style("dim", spans=keys_spans)),
         (
             _note(
-                "A credit resets that account's usage window. Spending one cannot be undone.", width
+                "A usage reset gives that account a fresh window. Spending one cannot be undone.",
+                width,
             ),
             _DIM,
         ),
@@ -1722,7 +1778,7 @@ def apply_spend(view: View, typed: str | None) -> View:
     asked = spend_prompt(view)
     picked = selected_credit(view)
     if asked is None or picked is None:
-        return replace(view, message="Move to a usable credit first")
+        return replace(view, message="Move to a usable reset first")
     account, credit = picked
     if typed is None or typed.strip() != asked[1]:
         return replace(view, message="Left it alone")
@@ -1741,12 +1797,12 @@ def apply_spend(view: View, typed: str | None) -> View:
 
     said = {
         probe.CreditOutcome.RESET: f"spent — {account.label}'s usage window was reset",
-        probe.CreditOutcome.ALREADY_REDEEMED: "that credit was already redeemed. Nothing changed",
+        probe.CreditOutcome.ALREADY_REDEEMED: "that reset was already redeemed. Nothing changed",
         probe.CreditOutcome.NOTHING_TO_RESET: (
-            f"{account.label} had nothing to reset, so the credit is still yours"
+            f"{account.label} had nothing to reset, so it is still yours"
         ),
         probe.CreditOutcome.UNKNOWN: (
-            "the server did not say what happened. The credit may or may not have been spent"
+            "the server did not say what happened. The reset may or may not have been spent"
         ),
     }[outcome]
     # 무엇이 됐든 목록을 다시 읽어야 한다 — 방금 바뀌었을 수 있다.
@@ -1756,7 +1812,7 @@ def apply_spend(view: View, typed: str | None) -> View:
 def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - 터미널 필요
     asked = spend_prompt(view)
     if asked is None:
-        return replace(view, message="Move to a usable credit first")
+        return replace(view, message="Move to a usable reset first")
     return apply_spend(view, _prompt(stdscr, asked[0], drawn))
 
 
@@ -1847,13 +1903,13 @@ class _CreditsLoader:
 
     def _run(self, settings: config.Settings) -> None:
         # 이 스레드에서 나가는 예외는 아무도 못 본다. 무엇이 됐든 하나는 큐에 넣어야
-        # 화면이 "Reading credits…" 에 영원히 굳지 않는다.
+        # 화면이 "Reading usage resets…" 에 영원히 굳지 않는다.
         try:
             self._queue.put((tuple(credits_core.load(settings)), ""))
         except credits_core.CreditError as exc:
             self._queue.put((None, str(exc)))
         except Exception as exc:  # pragma: no cover - 방어
-            self._queue.put((None, f"Could not read credits: {exc}"))
+            self._queue.put((None, f"Could not read usage resets: {exc}"))
 
 
 class _Prober:
