@@ -186,6 +186,25 @@ def render(
                         else:
                             active.add(code)
                     sgr = frozenset(active)
+                elif cmd in "LM":
+                    # IL / DL — **줄을 밀어 넣거나 빼낸다.**
+                    #
+                    # 이걸 모르면 화면이 조용히 어긋난다. ncurses 는 내용의 줄 수가 바뀌면
+                    # 전부 다시 그리지 않고 이 둘로 민다 — 계정 화면(줄이 많다)에서 쿠폰
+                    # 화면(적다)으로 넘어갈 때가 그렇다. 실제로 그 전환에서 조작법 줄이
+                    # 격자에서 사라졌고, **자식은 정상적으로 그리고 있었다.** 하네스가
+                    # 잃은 것을 제품 결함으로 한참 쫓았다.
+                    #
+                    # 스크롤 영역은 다루지 않는다 — 이 TUI 는 쓰지 않는다.
+                    n = min(max(first, 1), rows - row)
+                    blank = [[" "] * cols for _ in range(n)]
+                    blank_attr = [[frozenset()] * cols for _ in range(n)]
+                    if cmd == "L":
+                        grid[row:rows] = (blank + grid[row : rows - n])[: rows - row]
+                        attr_grid[row:rows] = (blank_attr + attr_grid[row : rows - n])[: rows - row]
+                    else:
+                        grid[row:rows] = (grid[row + n : rows] + blank)[: rows - row]
+                        attr_grid[row:rows] = (attr_grid[row + n : rows] + blank_attr)[: rows - row]
                 elif cmd == "K":
                     if first == 0:
                         for k in range(col, cols):

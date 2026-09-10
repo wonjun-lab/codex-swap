@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from codex_swap import tui
 from terminal import Session
 
 pytestmark = pytest.mark.skipif(
@@ -315,7 +316,15 @@ def test_arrowing_into_the_menu_and_entering_opens_the_policy_screen(session: Se
 
 
 def test_the_menu_quit_item_ends_the_session(session: Session) -> None:
-    down = [b"\x1bOB"] * (2 + 4)  # 계정 2 + 메뉴 마지막(Quit) 까지
+    """**횟수를 세지 않는다.** 메뉴에 항목을 하나 더하면 세어 둔 숫자가 조용히 틀린다.
+
+    실제로 `Credits` 를 넣으면서 이 테스트가 엉뚱한 항목에서 `enter` 를 눌렀다. 화면의
+    구조에서 거리를 구하면 그런 일이 없다.
+    """
+    quit_at = (
+        len(tui.MENU) - 1 - next(i for i, (action, _) in enumerate(tui.MENU) if action == "quit")
+    )
+    down = [b"\x1bOB"] * (2 + len(tui.MENU) - 1 - quit_at)  # 계정 2 개를 지나 Quit 까지
     screen = session.run([*down, b"\n"], total=25.0)
     assert screen.exit_code == 0
 

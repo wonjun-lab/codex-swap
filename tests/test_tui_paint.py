@@ -235,3 +235,49 @@ def test_the_accent_lands_on_the_arrow_keys_even_when_ambiguous_is_two_cells(
         f"강조가 키 글자에서 벗어났다\n  줄: {screen.row_text(row)!r}\n"
         f"  강조된 것: {screen.marked(row, _curses.A_BOLD)!r}\n  기대: {expected!r}"
     )
+
+
+# ── 하네스 자신이 화면을 제대로 복원하는가 ─────────────────────────────────
+
+
+def test_the_harness_handles_lines_being_pushed_around() -> None:
+    """ncurses 는 내용의 줄 수가 바뀌면 전부 다시 그리지 않고 **줄을 민다.**
+
+    `CSI L`(삽입)·`CSI M`(삭제)를 모르면 격자가 조용히 어긋난다. 실제로 계정 화면(줄이
+    많다)에서 쿠폰 화면(적다)으로 넘어갈 때 조작법 줄이 격자에서 사라졌고, **자식은
+    정상적으로 그리고 있었다** — 계측을 넣어서야 알았다.
+
+    하네스가 줄을 잃으면 진짜 결함도 못 잡는다. 그래서 하네스 자신을 잰다.
+    """
+    from terminal import render
+
+    dropped, _ = render("a\r\nb\r\nc\r\n\x1b[2;1H\x1b[M", 10, 4)
+    assert [ln.rstrip() for ln in dropped] == ["a", "c", "", ""]
+
+    pushed, _ = render("a\r\nb\r\nc\r\n\x1b[2;1H\x1b[L", 10, 4)
+    assert [ln.rstrip() for ln in pushed] == ["a", "", "b", "c"]
+
+
+def test_pushing_lines_carries_their_attributes() -> None:
+    """글자만 옮기고 속성을 두고 오면 색이 엉뚱한 줄에 남는다."""
+    from terminal import render
+
+    lines, attrs = render("\x1b[1mbold\x1b[m\r\nplain\r\n\x1b[1;1H\x1b[L", 10, 3)
+    assert [ln.rstrip() for ln in lines] == ["", "bold", "plain"]
+    assert "1" in attrs[1][0], attrs[1][0]
+    assert "1" not in attrs[0][0], attrs[0][0]
+
+
+@_needs_pty
+def test_the_credits_screen_keeps_its_keys_line_after_the_switch(session: Session) -> None:
+    """화면을 바꾼 **뒤에도** 조작법이 보여야 한다.
+
+    나가는 법이 안 보이는 화면은 갇힌 화면이다. 이 줄이 사라졌던 것은 하네스 탓이었지만,
+    같은 증상을 내는 제품 결함도 있을 수 있으므로 여기서 잠근다.
+    """
+    down = [b"\x1bOB"] * (2 + next(i for i, (a, _) in enumerate(tui.MENU) if a == "credits"))
+    screen = session.run([*down, b"\n", b"q"], settle=1.0, total=60.0)
+    assert screen.exit_code == 0
+    assert "codex-swap · credits" in screen.text, screen.text
+    assert "esc back" in screen.text, screen.text
+    assert "q quit" in screen.text, screen.text
