@@ -256,3 +256,52 @@ def test_the_count_comes_from_the_server_not_from_the_list_length() -> None:
 @pytest.mark.parametrize("node", [None, {}, {"credits": None}, {"credits": "x"}, {"credits": {}}])
 def test_a_shape_we_do_not_recognise_yields_no_credits(node: object) -> None:
     assert probe._credits(node) == ()
+
+
+def test_a_count_without_detail_is_still_shown(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """서버가 개수만 주고 목록을 안 줄 수 있다.
+
+    codex 자신이 그 경우를 갖고 있다 — "rate limit reset credit detail request timed out;
+    falling back to the usage response". 그때 목록 길이로 세면 **2 개 있는데 0 이라고**
+    적는다. 사용자는 쿠폰이 사라진 줄 안다.
+    """
+    _answer({"a@example.com": _usage("a@example.com", count=2)}, monkeypatch)
+    cli.cmd_credits(env)
+    row = next(ln for ln in capsys.readouterr().out.splitlines() if ln.split()[:1] == ["*"])
+    assert " 2 " in f" {' '.join(row.split())} ", row
+
+
+def test_a_count_we_do_not_know_is_a_dash_not_a_zero(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _answer(
+        {"a@example.com": Usage(used_percent=50, email="a@example.com", reset_credits=None)},
+        monkeypatch,
+    )
+    cli.cmd_credits(env)
+    row = next(ln for ln in capsys.readouterr().out.splitlines() if ln.split()[:1] == ["*"])
+    assert row.split()[-1] == "-", row
+
+
+def test_credit_detail_never_reaches_the_cache(
+    env: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """상세를 캐시에 얹는 순간 쓰는 자리가 여섯 개 늘고, 그중 하나가 빠지는 날이 온다.
+
+    실제로 `resetCredits` 하나가 그렇게 빠져서 **캐시 히트일 때만** 크레딧이 사라졌다.
+    """
+    _answer(
+        {
+            "a@example.com": _usage(
+                "a@example.com", Credit(id="secret_credit_id", status="available")
+            ),
+            "b@example.com": _usage("b@example.com"),
+        },
+        monkeypatch,
+    )
+    cli.refresh_all(env)
+    raw = (env.accounts_dir / ".usage-cache.json").read_text()
+    assert "secret_credit_id" not in raw, raw
+    assert "credits" not in raw, raw
