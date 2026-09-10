@@ -67,12 +67,17 @@ else
     have uv && say "  # uv also offers: uv tool update-shell"
 fi
 
-have codex || {
-    say ""
-    say "note: the codex CLI was not found. codex-swap reads usage by running it,"
-    say "      so install it and log in before switching accounts."
-}
+# --- hand over to init ---------------------------------------------------------------
+#
+# Everything left to do depends on this machine: whether codex is installed, whether the
+# ChatGPT desktop app owns ~/.codex, whether the shell is wired, how many accounts exist.
+# Printing a fixed list of next steps here would be guessing at all four. `init` looks.
 
-say ""
-say "next: codex-swap adopt <label>   # keep the account you are logged in as"
-say "      codex-swap doctor          # check everything is reachable"
+if have codex-swap; then
+    say ""
+    codex-swap init || true
+else
+    say ""
+    say "next, once codex-swap is on your PATH:"
+    say "  codex-swap init"
+fi

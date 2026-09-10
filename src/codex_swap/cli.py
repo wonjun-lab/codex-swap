@@ -37,6 +37,7 @@ from codex_swap.core import (
     rotate,
     selfupdate,
     store,
+    wiring,
 )
 from codex_swap.core import (
     credits as credits_core,
@@ -1231,6 +1232,106 @@ def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
     return decision_exit_code(decision)
 
 
+def cmd_init(settings: config.Settings) -> int:
+    """설치와 사용 사이의 다리. **여기서 다음 한 걸음이 정해진다.**
+
+    이 명령이 생기기 전에는 그 사이를 사용자가 README 를 읽어 가며 스스로 꿰어야 했다 —
+    셸 배선은 어디에 넣는지, 공식 앱과 홈이 겹치면 어떻게 되는지, 계정은 몇 개부터
+    쓸모가 있는지가 전부 다른 문단에 있었다. 순서가 있는 일을 순서 없이 늘어놓은 셈이다.
+
+    **막는 것과 알리는 것을 가른다.** codex 가 없으면 그 뒤는 전부 무의미하므로 거기서
+    끊고, 나머지는 지금 당장 못 해도 되는 것들이라 알리기만 한다.
+    """
+    ok = True
+
+    print("codex-swap init")
+    print()
+
+    # 1) codex 자체 — 이것이 없으면 나머지는 의미가 없다.
+    try:
+        codex_bin = discovery.resolve_codex_bin()
+        print(f"  ok    codex: {codex_bin}")
+    except Exception:
+        print("  MISS  codex was not found")
+        print("        codex-swap reads usage by running it, so install it first:")
+        print("          npm install -g @openai/codex")
+        print("        then run codex-swap init again.")
+        return 1
+
+    # 2) 공식 앱과의 자리다툼. **우리가 비켜 준다.**
+    shell = wiring.shell_of()
+    isolate = wiring.app_installed()
+    if isolate:
+        print("  note  the ChatGPT desktop app is installed")
+        print(f"        it keeps its own account in {settings.default_home}, so the wiring")
+        print(f"        below moves ours to {wiring.ISOLATED_HOME} to stop the two")
+        print("        overwriting each other")
+
+    # 3) 셸 배선 — 자동 전환과 홈 분리가 둘 다 여기에 걸린다.
+    wired = wiring.already_wired(shell)
+    if wired is not None:
+        print(f"  ok    shell wiring found in {wired}")
+    else:
+        ok = False
+        print(f"  TODO  add this to {wiring.profile_for(shell)}, then open a new shell:")
+        print()
+        print(f"          {wiring.line_for(shell)}")
+        print()
+        print("        that line keeps automatic switching working and, on machines with")
+        print("        the desktop app, keeps the two accounts apart")
+
+    # 4) 분리로 넘어온 직후라면 자격증명이 아직 원래 자리에 있다. 슬롯이 있으면 전환
+    #    한 번으로 채워지지만, 아직 아무것도 등록 안 했으면 `adopt` 가 막힌다.
+    seed = wiring.seed_source(settings.default_home)
+    if seed is not None:
+        ok = False
+        print(f"  TODO  your login is still in {seed}, not in {settings.default_home}")
+        if store.labels(settings):
+            print("        switch once to fill it: codex-swap use <label>")
+        else:
+            print("        bring it over once, then keep it:")
+            print(f"          mkdir -p {settings.default_home}")
+            print(f"          cp {seed}/auth.json {settings.default_home}/auth.json")
+            print("          codex-swap adopt work")
+
+    # 5) 계정. 하나로는 바꿀 곳이 없다.
+    labels = store.labels(settings)
+    if len(labels) >= 2:
+        print(f"  ok    {len(labels)} accounts registered: {', '.join(labels)}")
+    elif len(labels) == 1:
+        ok = False
+        print(f"  TODO  only {labels[0]} is registered — add a second one to switch between:")
+        print("          codex-swap add <label>")
+    else:
+        ok = False
+        print("  TODO  no accounts yet. Keep the one you are logged in as, then add another:")
+        print("          codex-swap adopt work")
+        print("          codex-swap add personal")
+
+    print()
+    if ok:
+        print("ready. Run codex-swap to open the screen, or codex-swap doctor to check accounts.")
+    else:
+        print("finish the TODOs above, then run codex-swap init again.")
+    return 0 if ok else 1
+
+
+def cmd_shell_init(*, shell: str | None = None, isolate: bool | None = None) -> int:
+    """셸에 먹일 배선을 낸다. **여기 나가는 것은 전부 셸이 실행한다.**
+
+    그래서 안내도 진단도 섞지 않는다 — 한 줄이라도 셸 문법이 아닌 것이 끼면 사용자의
+    프로필이 그 자리에서 깨진다. 할 말이 있으면 `doctor` 가 한다.
+
+    `~/.codex` 의 주인은 공식 ChatGPT 데스크톱 앱이다. 그 앱이 깔려 있으면 활성 자격증명
+    자리를 비켜 준다 — 우리는 서드파티이고, 같은 파일을 놓고 다투면 사용자에게는 "로그인이
+    자꾸 풀린다" 로만 보인다. 앱이 없으면 옮길 이유도 없다.
+    """
+    use = wiring.shell_of(shell)
+    want = wiring.app_installed() if isolate is None else isolate
+    print(wiring.snippet(use, isolate=want), end="")
+    return 0
+
+
 def cmd_doctor(settings: config.Settings) -> int:
     """계정이 **실제로 쓸 수 있는지** 하나씩 시험하고, 안 되면 무엇을 하면 되는지 말한다.
 
@@ -1412,6 +1513,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("clean", help="clear probe leftovers from the slots")
     sub.add_parser("doctor", help="test each account and say how to fix what is broken")
+    sub.add_parser("init", help="check the setup and say what to do next")
+    p = sub.add_parser("shell-init", help="print shell wiring (for eval in your profile)")
+    p.add_argument("--shell", choices=["bash", "zsh", "fish"], help="defaults to $SHELL")
+    p.add_argument(
+        "--isolate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="keep our home apart from the ChatGPT app (default: only if the app is installed)",
+    )
 
     p = sub.add_parser("update", aliases=["upgrade"], help="get the newest codex-swap")
     p.add_argument(
@@ -1509,6 +1619,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_clean(settings)
             case "doctor":
                 return cmd_doctor(settings)
+            case "init":
+                return cmd_init(settings)
+            case "shell-init":
+                return cmd_shell_init(shell=args.shell, isolate=args.isolate)
             case "update" | "upgrade":
                 # 계정을 건드리지 않는 유일한 명령이라 `settings` 를 받지 않는다.
                 return cmd_update(check_only=args.check, assume_yes=args.yes)
