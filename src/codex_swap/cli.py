@@ -25,8 +25,20 @@ from pathlib import Path
 from typing import Any
 
 from codex_swap import __version__
-from codex_swap.core import cache, config, discovery, identity, paths, probe, rotate, store
-from codex_swap.core.types import Credit, ProbeOutcome, Switched, Usage, decision_exit_code
+from codex_swap.core import (
+    cache,
+    config,
+    discovery,
+    identity,
+    paths,
+    probe,
+    rotate,
+    store,
+)
+from codex_swap.core import (
+    credits as credits_core,
+)
+from codex_swap.core.types import ProbeOutcome, Switched, Usage, decision_exit_code
 
 
 class CliError(Exception):
@@ -402,43 +414,15 @@ def _expiry_text(expires_at: object, *, now: float | None = None) -> str:
     return _clock_text(expires_at, "expired", now=now)
 
 
-def _probe_credits(settings: config.Settings) -> list[tuple[str, str, Usage | None]]:
-    """슬롯마다 `(라벨, 이메일, 사용량)`. 못 읽은 슬롯은 사용량이 None.
+def _accounts(settings: config.Settings) -> list[credits_core.Account]:
+    """`credits_core.load` 의 얇은 껍질. 예외만 이 표면의 것으로 옮긴다.
 
-    **캐시를 쓰지 않고 매번 프로브한다.** 쿠폰 상세는 캐시에 없다 — 넣으려면
-    `resetCredits` 를 쓰는 여섯 자리에 키를 하나씩 더 얹어야 하고, 그중 한 곳이 빠져서
-    캐시 히트일 때만 크레딧이 사라진 적이 이미 있다.
-
-    비용은 사용자가 이 명령을 직접 쳤을 때만 든다. `list` 와 `rotate` 의 값싼 경로는
-    그대로다.
+    판단은 core 에 있다 — `cli` 와 `tui` 가 같은 함수를 지나야 갈리지 않는다.
     """
     try:
-        codex_bin = str(discovery.resolve_codex_bin())
-    except Exception as exc:
-        raise CliError(
-            f"cannot run codex: {exc}. Check that `codex --version` works, "
-            "or set CODEX_ACCOUNT_BIN to its path"
-        ) from exc
-
-    active = store.active_label(settings)
-    out: list[tuple[str, str, Usage | None]] = []
-    for label in store.labels(settings):
-        email = identity.email_of(store.slot_auth(settings, label)) or "?"
-        home = settings.default_home if label == active else store.slot_dir(settings, label)
-        usage: Usage | None = None
-        try:
-            result = probe.probe(codex_bin, str(home))
-        except Exception:
-            result = None
-        if result is not None and result.outcome is ProbeOutcome.OK and result.usage is not None:
-            u = result.usage
-            # `refresh_all` 과 같은 신원 확인. 조회 도중 다른 rotate 가 전환을 끝내면
-            # 기본 홈에 이미 다른 계정이 들어 있어, 남의 쿠폰을 이 이름으로 적게 된다.
-            want = identity.email_of(store.slot_auth(settings, label))
-            if u.email is None or want is None or u.email == want:
-                usage = u
-        out.append((label, email, usage))
-    return out
+        return credits_core.load(settings)
+    except credits_core.CreditError as exc:
+        raise CliError(str(exc)) from exc
 
 
 def cmd_credits(settings: config.Settings) -> int:
@@ -463,7 +447,8 @@ def cmd_credits(settings: config.Settings) -> int:
     # 실제로는 하나다. `list` 는 같은 상황에 "두 라벨이 같은 계정을 들고 있다" 고 말하는데
     # 여기만 조용했다 — 하필 세어 보는 화면이다.
     seen_emails: dict[str, list[str]] = {}
-    for label, email, usage in _probe_credits(settings):
+    for account in _accounts(settings):
+        label, email, usage = account.label, account.email, account.usage
         if email != "?":
             seen_emails.setdefault(email, []).append(label)
         mark = "*" if label == active else " "
@@ -535,33 +520,6 @@ def cmd_credits(settings: config.Settings) -> int:
     return 0
 
 
-def _pick_credit(credits: Sequence[Credit], wanted: str | None) -> Credit | None:
-    """쓸 쿠폰 하나를 고른다. 없으면 None.
-
-    **먼저 잃을 것부터 쓴다** — 만료가 가장 이른 것. 쿠폰은 되돌릴 수 없으므로 "어느 것을
-    쓸까" 는 실제로 "어느 것을 잃어도 되나" 이고, 답은 어차피 곧 사라질 것이다.
-
-    만료를 모르는 쿠폰은 **뒤로** 보낸다. 모르는 것을 급한 것으로 취급하면, 날짜가 찍힌
-    쿠폰을 놔두고 정체 모를 것을 먼저 태운다.
-
-    `wanted` 가 있으면 그것만 본다. 자동 선택이 사람의 뜻과 다를 수 있고, 되돌릴 수 없는
-    동작에서는 지목할 방법이 있어야 한다 — `credits --json` 이 `id` 를 싣는 이유다.
-    """
-    usable = [c for c in credits if c.status == "available"]
-    if wanted is not None:
-        # 지목한 것은 만료 여부를 따지지 않는다. 사용자가 보고 골랐고, 서버가 여전히
-        # `available` 이라고 말한다 — 우리 시계가 틀렸을 수도 있다.
-        return next((c for c in usable if c.id == wanted), None)
-    # **만료된 것은 자동으로 고르지 않는다.** 만료가 이른 것부터 쓰는 규칙이 그대로면
-    # 이미 지난 쿠폰이 **가장 먼저** 뽑힌다 — 정렬 키가 가장 작기 때문이다. 서버가
-    # `available` 이라고 적어 둔 채 날짜만 지난 항목이 실제로 그렇게 뽑혔다.
-    now = time.time()
-    fresh = [c for c in usable if c.expires_at is None or c.expires_at > now]
-    if not fresh:
-        return None
-    return min(fresh, key=lambda c: (c.expires_at is None, c.expires_at or 0))
-
-
 def cmd_credits_use(
     settings: config.Settings,
     label: str | None = None,
@@ -623,7 +581,7 @@ def cmd_credits_use(
             "Nothing was spent"
         )
 
-    credit = _pick_credit(usage.credits, credit_id)
+    credit = credits_core.pick(usage.credits, credit_id)
     if credit is None:
         if credit_id is not None:
             raise CliError(f"{target} has no usable credit with id {credit_id}")
@@ -730,8 +688,9 @@ def cmd_credits_json(settings: config.Settings) -> int:
     # 슬롯이 하나도 없으면 프로브할 것도 없다. 그런데 `_probe_credits` 는 먼저 codex 를
     # 찾으므로, 빈 목록을 물었을 뿐인데 바이너리가 없다고 실패했다 — 사람용 판은 안내 한
     # 줄을 내고 0 으로 끝나는데 기계용 판만 그랬다.
-    found = _probe_credits(settings) if store.labels(settings) else []
-    for label, email, usage in found:
+    found = _accounts(settings) if store.labels(settings) else []
+    for account in found:
+        label, email, usage = account.label, account.email, account.usage
         accounts.append(
             {
                 "label": label,

@@ -15,6 +15,7 @@ codex-swap    gate 70% · margin 5%p
 
    Policy settings
    Refresh usage
+   Credits
    Adopt the account in use
    Toggle automatic switching
    Quit
@@ -229,6 +230,10 @@ codex-swap credits use            # the active account
 codex-swap credits use shared     # a named one
 codex-swap credits use --dry-run  # say what would happen, spend nothing
 ```
+
+The TUI has the same screen: `Credits` in the menu, `u` to spend. There it asks you to
+**type the label** rather than press a key — a keypress next to `s` (switch) is one slip
+away from an action that cannot be undone, and a name is not something you slip into.
 
 It asks before spending, naming the account and the credit's expiry date. **A spent credit
 cannot be recovered**, so without a terminal it refuses rather than guessing — pass `--yes`

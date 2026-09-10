@@ -28,8 +28,9 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from codex_swap.core import cache, config, identity, paths, policy, probe, store
+from codex_swap.core import credits as credits_core
 from codex_swap.core.discovery import resolve_codex_bin
-from codex_swap.core.types import ProbeOutcome
+from codex_swap.core.types import Credit, ProbeOutcome
 
 __all__ = ["Row", "View", "build_view", "render_lines", "replace"]
 
@@ -95,6 +96,22 @@ class View:
     rung_provisional: bool = False
     """관문이 낡은 값에서 나온 추정인가. 참이면 `~` 를 붙여 표시한다."""
 
+    credit_accounts: tuple[credits_core.Account, ...] | None = None
+    """쿠폰 화면의 자료. `None` 은 **아직 안 읽었다**(빈 튜플은 "계정이 없다").
+
+    캐시에 없는 값이라 화면을 열 때 조회한다 — 그래서 "없다" 와 "아직" 을 반드시 갈라야
+    한다. 하나로 두면 읽는 중에 "쿠폰 없음" 이 떠서 사용자가 그것을 사실로 읽는다.
+    """
+
+    credit_cursor: int = 0
+
+    switch_armed: bool = False
+    """전환이 지금 로그인된 계정을 버리려 할 때, 한 번 물어본 상태.
+
+    `build_view` 가 기본값으로 되돌리므로 **커서를 움직이면 저절로 풀린다** — 물어본 것을
+    잊고 나중에 누른 `s` 가 곧바로 버리면 묻는 의미가 없다.
+    """
+
     discard_armed: bool = False
     """`esc` 를 한 번 눌러 "버릴까요" 를 물어 둔 상태.
 
@@ -145,6 +162,7 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 MENU: tuple[tuple[str, str], ...] = (
     ("policy", "Policy settings"),
     ("refresh", "Refresh usage"),
+    ("credits", "Credits"),
     ("adopt", "Adopt the account in use"),
     ("auto", "Toggle automatic switching"),
     ("quit", "Quit"),
@@ -182,6 +200,17 @@ STALE_LEGENDS = (
     "~ = stale",
 )
 """판마다 **들여쓰기를 적지 않는다.** `_help_line` 이 `_INDENT` 로 붙인다."""
+
+CREDIT_KEYS = (
+    ("u", "use"),
+    ("r", "reload"),
+    ("esc", "back"),
+    ("q", "quit"),
+    ("↑↓", "move"),
+)
+"""쿠폰 화면의 조작법. 소비 키를 `s` 로 두지 않는다 — 계정 화면에서 `s` 는 **전환**이고,
+같은 손가락이 다른 화면에서 다른 되돌릴 수 없는 일을 하면 안 된다.
+"""
 
 POLICY_KEYS = (
     ("e", "type"),
@@ -824,6 +853,8 @@ def render_screen(
     """화면 내용과 줄별 속성. 순수 함수다 — 파일도 터미널도 만지지 않는다."""
     if view.mode == "policy":
         return _render_policy(view, height=height, width=width)
+    if view.mode == "credits":
+        return _render_credits(view, height=height, width=width)
 
     s = view.settings
     # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
@@ -1033,6 +1064,120 @@ def render_screen(
     return header + body + tail
 
 
+def credit_rows(
+    accounts: Sequence[credits_core.Account],
+) -> list[tuple[credits_core.Account, Credit | None]]:
+    """화면 줄 = `(계정, 쿠폰)`. 쿠폰이 없는 계정도 **한 줄은 차지한다.**
+
+    빼 버리면 "이 계정은 쿠폰이 없다" 와 "이 계정을 안 읽었다" 가 둘 다 화면에서 사라져,
+    사용자는 그 계정이 목록에 있다는 사실조차 못 본다.
+    """
+    out: list[tuple[credits_core.Account, Credit | None]] = []
+    for account in accounts:
+        if account.credits:
+            out.extend((account, credit) for credit in account.credits)
+        else:
+            out.append((account, None))
+    return out
+
+
+def selected_credit(view: View) -> tuple[credits_core.Account, Credit | None] | None:
+    rows = credit_rows(view.credit_accounts or ())
+    if not rows:
+        return None
+    return rows[min(max(view.credit_cursor, 0), len(rows) - 1)]
+
+
+def open_credits(view: View) -> View:
+    """쿠폰 화면으로 들어간다. 자료는 아직 없다 — 배경에서 읽어 온다."""
+    return replace(
+        view, mode="credits", credit_accounts=None, credit_cursor=0, message="", switch_armed=False
+    )
+
+
+def move_credits(view: View, delta: int) -> View:
+    rows = credit_rows(view.credit_accounts or ())
+    if not rows:
+        return view
+    at = min(max(view.credit_cursor + delta, 0), len(rows) - 1)
+    return replace(view, credit_cursor=at, message="")
+
+
+def _credit_note(account: credits_core.Account, credit: Credit | None) -> str:
+    if credit is not None:
+        title = credit.title or credit.status or "credit"
+        return title if credit.status == "available" else f"{title} ({credit.status})"
+    if not account.readable:
+        return "?"
+    return "-" if account.count is None else str(account.count)
+
+
+def _render_credits(
+    view: View, *, height: int | None = None, width: int | None = None
+) -> list[tuple[str, Style]]:
+    # `cli` 를 여기서 들여오는 것은 순환을 피하려는 것이다 — `cli` 가 이 화면을 띄운다.
+    # `build_view` 가 `_reset_text` 를 같은 방식으로 쓴다.
+    from codex_swap.cli import _expiry_text
+
+    out: list[tuple[str, Style]] = [("codex-swap · credits", _PLAIN), ("", _PLAIN)]
+
+    if view.credit_accounts is None:
+        # **"없다" 가 아니라 "아직" 이다.** 하나로 두면 읽는 중에 "쿠폰 없음" 이 떠서
+        # 사용자가 그것을 사실로 읽는다.
+        out.append((_note("Reading credits…", width), _DIM))
+    elif not view.credit_accounts:
+        out.append((_note("No accounts yet.", width), _PLAIN))
+    else:
+        rows = credit_rows(view.credit_accounts)
+        labels = [a.label for a, _ in rows]
+        emails = [a.email for a, _ in rows]
+        notes = [_credit_note(a, c) for a, c in rows]
+        lw = max(5, *(_width(x) for x in labels)) if labels else 5
+        ew = max(5, *(_width(x) for x in emails)) if emails else 5
+        cw = max(6, *(_width(x) for x in notes)) if notes else 6
+
+        header = (
+            f"{_INDENT}{_pad('LABEL', lw)}{_GUTTER}{_pad('EMAIL', ew)}{_GUTTER}"
+            f"{_pad('CREDIT', cw)}{_GUTTER}EXPIRES"
+        )
+        out.append((_clip(header, width) if width else header, _DIM))
+
+        seen: set[str] = set()
+        for i, (account, credit) in enumerate(rows):
+            picked = i == view.credit_cursor
+            first = account.label not in seen
+            seen.add(account.label)
+            mark = "*" if account.active and first else " "
+            line = (
+                f" {'>' if picked else ' '}{mark}"
+                f"{_pad(account.label if first else '', lw)}{_GUTTER}"
+                f"{_pad(account.email if first else '', ew)}{_GUTTER}"
+                f"{_pad(_credit_note(account, credit), cw)}{_GUTTER}"
+                f"{_expiry_text(None if credit is None else credit.expires_at)}"
+            ).rstrip()
+            spans = ((1, 2, _KEY_STYLE),) if picked else ()
+            tone = "plain" if picked else "dim"
+            out.append((_clip(line, width) if width else line, Style(tone, spans=spans)))
+
+    keys_text, keys_spans = keys_line(CREDIT_KEYS, width=width)
+    out += [
+        ("", _PLAIN),
+        (keys_text, Style("dim", spans=keys_spans)),
+        (
+            _note(
+                "A credit resets that account's usage window. Spending one cannot be undone.", width
+            ),
+            _DIM,
+        ),
+    ]
+    if view.message:
+        out += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
+    if height is not None and len(out) > height:
+        keep = out[-2:] if view.message else []
+        out = out[: max(height - len(keep), 1)] + keep
+    return out
+
+
 def _render_policy(
     view: View, *, height: int | None = None, width: int | None = None
 ) -> list[tuple[str, Style]]:
@@ -1089,6 +1234,24 @@ def do_switch(view: View) -> View:
     if target is None:
         # 커서가 메뉴 위다. 조용히 무시하면 키가 죽은 줄 안다.
         return replace(view, message="Move to an account first, then press s")
+    # **지금 로그인된 계정이 어느 슬롯에도 없으면 전환이 그것을 버린다.**
+    #
+    # CLI 는 이 자리에서 거부하고 `--force` 를 요구한다. TUI 는 꼬리말에 경고 한 줄만
+    # 띄우고 `s` 한 번에 그냥 전환했다 — 자격증명이 사라지는 동작인데 **기본 표면이 더
+    # 약했다.** 이 프로젝트에서 같은 모양의 결함이 여러 번 나왔고, 그때마다 약한 쪽이 이
+    # 도구의 실제 안전 수준이었다.
+    #
+    # 다만 완전히 막지는 않는다. 임시로 로그인해 두고 일부러 버리는 용법이 있다 — CLI 의
+    # `--force` 가 그것이다. 여기서는 한 번 더 누르는 것이 그 역할을 한다.
+    if view.active_email is not None and not view.active_registered and not view.switch_armed:
+        return replace(
+            view,
+            switch_armed=True,
+            message=(
+                f"{view.active_email} is in no slot — switching discards it. "
+                "a to adopt it first, or s again to discard"
+            ),
+        )
     try:
         current = store.active_label(view.settings)
     except OSError as exc:
@@ -1530,6 +1693,70 @@ def _try(fn, *args: object) -> None:  # pragma: no cover - 터미널 필요
         fn(*args)
 
 
+def spend_prompt(view: View) -> tuple[str, str] | None:
+    """`u` 를 눌렀을 때 물을 것. `(문구, 기대하는 입력)`. 물을 것이 없으면 None.
+
+    **라벨을 그대로 치게 한다.** 계정 화면의 `s`(전환)는 한 번 더 누르면 되지만 여기는
+    되돌릴 수 없다 — 키를 두 번 누르는 것은 손가락이 미끄러져도 통과한다. 이름을 치는
+    것은 미끄러지지 않는다. CLI 가 `y` 를 받는 것과 다른 것은, 파이프에는 `--yes` 라는
+    다른 관문이 있고 화면에는 그것이 없기 때문이다.
+    """
+    picked = selected_credit(view)
+    if picked is None:
+        return None
+    account, credit = picked
+    if credit is None or credit.status != "available":
+        return None
+    return (f"  Type {account.label} to spend: ", account.label)
+
+
+def apply_spend(view: View, typed: str | None) -> View:
+    """확인 입력을 받아 실제로 쓴다. 입력이 틀리면 아무 일도 안 한다.
+
+    화면을 만지지 않는 순수 부분과 소비를 함께 두는 것은, 소비 결과가 곧 화면 문구이기
+    때문이다. `_loop` 은 프롬프트만 담당한다.
+    """
+    asked = spend_prompt(view)
+    picked = selected_credit(view)
+    if asked is None or picked is None:
+        return replace(view, message="Move to a usable credit first")
+    account, credit = picked
+    if typed is None or typed.strip() != asked[1]:
+        return replace(view, message="Left it alone")
+    assert credit is not None
+
+    try:
+        outcome = credits_core.spend(view.settings, account.label, credit, account.email)
+    except credits_core.CreditError as exc:
+        return replace(view, message=str(exc))
+
+    # 쿠폰이 먹었으면 사용량 창이 방금 바뀌었는데 캐시에는 직전 숫자가 남는다. `rotate` 가
+    # 그것을 정책 입력으로 읽는다. `UNKNOWN` 에서도 지운다 — 썼는지 모르는 채로 낡은
+    # 숫자를 믿는 것이 더 나쁘다.
+    if outcome is not probe.CreditOutcome.NOTHING_TO_RESET:
+        cache.clear(view.settings)
+
+    said = {
+        probe.CreditOutcome.RESET: f"spent — {account.label}'s usage window was reset",
+        probe.CreditOutcome.ALREADY_REDEEMED: "that credit was already redeemed. Nothing changed",
+        probe.CreditOutcome.NOTHING_TO_RESET: (
+            f"{account.label} had nothing to reset, so the credit is still yours"
+        ),
+        probe.CreditOutcome.UNKNOWN: (
+            "the server did not say what happened. The credit may or may not have been spent"
+        ),
+    }[outcome]
+    # 무엇이 됐든 목록을 다시 읽어야 한다 — 방금 바뀌었을 수 있다.
+    return replace(view, credit_accounts=None, credit_cursor=0, message=said)
+
+
+def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - 터미널 필요
+    asked = spend_prompt(view)
+    if asked is None:
+        return replace(view, message="Move to a usable credit first")
+    return apply_spend(view, _prompt(stdscr, asked[0], drawn))
+
+
 def _adopt_label(view: View) -> str:
     """`a` 가 물을 문구. **어느 계정을 보관하는지**를 이름에 넣는다.
 
@@ -1576,6 +1803,54 @@ def _prompt(stdscr, label: str, row: int | None = None) -> str | None:  # pragma
         _try(stdscr.timeout, _TICK_MS)
         stdscr.clearok(True)
     return raw.decode("utf-8", "replace").strip() or None
+
+
+class _CreditsLoader:
+    """쿠폰 조회를 별도 스레드에서 돌린다. `_Prober` 와 같은 이유다.
+
+    동기로 읽으면 슬롯 수만큼 프로브가 직렬로 돌아 화면이 그동안 키를 안 받는다 —
+    `_Prober` 의 주석이 그 실측(슬롯 2 개에 5.3 초, `q` 조차 안 먹음)을 적어 두었다.
+    새 화면이라고 그 교훈이 달라지지 않는다.
+
+    **curses 를 만지지 않는다.** 결과는 큐로 넘기고 화면은 주 스레드가 만든다.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[tuple[tuple[credits_core.Account, ...] | None, str]] = (
+            queue.Queue()
+        )
+        self._thread: threading.Thread | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._thread is not None
+
+    def start(self, settings: config.Settings) -> bool:
+        if self._thread is not None:
+            return False
+        self._thread = threading.Thread(target=self._run, args=(settings,), daemon=True)
+        self._thread.start()
+        return True
+
+    def take(self) -> tuple[tuple[credits_core.Account, ...] | None, str] | None:
+        try:
+            got = self._queue.get_nowait()
+        except queue.Empty:
+            return None
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        return got
+
+    def _run(self, settings: config.Settings) -> None:
+        # 이 스레드에서 나가는 예외는 아무도 못 본다. 무엇이 됐든 하나는 큐에 넣어야
+        # 화면이 "Reading credits…" 에 영원히 굳지 않는다.
+        try:
+            self._queue.put((tuple(credits_core.load(settings)), ""))
+        except credits_core.CreditError as exc:
+            self._queue.put((None, str(exc)))
+        except Exception as exc:  # pragma: no cover - 방어
+            self._queue.put((None, f"Could not read credits: {exc}"))
 
 
 class _Prober:
@@ -1721,6 +1996,7 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     # 세션 동안 유지한다. `r` 은 이것과 무관하게 전부 다시 읽는다.
     attempted: set[str] = set()
     prober = _Prober()
+    loader = _CreditsLoader()
     view = build_view(settings)
 
     def kick(labels: Sequence[str]) -> None:
@@ -1731,6 +2007,15 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
     kick(auto_probe_targets(view, attempted))
     errs = 0
     while True:
+        got = loader.take()
+        if got is not None:
+            accounts, failed = got
+            view = replace(
+                view,
+                credit_accounts=accounts if accounts is not None else (),
+                credit_cursor=0,
+                message=failed or view.message,
+            )
         done = prober.take()
         if done is not None:
             view = apply_probe_result(view, done)
@@ -1756,6 +2041,25 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
         if key in (ord("q"), ord("Q")):
             return
         if key == curses.KEY_RESIZE:
+            continue
+
+        if view.mode == "credits":
+            if key == 27:  # esc — 계정 화면으로
+                view = build_view(settings, cursor=view.cursor, carry=_carry(view))
+            elif key == curses.KEY_UP:
+                view = move_credits(view, -1)
+            elif key == curses.KEY_DOWN:
+                view = move_credits(view, +1)
+            elif key in (ord("r"), ord("R")):
+                view = replace(view, credit_accounts=None, credit_cursor=0, message="")
+                loader.start(settings)
+            elif key in (ord("u"), ord("U")):
+                view = _spend_here(stdscr, view, drawn)
+                curses.flushinp()
+            # 소비·`r` 이 자료를 비웠으면 다시 읽는다. 한 곳에 모아 두면 비우는 쪽이
+            # 로더를 띄우는 것을 잊을 수 없다.
+            if view.mode == "credits" and view.credit_accounts is None:
+                loader.start(settings)
             continue
 
         if view.mode == "policy":
@@ -1813,6 +2117,10 @@ def _loop(stdscr, settings: config.Settings) -> None:  # pragma: no cover - 터�
             # 프로브·프롬프트·종료가 걸린 것만 여기서 가로챈다 — 분기를 두 벌로 두지
             # 않으려고 양쪽 다 `selected_menu` 하나를 본다.
             action = selected_menu(view)
+            if action == "credits":
+                view = open_credits(view)
+                loader.start(settings)
+                continue
             if action == "quit":
                 return
             if action == "refresh":
