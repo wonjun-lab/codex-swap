@@ -470,3 +470,110 @@ def test_the_outcome_enum_covers_what_the_server_names() -> None:
 def test_probe_outcome_is_untouched_by_the_new_enum() -> None:
     """이름이 비슷한 두 열거형이 섞이면 결과 판정이 통째로 어긋난다."""
     assert probe.CreditOutcome is not ProbeOutcome
+
+
+# ── `_consume` 자체 (뮤테이션에서 아무도 안 지나던 자리) ────────────────────
+
+
+class _FakeConn:
+    """`_Conn` 자리에 끼워 넣는 가짜. 프로세스도 파이프도 없다.
+
+    `consume_credit` 만 가짜로 두면 `_consume` 안의 판정 — 오류를 올릴지, 모르는 결과를
+    어떻게 접을지 — 을 **아무도 지나지 않는다.** 실제로 뮤테이션 둘이 그렇게 살아남았다.
+    """
+
+    def __init__(self, reply: dict[str, object]) -> None:
+        self._reply = reply
+        self.sent: list[tuple[str, object]] = []
+
+    def request(self, _id: int, method: str, params: object = None) -> dict[str, object]:
+        self.sent.append((method, params))
+        if method.endswith("/consume"):
+            return self._reply
+        return {"result": {}}
+
+    def notify(self, method: str, params: object = None) -> None:
+        self.sent.append((method, params))
+
+
+def _reply(monkeypatch: pytest.MonkeyPatch, doc: dict[str, object]) -> _FakeConn:
+    conn = _FakeConn(doc)
+    monkeypatch.setattr(probe, "_Conn", lambda *_, **__: conn)
+    return conn
+
+
+@pytest.mark.parametrize(
+    ("outcome", "want"),
+    [
+        ("reset", probe.CreditOutcome.RESET),
+        ("nothingToReset", probe.CreditOutcome.NOTHING_TO_RESET),
+        ("alreadyRedeemed", probe.CreditOutcome.ALREADY_REDEEMED),
+    ],
+)
+def test_consume_reads_the_outcome_the_server_names(
+    monkeypatch: pytest.MonkeyPatch, outcome: str, want: probe.CreditOutcome
+) -> None:
+    _reply(monkeypatch, {"result": {"outcome": outcome}})
+    assert probe._consume(None, "cid", 1.0) is want
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"outcome": "somethingBrandNew"},
+        {"outcome": None},
+        {"outcome": 5},
+        {"outcome": {}},
+        {},
+        None,
+    ],
+)
+def test_an_outcome_we_do_not_recognise_is_unknown_not_success(
+    monkeypatch: pytest.MonkeyPatch, result: object
+) -> None:
+    """서버가 새 갈래를 추가할 수 있다. 모르는 것을 **성공으로 적으면 안 된다** —
+    사용자는 사용량이 리셋된 줄 알고 계속 쓰다가 다시 막힌다.
+    """
+    _reply(monkeypatch, {"result": result})
+    assert probe._consume(None, "cid", 1.0) is probe.CreditOutcome.UNKNOWN
+
+
+def test_a_server_error_is_raised_not_folded_into_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """확정된 실패와 "모른다" 는 다르다.
+
+    인증이 끊겨서 못 쓴 것을 `UNKNOWN` 으로 접으면, 쓰지도 않은 쿠폰을 잃었다고 믿는다.
+    """
+    _reply(monkeypatch, {"error": {"message": "chatgpt authentication required"}})
+    with pytest.raises(probe.ProbeError, match="authentication required"):
+        probe._consume(None, "cid", 1.0)
+
+
+def test_consume_sends_the_credit_id_the_caller_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _reply(monkeypatch, {"result": {"outcome": "reset"}})
+    probe._consume(None, "cred_abc", 1.0)
+    method, params = next(x for x in conn.sent if str(x[0]).endswith("/consume"))
+    assert method == "account/rateLimitResetCredit/consume"
+    assert params == {"creditId": "cred_abc"}
+
+
+def test_consume_greets_the_server_before_asking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`initialize` → `initialized` 는 app-server 의 전제다. 빠뜨리면 요청이 거절된다."""
+    conn = _reply(monkeypatch, {"result": {"outcome": "reset"}})
+    probe._consume(None, "cid", 1.0)
+    assert [m for m, _ in conn.sent][:3] == [
+        "initialize",
+        "initialized",
+        "account/rateLimitResetCredit/consume",
+    ]
+
+
+def test_the_command_line_asks_when_yes_was_not_given(
+    env: config.Settings, spent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--yes` 배선이 끊겨 늘 승인이 되어도, `--yes` 를 **주는** 테스트만으로는 못 잡는다."""
+    _has(monkeypatch, SOON)
+    _answer(monkeypatch, "n")
+    assert cli.main(["credits", "use"]) == 1
+    assert spent == []
