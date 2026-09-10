@@ -27,7 +27,17 @@ import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from codex_swap.core import cache, config, identity, paths, policy, policy_edit, probe, store
+from codex_swap.core import (
+    cache,
+    config,
+    doctor,
+    identity,
+    paths,
+    policy,
+    policy_edit,
+    probe,
+    store,
+)
 from codex_swap.core import credits as credits_core
 from codex_swap.core.discovery import resolve_codex_bin
 from codex_swap.core.types import Credit, ProbeOutcome
@@ -72,7 +82,10 @@ class View:
     settings: config.Settings
     message: str = ""
     mode: str = "accounts"
-    """accounts | policy"""
+    """accounts | policy | credits | doctor"""
+
+    findings: tuple[doctor.Finding, ...] | None = None
+    """점검 결과. `None` 은 **아직 안 읽었다**이지 "문제 없다" 가 아니다."""
 
     policy_cursor: int = 0
 
@@ -176,6 +189,7 @@ MENU: tuple[tuple[str, str], ...] = (
     ("credits", "Usage resets"),
     ("adopt", "Adopt the account in use"),
     ("auto", "Automatic switching"),
+    ("doctor", "Check accounts"),
     ("update", "Update codex-swap"),
     ("quit", "Quit"),
 )
@@ -525,6 +539,7 @@ class Style:
 
 _PLAIN = Style()
 _DIM = Style("dim")
+_WARN = Style("warn")
 
 _KEY_STYLE = Style("accent", bold=True)
 """단축키 글자에 입힐 속성. **설명이 아니라 키에만** 붙는다.
@@ -930,6 +945,8 @@ def render_screen(
         return _render_policy(view, height=height, width=width)
     if view.mode == "credits":
         return _render_credits(view, height=height, width=width)
+    if view.mode == "doctor":
+        return _render_doctor(view, height=height, width=width)
 
     s = view.settings
     # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
@@ -1187,6 +1204,58 @@ def _credit_note(account: credits_core.Account, credit: Credit | None) -> str:
     if not account.readable:
         return "?"
     return "-" if account.count is None else str(account.count)
+
+
+DOCTOR_KEYS = (("r", "recheck"), ("esc", "back"), ("q", "quit"))
+
+
+def _render_doctor(
+    view: View, *, height: int | None = None, width: int | None = None
+) -> list[tuple[str, Style]]:
+    """점검 결과. **고치는 방법을 결과 바로 밑에 둔다.**
+
+    진단이 병명만 말하고 끝나면 사용자는 결국 검색을 해야 한다. 원인과 조치가 떨어져 있으면
+    둘을 잇는 일이 사용자 몫이 된다 — 그 이음이 이 화면의 존재 이유다.
+    """
+    out: list[tuple[str, Style]] = [("codex-swap · account check", _PLAIN), ("", _PLAIN)]
+
+    if view.findings is None:
+        out.append((_note("Checking each account…", width), _DIM))
+    elif not view.findings:
+        out.append((_note("No accounts yet.", width), _PLAIN))
+    else:
+        for f in view.findings:
+            mark = "ok" if f.ok else "!!"
+            out.append((_note(f"{mark}  {f.label}: {f.detail}", width), _PLAIN if f.ok else _WARN))
+            if f.fix:
+                # 조치는 한 줄에 다 안 들어간다. 잘라 버리면 정작 필요한 부분이 사라지므로
+                # 접어서 이어 놓는다.
+                for line in _wrap(f.fix, width):
+                    out.append((_note(f"      {line}", width), _DIM))
+        out.append(("", _PLAIN))
+        out.append((_note(doctor.summary(list(view.findings)), width), _PLAIN))
+
+    keys_text, keys_spans = keys_line(DOCTOR_KEYS, width=width)
+    out += [("", _PLAIN), (keys_text, Style("dim", spans=keys_spans))]
+    if view.message:
+        out.append((_note(view.message, width), _PLAIN))
+    return out
+
+
+def _wrap(text: str, width: int | None) -> list[str]:
+    """조치 문구를 화면 폭에 맞춰 접는다. 낱말 단위로만 자른다."""
+    room = max((width or 100) - 12, 20)
+    words, lines, line = text.split(), [], ""
+    for word in words:
+        candidate = f"{line} {word}".strip()
+        if _width(candidate) > room and line:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    return lines
 
 
 def _render_credits(
@@ -2007,6 +2076,45 @@ class _CreditsLoader:
             self._queue.put((None, f"Could not read usage resets: {exc}"))
 
 
+class _DoctorLoader:
+    """계정 점검을 별도 스레드에서 돌린다. `_CreditsLoader` 와 같은 이유, 같은 모양이다.
+
+    슬롯마다 실제 조회가 나가므로 동기로 돌리면 그 시간만큼 화면이 키를 안 받는다.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[tuple[tuple[doctor.Finding, ...] | None, str]] = queue.Queue()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._thread is not None
+
+    def start(self, settings: config.Settings) -> bool:
+        if self._thread is not None:
+            return False
+        self._thread = threading.Thread(target=self._run, args=(settings,), daemon=True)
+        self._thread.start()
+        return True
+
+    def take(self) -> tuple[tuple[doctor.Finding, ...] | None, str] | None:
+        try:
+            got = self._queue.get_nowait()
+        except queue.Empty:
+            return None
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        return got
+
+    def _run(self, settings: config.Settings) -> None:
+        # 무엇이 됐든 하나는 넣어야 화면이 "Checking…" 에 영원히 굳지 않는다.
+        try:
+            self._queue.put((tuple(doctor.run(settings)), ""))
+        except Exception as exc:  # pragma: no cover - 방어
+            self._queue.put((None, f"Could not check the accounts: {exc}"))
+
+
 class _Prober:
     """사용량 조회를 별도 스레드에서 돌린다.
 
@@ -2151,6 +2259,7 @@ def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover 
     attempted: set[str] = set()
     prober = _Prober()
     loader = _CreditsLoader()
+    checker = _DoctorLoader()
     view = build_view(settings)
 
     def kick(labels: Sequence[str]) -> None:
@@ -2161,6 +2270,14 @@ def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover 
     kick(auto_probe_targets(view, attempted))
     errs = 0
     while True:
+        checked = checker.take()
+        if checked is not None:
+            findings, failed = checked
+            view = replace(
+                view,
+                findings=findings if findings is not None else (),
+                message=failed or view.message,
+            )
         got = loader.take()
         if got is not None:
             accounts, failed = got
@@ -2195,6 +2312,14 @@ def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover 
         if key in (ord("q"), ord("Q")):
             return None
         if key == curses.KEY_RESIZE:
+            continue
+
+        if view.mode == "doctor":
+            if key == 27:  # esc — 계정 화면으로
+                view = build_view(settings, cursor=view.cursor, carry=_carry(view))
+            elif key in (ord("r"), ord("R")):
+                view = replace(view, findings=None, message="")
+                checker.start(settings)
             continue
 
         if view.mode == "credits":
@@ -2274,6 +2399,10 @@ def _loop(stdscr, settings: config.Settings) -> str | None:  # pragma: no cover 
             if action == "credits":
                 view = open_credits(view)
                 loader.start(settings)
+                continue
+            if action == "doctor":
+                view = replace(view, mode="doctor", findings=None, message="")
+                checker.start(settings)
                 continue
             if action == "quit":
                 return None

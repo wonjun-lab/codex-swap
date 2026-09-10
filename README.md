@@ -18,6 +18,7 @@ codex-swap    gate 70% · margin 5%p
    Usage resets
    Adopt the account in use
    Automatic switching: on
+   Check accounts
    Update codex-swap
    Quit
 

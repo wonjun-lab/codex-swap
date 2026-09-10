@@ -29,6 +29,7 @@ from codex_swap.core import (
     cache,
     config,
     discovery,
+    doctor,
     identity,
     paths,
     policy_edit,
@@ -1230,6 +1231,23 @@ def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
     return decision_exit_code(decision)
 
 
+def cmd_doctor(settings: config.Settings) -> int:
+    """계정이 **실제로 쓸 수 있는지** 하나씩 시험하고, 안 되면 무엇을 하면 되는지 말한다.
+
+    화면에 `?` 만 뜨고 이유가 어디에도 없던 상태가 실제로 있었다. 파일이 있는지만 보는
+    진단으로는 안 잡히는 종류다 — `auth.json` 은 멀쩡한데 그 안의 토큰이 죽어 있었다.
+    """
+    findings = doctor.run(settings)
+    for f in findings:
+        mark = "ok  " if f.ok else "FAIL"
+        print(f"{mark} {f.label}: {f.detail}")
+        if f.fix:
+            print(f"     → {f.fix}")
+    print()
+    print(doctor.summary(findings))
+    return 0 if all(f.ok for f in findings) else 1
+
+
 def cmd_update(*, check_only: bool = False, assume_yes: bool = False) -> int:
     """새 판으로 갈아탄다. **무엇을 할지 먼저 보여 준다.**
 
@@ -1393,6 +1411,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
 
     sub.add_parser("clean", help="clear probe leftovers from the slots")
+    sub.add_parser("doctor", help="test each account and say how to fix what is broken")
 
     p = sub.add_parser("update", aliases=["upgrade"], help="get the newest codex-swap")
     p.add_argument(
@@ -1488,6 +1507,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_remove(settings, args.label, assume_yes=args.yes)
             case "clean":
                 return cmd_clean(settings)
+            case "doctor":
+                return cmd_doctor(settings)
             case "update" | "upgrade":
                 # 계정을 건드리지 않는 유일한 명령이라 `settings` 를 받지 않는다.
                 return cmd_update(check_only=args.check, assume_yes=args.yes)
