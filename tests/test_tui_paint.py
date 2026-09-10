@@ -278,6 +278,6 @@ def test_the_credits_screen_keeps_its_keys_line_after_the_switch(session: Sessio
     down = [b"\x1bOB"] * (2 + next(i for i, (a, _) in enumerate(tui.MENU) if a == "credits"))
     screen = session.run([*down, b"\n", b"q"], settle=1.0, total=60.0)
     assert screen.exit_code == 0
-    assert "codex-swap · credits" in screen.text, screen.text
+    assert "codex-swap · usage resets" in screen.text, screen.text
     assert "esc back" in screen.text, screen.text
     assert "q quit" in screen.text, screen.text

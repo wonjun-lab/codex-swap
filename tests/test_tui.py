@@ -112,15 +112,17 @@ def test_switching_to_the_active_account_is_refused_gently(env) -> None:
 def test_toggling_auto_rotation_uses_the_same_file_as_bash(env) -> None:
     """off-switch 는 파일 하나다. bash 와 같은 경로여야 둘이 같은 스위치를 본다."""
     view = tui.build_view(env)
-    assert "Auto switch: on" in text(view)
+    # 상태는 **메뉴가** 들고 있다. 꼬리말에도 두던 때는 같은 사실을 두 곳이 다른 어휘로
+    # 말해서, 본 사람이 그 둘이 같은 것인지부터 확인해야 했다.
+    assert "Automatic switching: on" in text(view)
 
     off = tui.do_toggle_auto(view)
     assert env.off_switch.exists()
-    assert "Auto switch: off" in text(off)
+    assert "Automatic switching: off" in text(off)
 
     on = tui.do_toggle_auto(off)
     assert not env.off_switch.exists()
-    assert "Auto switch: on" in text(on)
+    assert "Automatic switching: on" in text(on)
 
 
 # ── 정책 화면 ────────────────────────────────────────────────────────────────
@@ -1270,7 +1272,7 @@ def test_every_column_is_left_aligned(env) -> None:
     used_at = header.index("USED")
     for ln in body:
         assert ln[used_at] not in " ", f"USED 값이 칸 왼쪽에서 시작하지 않는다: {ln!r}"
-    cred_at = header.index("CRED")
+    cred_at = header.index("RESETS")
     assert body[1][cred_at] == "2", body[1]
 
 
@@ -1302,10 +1304,12 @@ def test_the_cursor_runs_past_the_accounts_into_a_menu(env) -> None:
 
 def test_the_menu_is_drawn_and_the_cursor_shows_where_it_is(env) -> None:
     lines = tui.render_lines(_view(env, cursor=2), width=140)
-    menu = [ln for ln in lines if any(t in ln for _, t in tui.MENU)]
+    # 항목 문구는 상태에 따라 달라진다(자동 전환). 고정 문자열로 세면 그 항목만 빠진다.
+    titles = [tui.menu_title(action, _view(env, cursor=2)) for action, _ in tui.MENU]
+    menu = [ln for ln in lines if any(t in ln for t in titles)]
     assert len(menu) == len(tui.MENU), lines
     marked = [ln for ln in menu if ln.startswith(" >")]
-    assert len(marked) == 1 and tui.MENU[0][1] in marked[0], menu
+    assert len(marked) == 1 and titles[0] in marked[0], menu
     # 계정에 커서가 있을 때는 메뉴에 표시가 없다.
     on_account = tui.render_lines(_view(env, cursor=0), width=140)
     assert not [ln for ln in on_account if ln.startswith(" >") and "Policy" in ln]

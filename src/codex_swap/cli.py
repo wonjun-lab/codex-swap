@@ -106,7 +106,7 @@ def _usage_line(u: Usage) -> str:
     return (
         f"usage: {u.used_percent}% "
         f"(primary {_opt(u.primary_percent)}%, secondary {_opt(u.secondary_percent)}%) "
-        f"· plan {_opt(u.plan_type)} · credits {_opt(u.reset_credits)} "
+        f"· plan {_opt(u.plan_type)} · resets {_opt(u.reset_credits)} "
         f"· resets {_reset_text(u.resets_at)}"
     )
 
@@ -501,7 +501,7 @@ def cmd_credits(settings: config.Settings) -> int:
         cells = [_pad_to(mark, 3), _pad_to(label, lw), _pad_to(email, ew), _pad_to(credit, cw)]
         return " ".join([*cells, expires]).rstrip()
 
-    print(_row("", "LABEL", "EMAIL", "CREDIT", "EXPIRES"))
+    print(_row("", "LABEL", "EMAIL", "RESET", "EXPIRES"))
     for row in rows:
         print(_row(*row))
     print()
@@ -517,7 +517,7 @@ def cmd_credits(settings: config.Settings) -> int:
                 f"note: {', '.join(owners)} hold the same account ({email}). "
                 "Their credits are the same credits, counted once"
             )
-    print("A credit resets that account's usage window. Spending one cannot be undone.")
+    print("A usage reset gives that account a fresh window. Spending one cannot be undone.")
     return 0
 
 
@@ -564,7 +564,7 @@ def cmd_credits_use(
     home = settings.default_home if target == active else store.slot_dir(settings, target)
     result = probe.probe(codex_bin, str(home))
     if result.outcome is not ProbeOutcome.OK or result.usage is None:
-        raise CliError(f"could not read {target}'s credits. Try: codex-swap credits")
+        raise CliError(f"could not read {target}'s usage resets. Try: codex-swap credits")
     usage = result.usage
 
     # `credits` 와 같은 신원 검사. 조회와 소비 사이에 다른 rotate 가 전환을 끝내면 기본
@@ -577,7 +577,7 @@ def cmd_credits_use(
     want = identity.email_of(store.slot_auth(settings, target))
     if usage.email is None or want is None or usage.email != want:
         raise CliError(
-            f"could not confirm whose credit this is "
+            f"could not confirm whose usage reset this is "
             f"(slot says {want or 'unknown'}, the account said {usage.email or 'nothing'}). "
             "Nothing was spent"
         )
@@ -585,18 +585,17 @@ def cmd_credits_use(
     credit = credits_core.pick(usage.credits, credit_id)
     if credit is None:
         if credit_id is not None:
-            raise CliError(f"{target} has no usable credit with id {credit_id}")
+            raise CliError(f"{target} has no usable reset with id {credit_id}")
         # 왜 못 고르는지가 셋으로 갈린다. 뭉뚱그리면 사용자는 엉뚱한 조치를 한다 —
         # "상세가 없다" 는 다시 시도하라는 뜻이지만 "전부 만료" 는 아무리 다시 해도 같다.
         if [c for c in usage.credits if c.status == "available"]:
-            raise CliError(f"{target}'s usable credits have all expired. See: codex-swap credits")
+            raise CliError(f"{target}'s usable resets have all expired. See: codex-swap credits")
         have = usage.reset_credits
         if have:
             raise CliError(
-                f"{target} reports {have} credit(s) but sent no usable detail. "
-                "Try again in a moment"
+                f"{target} reports {have} reset(s) but sent no usable detail. Try again in a moment"
             )
-        raise CliError(f"{target} has no credit to spend")
+        raise CliError(f"{target} has no usage reset to spend")
 
     who = usage.email
     title = credit.title or "credit"
@@ -646,7 +645,7 @@ def cmd_credits_use(
         ) from None
     except KeyboardInterrupt:
         # 요청이 이미 나갔을 수 있다. 조용히 죽으면 사용자는 안 쓴 줄 안다.
-        print("interrupted. The credit may or may not have been spent")
+        print("interrupted. The usage reset may or may not have been spent")
         print("check before trying again: codex-swap credits")
         cache.clear(settings)
         return 1
@@ -1244,7 +1243,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--throttle", metavar="SECONDS", help="minimum gap between checks")
 
-    p = sub.add_parser("credits", help="usage-reset credits per account, with expiry")
+    p = sub.add_parser(
+        "credits",
+        aliases=["resets"],
+        help="usage resets per account, with the date each one expires",
+    )
     p.add_argument("--json", action="store_true", help="machine-readable output")
     # `use` 를 별도 명령이 아니라 `credits` 의 하위 동작으로 둔다. 되돌릴 수 없는 동작을
     # 최상위에 두면 `codex-swap use` 와 두 글자 차이가 되는데, 그 둘은 각각 "계정을
@@ -1333,7 +1336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_auto(settings, args.state)
             case "policy":
                 return cmd_policy(settings, _policy_changes(args))
-            case "credits":
+            case "credits" | "resets":
                 if args.action == "use":
                     return cmd_credits_use(
                         settings,

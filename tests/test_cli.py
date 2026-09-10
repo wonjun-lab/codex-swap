@@ -967,7 +967,7 @@ def test_status_shows_reset_credits(env, capsys, monkeypatch) -> None:
         _probe_recorder(ProbeResult.of(Usage(used_percent=96, reset_credits=1)), []),
     )
     assert cli.main(["status", "--fresh"]) == 0
-    assert "credits 1" in capsys.readouterr().out
+    assert "resets 1" in capsys.readouterr().out
 
 
 def test_list_says_what_to_do_when_every_account_is_spent(env, capsys) -> None:

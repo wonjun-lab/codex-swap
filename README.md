@@ -6,27 +6,26 @@ toward the limit. No logging out and back in every time you want a different acc
 ```
 codex-swap    gate 70% · margin 5%p
 
-   LABEL     EMAIL                   USED                             CRED  RESET
- >*work      account.name@gmail.com  58%    ██████████████▒▒▒┆▒▒▒▒▒▒  1     09-13 02:00 (in 5h)
-   personal  other.name@gmail.com    72%    █████████████████╪▒▒▒▒▒▒  0     09-14 07:00 (in 1d)
-   spare     third.name@gmail.com    ?      ────────────────────────  -     -
-                                                        ┴    ┻  ┴  ┴
-                                                        50   70 85 95  ┻ = current gate
+   LABEL       EMAIL                     USED                                 RESETS    RENEWS
+ > personal    other.name@gmail.com      72%      █████████████████╪▒▒▒▒▒▒    0         09-12 02:03 (in 1d)
+   spare       third.name@gmail.com      ?        ────────────────────────    -         -
+  *work        account.name@gmail.com    58%      ██████████████▒▒▒┆▒▒▒▒▒▒    1         09-11 01:03 (in 4h)
+                                                              ┴    ┻  ┴  ┴
+                                                              50   70 85 95    ┻ = current gate
 
    Policy settings
    Refresh usage
-   Credits
+   Usage resets
    Adopt the account in use
-   Toggle automatic switching
+   Automatic switching: on
    Quit
 
    enter open   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
-   Auto switch: on   (o to turn off)
 ```
 
 `*` is the account in use, `>` is the cursor. On a bar, `┆` is the gate you have to
-cross next and `╪` means you already crossed it. `CRED` is how many usage-reset credits
-the account has left — when an account is exhausted and still has a credit, spending it
+cross next and `╪` means you already crossed it. `RESETS` is how many usage resets
+the account has left — when an account is exhausted and still has a usage reset, spending it
 is an alternative to switching.
 
 The cursor runs past the accounts into the menu underneath, and `enter` opens whatever it
@@ -168,7 +167,7 @@ Answers you will see most:
 | `margin (N% + 5 > M%)` | The candidate is not enough lower | Lower the margin, or wait |
 | `cooldown` | You just switched | Wait (15 min by default) |
 | `throttled` | Inside the window that batches decisions | 60 s by default |
-| `ladder exhausted` · `reached but no lighter account` | Every account is spent | Wait for a reset, or spend a credit |
+| `ladder exhausted` · `reached but no lighter account` | Every account is spent | Wait for a reset, or spend a usage reset |
 | `off switch (…)` · `CODEX_ROTATE_SKIP` | You turned it off | See "Turning it off" |
 | `recent job activity` | The busy gate | See the environment table below |
 | `CODEX_HOME points elsewhere` | You called it with a different home set | Deliberate protection. Unset `CODEX_HOME` |
@@ -203,10 +202,10 @@ early while the active account is below the first rung, which is most of the tim
 slot you are not using can sit at a reading from days ago — long enough for its window to
 have reset underneath it.
 
-## Usage-reset credits
+## Usage resets
 
-A credit resets one account's usage window. The `CRED` column in `list` shows how many an
-account has, but not how long they last — a credit that expires tonight and one with two
+A usage reset gives one account a fresh window. The `RESETS` column shows how many an
+account has, but not how long they last — a reset that expires tonight and one with two
 months left both read as `1`.
 
 ```
@@ -214,7 +213,7 @@ codex-swap credits
 ```
 
 ```
-    LABEL  EMAIL               CREDIT     EXPIRES
+    LABEL  EMAIL               RESET      EXPIRES
 *   master you@example.com     Full reset 10-05 13:20 (in 25d)
     shared other@example.com   -          -
 ```
@@ -235,15 +234,15 @@ The TUI has the same screen: `Credits` in the menu, `u` to spend. There it asks 
 **type the label** rather than press a key — a keypress next to `s` (switch) is one slip
 away from an action that cannot be undone, and a name is not something you slip into.
 
-It asks before spending, naming the account and the credit's expiry date. **A spent credit
+It asks before spending, naming the account and its expiry date. **A spent reset
 cannot be recovered**, so without a terminal it refuses rather than guessing — pass `--yes`
 if you mean it from a script. `remove` is more relaxed about this because deleting a slot
-leaves the live credentials alone; a credit has no such second copy.
+leaves the live credentials alone; a usage reset has no such second copy.
 
 When several are available it spends the one that **expires first** — the one you would
 lose anyway. Override with `--credit <id>`; `credits --json` prints the ids.
 
-Automatic switching never spends a credit. That is a decision with a cost, and the policy
+Automatic switching never spends one. That is a decision with a cost, and the policy
 has no way to know whether you would rather switch accounts instead.
 
 ## Policy
@@ -269,8 +268,8 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
 | `codex-swap policy [--ladder …]` | Show or change the switching policy |
 | `codex-swap auto [on\|off]` | Turn automatic switching on or off |
-| `codex-swap credits` | Usage-reset credits per account, with the date each one expires |
-| `codex-swap credits use [label]` | Spend one credit. Asks first; `--dry-run` spends nothing |
+| `codex-swap credits` (`resets`) | Usage resets per account, with the date each one expires |
+| `codex-swap credits use [label]` | Spend one usage reset. Asks first; `--dry-run` spends nothing |
 | `codex-swap use <label>` | Switch by hand |
 | `codex-swap rotate [--dry-run]` | Run the policy |
 | `codex-swap rename <old> <new>` | Give a slot a different name |
