@@ -1836,6 +1836,10 @@ def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - �
     asked = spend_prompt(view)
     if asked is None:
         return replace(view, message="Move to a usable reset first")
+    # **묻기 전에 버퍼를 비운다.** 이 질문이 뜨기 전에 눌린 키는 이 질문에 대한 답이
+    # 아니다 — `getstr` 는 그것을 그대로 답으로 읽는다. 지금은 남아 있을 만한 키가
+    # 대부분 거절로 떨어지지만, 되돌릴 수 없는 자리에서 그 안전이 우연이면 안 된다.
+    curses.flushinp()
     return apply_spend(view, _prompt(stdscr, asked, drawn))
 
 
