@@ -21,7 +21,8 @@ import subprocess
 import sys
 import time
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1233,6 +1234,101 @@ def cmd_rotate(settings: config.Settings, *, dry_run: bool) -> int:
     return decision_exit_code(decision)
 
 
+NO_ROTATE_BEFORE = frozenset({"login", "logout", "mcp-server"})
+"""이 서브커맨드 앞에서는 전환하지 않는다. dotfiles wrapper 가 오래 지켜 온 규칙과 같다.
+
+- `login` — 막 만들려는 계정 위에 전환이 다른 계정을 깔면, 로그인이 엉뚱한 자리에 덮인다.
+- `logout` — 전환 직후에 로그아웃하면 사용자가 뜻한 것과 **다른 계정**이 로그아웃된다.
+- `mcp-server` — 오래 사는 서버다. 여기서 계정을 갈아 끼우면 이미 붙은 클라이언트가 옛
+  토큰으로 남는다.
+"""
+
+
+@dataclass(frozen=True)
+class ExecPlan:
+    """`exec` 가 할 일. **실행 직전까지를 순수하게** 만들어 둔다.
+
+    `execve` 는 성공하면 돌아오지 않아 테스트가 닿지 않는다. 그 앞의 판단 — 전환할지, 어느
+    바이너리를, 어떤 환경으로 — 을 여기에 모으면 실제로 codex 를 띄우지 않고도 전부 잴 수
+    있다. 이 자리에 버그가 숨으면 사용자가 codex 를 칠 때마다 밟는다.
+    """
+
+    rotate: bool
+    binary: str
+    argv: tuple[str, ...]
+    env: dict[str, str]
+    home: str
+    """codex 를 띄울 홈. 전환 판단도 **이 홈을 기준으로** 한다."""
+
+
+def exec_home(settings: config.Settings, environ: Mapping[str, str]) -> Path:
+    """codex 를 어느 홈으로 띄울지.
+
+    호출자가 `CODEX_HOME` 을 정했으면 그 뜻을 따른다 — 일부러 다른 홈에서 일하는 사람이 있다.
+
+    **예외는 하나다.** 앱과 자리를 나눈 기기에서 물려받은 값이 앱의 홈(`~/.codex`)이면 우리
+    자리로 되돌린다. 옛 셸 설정의 `export CODEX_HOME=~/.codex` 나 앱이 띄운 환경에서 흘러온
+    값인데, 그대로 따르면 codex 가 앱의 계정으로 뜨고 전환 가드는 "다른 홈을 골랐다" 며 매번
+    멈춘다 — 분리가 통째로 무의미해진다.
+    """
+    raw = environ.get("CODEX_HOME")
+    if not raw or wiring.inherits_app_home(settings.default_home, dict(environ)):
+        return settings.default_home
+    return Path(raw)
+
+
+def exec_plan(
+    settings: config.Settings,
+    argv: Sequence[str],
+    real: str | os.PathLike[str],
+    environ: Mapping[str, str],
+) -> ExecPlan:
+    first = argv[0] if argv else ""
+    home = exec_home(settings, environ)
+    env = dict(environ)
+    # 공식 앱이 `~/.codex` 를 자기 것으로 쓰는 기기에서는 우리 자리를 따로 둔다. 그
+    # 판단은 `settings` 가 이미 하고 있다 — 여기서 다시 감지하면 두 곳이 갈린다.
+    env["CODEX_HOME"] = str(home)
+    # wrapper 를 다시 집으면 무한 재귀다. `discovery` 가 그것을 막으려고 PATH 를 손보는데,
+    # 자식에게도 같은 PATH 를 줘야 그 효과가 이어진다.
+    env["PATH"] = discovery.path_without_local_bin(env)
+    # **node 를 찾을 수 있게 한다.** npm 으로 깔린 codex 는 `#!/usr/bin/env node` 스크립트라,
+    # PATH 가 좁은 호출자(launchd·systemd·GUI 가 띄운 것)에서는 바이너리를 찾고도 127 로
+    # 죽는다. 프로브는 이미 이 보정을 하고 있었는데 여기만 빠져 있었다.
+    env = discovery.env_with_bin_dir(real, env)
+    binary = os.fspath(real)
+    # 호출자가 고른 다른 홈으로 뜨면 전환하지 않는다. 그 홈의 자격증명은 우리 것이 아니다.
+    ours = os.path.realpath(home) == os.path.realpath(settings.default_home)
+    return ExecPlan(
+        rotate=first not in NO_ROTATE_BEFORE and ours,
+        binary=binary,
+        argv=(binary, *argv),
+        env=env,
+        home=str(home),
+    )
+
+
+def rotate_for_exec(settings: config.Settings, plan: ExecPlan) -> None:
+    """`exec` 앞의 전환. **codex 를 띄울 홈과 같은 홈으로** 판단한다.
+
+    전환 가드는 이 프로세스의 `CODEX_HOME` 을 본다. 자식에게 줄 홈만 고치고 여기 환경을 그대로
+    두면, 물려받은 앱의 홈 때문에 가드가 멈춘다 — 자식은 우리 홈으로 뜨는데 전환은 한 번도 안
+    일어난다. 그래서 판단하는 동안만 같은 값으로 맞추고, 끝나면 되돌린다.
+    """
+    if not plan.rotate:
+        return
+    saved = os.environ.get("CODEX_HOME")
+    os.environ["CODEX_HOME"] = plan.home
+    try:
+        with contextlib.suppress(Exception):
+            rotate.rotate(settings, dry_run=False)
+    finally:
+        if saved is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = saved
+
+
 def cmd_exec(settings: config.Settings, argv: Sequence[str]) -> int:
     """정책을 돌리고 **진짜 codex 로 넘어간다.** wrapper 가 부르는 자리다.
 
@@ -1243,9 +1339,6 @@ def cmd_exec(settings: config.Settings, argv: Sequence[str]) -> int:
     **실패해도 codex 는 뜬다.** 전환이 안 되는 것과 codex 를 못 쓰는 것은 무게가 전혀
     다르다 — 스위처가 codex 를 못 쓰게 만드는 순간 그것은 도구가 아니라 장애물이다.
     """
-    with contextlib.suppress(Exception):
-        rotate.rotate(settings, dry_run=False)
-
     try:
         real = discovery.resolve_codex_bin()
     except Exception as exc:
@@ -1254,19 +1347,35 @@ def cmd_exec(settings: config.Settings, argv: Sequence[str]) -> int:
             "Install it (npm install -g @openai/codex), or set CODEX_ACCOUNT_BIN"
         ) from exc
 
-    env = dict(os.environ)
-    # 공식 앱이 `~/.codex` 를 자기 것으로 쓰는 기기에서는 우리 자리를 따로 둔다. 그
-    # 판단은 `settings` 가 이미 하고 있다 — 여기서 다시 감지하면 두 곳이 갈린다.
-    env["CODEX_HOME"] = str(settings.default_home)
-    # wrapper 를 다시 집으면 무한 재귀다. `discovery` 가 그것을 막으려고 PATH 를 손보는데,
-    # 자식에게도 같은 PATH 를 줘야 그 효과가 이어진다.
-    env["PATH"] = discovery.path_without_local_bin(env)
+    plan = exec_plan(settings, argv, real, os.environ)
+    rotate_for_exec(settings, plan)
 
     try:
-        os.execve(os.fspath(real), [os.fspath(real), *argv], env)
+        os.execve(plan.binary, list(plan.argv), plan.env)
     except OSError as exc:  # pragma: no cover - execve 는 성공하면 돌아오지 않는다
         raise CliError(f"could not start codex: {exc}") from exc
     return 0  # pragma: no cover
+
+
+def cmd_home(settings: config.Settings) -> int:
+    """codex 가 **여기서** 떠야 할 홈을 한 줄로 낸다. 조회하지 않으므로 빠르다.
+
+    우리 wrapper 를 거치지 않는 소비자가 있다 — dotfiles 로 심어 둔 `codex` wrapper, 브로커를
+    내리는 Claude 훅. 그들이 `~/.codex` 를 고정으로 보면, 공식 앱과 자리를 나눈 기기에서
+    **codex 는 앱의 계정을 쓰고 우리 전환은 아무 효과가 없다**(에러도 없이). 판단을 각자
+    흉내내면 갈리므로, 판단은 여기 하나에 두고 그들은 이 한 줄을 받아 쓴다:
+
+        export CODEX_HOME="$(codex-swap home)"
+
+    그래서 답은 `exec` 가 고르는 홈과 **같다.** 호출자가 일부러 고른 `CODEX_HOME` 은 그대로
+    돌려주고, 앱과 나뉜 기기에서 물려받은 앱의 홈은 우리 자리로 바로잡는다. 설정값만 내던 때는
+    wrapper 가 "이미 정해져 있으면 둔다" 는 조건을 따로 달아야 했고, 그 조건이 물려받은 앱의
+    홈까지 지켜 줬다 — `exec` 는 바로잡는데 dotfiles wrapper 는 앱의 홈으로 띄웠다(교차 검토).
+
+    출력은 경로 하나뿐이다 — 명령 치환으로 먹히는 자리라 안내 한 글자도 섞으면 안 된다.
+    """
+    print(exec_home(settings, os.environ))
+    return 0
 
 
 def cmd_init(settings: config.Settings) -> int:
@@ -1296,29 +1405,65 @@ def cmd_init(settings: config.Settings) -> int:
         return 1
 
     # 2) 공식 앱과의 자리다툼. **우리가 비켜 준다.**
+    #
+    #    앱이 **깔려 있다** 와 앱과 **실제로 나뉘어 있다** 는 다르다. `CODEX_ACCOUNT_DEFAULT_HOME`
+    #    으로 앱의 홈을 직접 가리킨 설정에서 "나눠 뒀다" 고 말한 적이 있다 — 실제로는 여전히
+    #    같은 파일을 다투는 중이었다.
     shell = wiring.shell_of()
     isolate = wiring.app_installed()
-    if isolate:
+    apart = wiring.apart_from_app(settings.default_home)
+    if apart:
         # **앱이 쓰는 자리를 그대로 적는다.** `settings.default_home` 은 이미 비켜난
         # 뒤의 값이라, 그걸 적으면 "앱이 우리 자리를 쓴다" 는 거꾸로 된 말이 된다.
         print("  ok    the ChatGPT desktop app is installed, so accounts are kept apart")
         print(f"          app : {wiring.DEFAULT_HOME}")
         print(f"          ours: {settings.default_home}")
         print(f"        your registered accounts stay in {settings.accounts_dir}")
-
-    # 3) 배선. **묻지 않고 놓는다** — 사용자가 신경 쓸 일이 아니다.
-    #
-    #    파일 하나를 PATH 에 두는 것으로 끝난다. 셸 프로필을 고치게 하면 셸마다 문법이
-    #    다르고, 어느 파일인지 찾아야 하고, 새 셸을 열어야 하고, 그 사본이 낡는다.
-    wired = wiring.already_wired(shell)
-    if wired is not None:
-        print(f"  ok    codex is already wired through {wired}")
-    elif wiring.occupied_by_other():
-        # 남이 놓은 것을 덮지 않는다. dotfiles 로 자기 wrapper 를 심어 둔 사람이 있고,
-        # 그것도 제 몫을 한다 — 다만 우리를 안 부르므로 그 사실만 알린다.
+    elif isolate:
         ok = False
-        print(f"  note  {wiring.WRAPPER} exists but does not call codex-swap")
-        print("        leaving it alone. Add this line to it, or remove it and rerun init:")
+        print(f"  FIX   codex-swap and the ChatGPT app are both using {settings.default_home}")
+        print("        the app keeps rewriting that auth.json, so accounts keep logging out.")
+        print("        Unset CODEX_ACCOUNT_DEFAULT_HOME and run codex-swap init again.")
+    if wiring.inherits_app_home(settings.default_home):
+        # 옛 셸 설정이나 앱이 띄운 환경에서 흘러온 값이다. 우리 wrapper 는 덮어쓰지만, 이
+        # 값을 그대로 읽는 다른 도구는 앱의 계정으로 뜬다.
+        ok = False
+        print(f"  FIX   your environment exports CODEX_HOME={os.environ.get('CODEX_HOME')}")
+        print("        that is the app's home, so anything reading it gets the app's account.")
+        print("        Remove that export from your shell profile.")
+
+    # 3) 배선. 없으면 **묻지 않고 놓고**, 남의 것이면 그것이 제 몫을 다 하는지 본다.
+    #
+    #    "codex-swap 을 부른다" 만으로는 부족하다. 앱과 나뉜 기기에서는 codex 가 우리 홈으로
+    #    떠야 전환이 닿는다 — `rotate` 만 부르는 wrapper 는 전환을 하고도 codex 를 앱의
+    #    `~/.codex` 로 띄워, 아무 효과가 없는데 에러도 없다. 안내하는 줄은 **`rotate` 보다
+    #    앞에** 둔다. 뒤에 두면 물려받은 홈과 어긋날 때 전환 가드가 멈춘다.
+    state = wiring.inspect(shell)
+    if state.kind == wiring.OURS:
+        print(f"  ok    wired: {state.path}")
+    elif state.complete(apart):
+        print(f"  ok    codex is already wired through {state.path}")
+    elif state.kind in (wiring.EXTERNAL, wiring.PROFILE):
+        ok = False
+        print(f"  FIX   {state.path} runs codex-swap but does not hand codex our home")
+        print("        switching would change our credentials while codex keeps reading the app's,")
+        print("        with no error. Add this before it runs codex-swap rotate:")
+        print(f"          {wiring.HOME_LINE}")
+    elif state.kind == wiring.LEGACY:
+        ok = False
+        print(f"  FIX   {state.path} still runs the old bash switcher (codex-account)")
+        print("        it shares codex-swap's ledger and lock, so two switchers would undo each")
+        print("        other. Replace that call with:")
+        if apart:
+            print(f"          {wiring.HOME_LINE}")
+        print("          codex-swap rotate >/dev/null || true")
+    elif state.kind == wiring.FOREIGN:
+        # 남이 놓은 것을 덮지 않는다. dotfiles 로 자기 wrapper 를 심어 둔 사람이 있다.
+        ok = False
+        print(f"  note  {state.path} exists but does not call codex-swap — leaving it alone")
+        print("        remove it and rerun init, or add to it:")
+        if apart:
+            print(f"          {wiring.HOME_LINE}")
         print("          codex-swap rotate >/dev/null || true")
     else:
         try:
@@ -1332,28 +1477,34 @@ def cmd_init(settings: config.Settings) -> int:
             ok = False
             print(f"  FAIL  could not write {wiring.WRAPPER}: {exc}")
 
-    # 4) 분리로 넘어온 직후라면 자격증명이 아직 원래 자리에 있다. 슬롯이 있으면 전환
-    #    한 번으로 채워지지만, 아직 아무것도 등록 안 했으면 `adopt` 가 막힌다.
+    # 4) 홈이 막 바뀌었다면 로그인이 아직 다른 자리에 있다. **복사하라고 하지 않는다** —
+    #    앱의 `auth.json` 을 베끼면 같은 refresh token 을 둘이 쥐게 되어, 먼저 갱신하는 쪽이
+    #    다른 쪽을 로그아웃시킨다. 채우는 길은 슬롯에서의 전환이나 새 로그인이다.
+    labels = store.labels(settings)
     seed = wiring.seed_source(settings.default_home)
     if seed is not None:
         ok = False
         print(f"  TODO  your login is still in {seed}, not in {settings.default_home}")
-        if store.labels(settings):
+        if labels:
             print("        switch once to fill it: codex-swap use <label>")
         else:
-            print("        bring it over once, then keep it:")
-            print(f"          mkdir -p {settings.default_home}")
-            print(f"          cp {seed}/auth.json {settings.default_home}/auth.json")
-            print("          codex-swap adopt work")
+            print("        sign in here rather than copying it over:")
+            print("          codex-swap add work")
 
     # 5) 계정. 하나로는 바꿀 곳이 없다.
-    labels = store.labels(settings)
     if len(labels) >= 2:
         print(f"  ok    {len(labels)} accounts registered: {', '.join(labels)}")
     elif len(labels) == 1:
         ok = False
         print(f"  TODO  only {labels[0]} is registered — add a second one to switch between:")
         print("          codex-swap add <label>")
+    elif isolate:
+        # 앱이 있으면 `adopt` 로 "지금 로그인" 을 가져오지 않는다. 그 로그인은 앱의 것이라,
+        # 가져오는 순간 앱과 refresh token 을 나눠 쥐게 된다. 각 계정을 따로 로그인시킨다.
+        ok = False
+        print("  TODO  no accounts yet. Sign each one in on its own (a browser opens):")
+        print("          codex-swap add work")
+        print("          codex-swap add personal")
     else:
         ok = False
         print("  TODO  no accounts yet. Keep the one you are logged in as, then add another:")
@@ -1550,6 +1701,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("clean", help="clear probe leftovers from the slots")
     sub.add_parser("doctor", help="test each account and say how to fix what is broken")
     sub.add_parser("init", help="set this machine up and say what is left")
+    sub.add_parser("home", help="print the home codex should start in here (for wrappers)")
     p = sub.add_parser("exec", help="run codex through the policy (used by the wrapper)")
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed straight to codex")
 
@@ -1653,6 +1805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_init(settings)
             case "exec":
                 return cmd_exec(settings, args.args)
+            case "home":
+                return cmd_home(settings)
             case "update" | "upgrade":
                 # 계정을 건드리지 않는 유일한 명령이라 `settings` 를 받지 않는다.
                 return cmd_update(check_only=args.check, assume_yes=args.yes)

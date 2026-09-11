@@ -192,9 +192,11 @@ def upgrade_command(install: Install) -> list[str]:
     if install.manager == "brew":
         # 우리가 실행하지 않는다. brew 가 관리하는 것을 pip 으로 덮으면 brew 가 아는
         # 상태와 실제가 갈리고, 그 뒤로는 brew 쪽 명령이 전부 어긋난다.
+        # HEAD 로 깐 formula 는 `brew upgrade` 가 **건너뛴다** — `--fetch-HEAD` 를 줘야 새
+        # 커밋을 받는다. 앞쪽만 안내하면 사용자는 명령이 성공했는데도 옛 판에 갇힌다.
         raise UpdateError(
             "this was installed with Homebrew, which manages its own updates. "
-            "Run: brew upgrade codex-swap"
+            "Run: brew upgrade --fetch-HEAD codex-swap (plain brew upgrade skips HEAD installs)"
         )
     if install.manager == "uv":
         return ["uv", "tool", "install", "--force", install.source]

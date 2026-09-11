@@ -124,9 +124,16 @@ def test_init_says_it_moved_instead_of_doing_it_silently(
 ) -> None:
     _app(monkeypatch, True)
     _unwired(monkeypatch)
+    _no_codex_on_path(monkeypatch)
+    # 공용 fixture 는 `CODEX_ACCOUNT_DEFAULT_HOME` 을 임시 `~/.codex` 로 **고정**한다. 앱이 있는
+    # 기기에서 그 값은 앱의 홈을 직접 가리킨 설정이라, init 은 "나눠 뒀다" 가 아니라 "같은
+    # 홈을 쓴다" 고 짚어야 맞다. 여기서 보려는 것은 자동으로 비켜 서는 경로이므로 풀어 둔다.
+    monkeypatch.delenv("CODEX_ACCOUNT_DEFAULT_HOME", raising=False)
+    monkeypatch.delenv("CODEX_ACCOUNTS_DIR", raising=False)
     cli.main(["init"])
     out = capsys.readouterr().out
     assert "ChatGPT desktop app" in out, out
+    assert "kept apart" in out, out
 
 
 # ── 앱을 나중에 까는 사람 ──────────────────────────────────────────────────
