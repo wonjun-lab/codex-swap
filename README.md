@@ -70,10 +70,15 @@ pip install --user git+https://github.com/wonjun-lab/codex-swap.git
 
 `codex-swap update` knows which of these you used and reuses it.
 
-A Homebrew formula is kept in [`packaging/homebrew/`](packaging/homebrew/codex-swap.rb) but is
-**not published yet.** There is no tagged release to point it at, and a HEAD-only formula is
-one that plain `brew upgrade` skips — people would install it and quietly stay on the first
-build. It goes into the tap with the first release.
+Or with Homebrew, on macOS or Linux:
+
+```bash
+brew install wonjun-lab/tap/codex-swap
+```
+
+Homebrew then owns the updates: `brew upgrade codex-swap`. `codex-swap update` says so instead
+of reaching into brew's directory with pip. The formula lives in
+[`packaging/homebrew/`](packaging/homebrew/codex-swap.rb) and goes to the tap with each release.
 
 ### Then run init
 

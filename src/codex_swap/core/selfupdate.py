@@ -56,6 +56,13 @@ class Install:
     local_path: Path | None = None
     """로컬 경로에서 깔렸다면 그 경로. 거기가 깃이면 무엇이 바뀌는지까지 보여 줄 수 있다."""
 
+    brew_stable: bool = False
+    """brew 가 **버전 번호가 붙은 keg**(`Cellar/codex-swap/0.2.0`)에 깐 것이 확실할 때만 참.
+
+    HEAD 로 깐 것(`HEAD-1a2b3c4`)은 `brew upgrade` 가 건너뛰므로 `--fetch-HEAD` 를 안내해야
+    한다. 안정판에 그 옵션을 붙여도 해는 없어서, 모르면 HEAD 쪽 안내로 기운다.
+    """
+
     @property
     def is_git(self) -> bool:
         return self.source.startswith("git+")
@@ -98,12 +105,35 @@ def _manager(prefix: str | None = None) -> str:
     return "pip"
 
 
+def _brew_keg(prefix: str) -> str | None:
+    """brew 의 Cellar 안이면 keg 이름(`0.2.0` · `HEAD-1a2b3c4`). 아니면 None."""
+    parts = prefix.replace(os.sep, "/").split("/")
+    if "Cellar" not in parts:
+        return None
+    at = parts.index("Cellar") + 2
+    return parts[at] if len(parts) > at and parts[at] else None
+
+
 def detect(prefix: str | None = None) -> Install | None:
     """이 설치의 출처. 알아낼 수 없으면 None.
 
     None 은 실패가 아니라 **모른다**이다. 호출부는 그때 사람에게 명령을 보여 주고 손을
     뗀다 — 자기 자신을 갈아엎는 일에서 추측으로 진행하면 안 된다.
     """
+    where = prefix if prefix is not None else sys.prefix
+    manager = _manager(where)
+    if manager == "brew":
+        # **brew 의 설치 기록은 쓸 데가 없다.** 빌드하던 임시 디렉토리를 가리키고 그 자리는
+        # 설치가 끝나면 사라진다. 기록이 아예 없을 때 아래로 내려가면 None 이 되고, 그러면
+        # `update` 가 uv 재설치 명령을 안내한다 — brew 사용자에게 틀린 길이다. 안내할 명령을
+        # 가르는 것은 keg 이름뿐이다: 안정판은 `Cellar/codex-swap/0.2.0`, HEAD 는 `HEAD-…`.
+        keg = _brew_keg(where)
+        return Install(
+            manager="brew",
+            source="homebrew",
+            brew_stable=keg is not None and not keg.startswith("HEAD"),
+        )
+
     info = _dist_direct_url()
     if info is None:
         return None
@@ -111,7 +141,6 @@ def detect(prefix: str | None = None) -> Install | None:
     if not isinstance(url, str) or not url:
         return None
 
-    manager = _manager(prefix)
     vcs = info.get("vcs_info")
     if isinstance(vcs, dict) and vcs.get("vcs") == "git":
         commit = vcs.get("commit_id")
@@ -194,6 +223,12 @@ def upgrade_command(install: Install) -> list[str]:
         # 상태와 실제가 갈리고, 그 뒤로는 brew 쪽 명령이 전부 어긋난다.
         # HEAD 로 깐 formula 는 `brew upgrade` 가 **건너뛴다** — `--fetch-HEAD` 를 줘야 새
         # 커밋을 받는다. 앞쪽만 안내하면 사용자는 명령이 성공했는데도 옛 판에 갇힌다.
+        # 안정판에는 그 옵션이 필요 없고 설명이 틀린 말이 된다. 확실히 안정판일 때만 뺀다.
+        if install.brew_stable:
+            raise UpdateError(
+                "this was installed with Homebrew, which manages its own updates. "
+                "Run: brew upgrade codex-swap"
+            )
         raise UpdateError(
             "this was installed with Homebrew, which manages its own updates. "
             "Run: brew upgrade --fetch-HEAD codex-swap (plain brew upgrade skips HEAD installs)"
