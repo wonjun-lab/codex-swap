@@ -52,12 +52,19 @@ DEFAULT_HOME = Path("~/.codex")
 """분리하기 전의 자리. 공식 앱도 여기를 쓴다."""
 
 
-def seed_source(default_home: Path) -> Path | None:
-    """지금 홈은 비었는데 **원래 자리에 로그인이 남아 있으면** 그 경로. 아니면 None.
+ISOLATED_PATH = Path("~/.codex-cli")
+"""분리했을 때 우리가 쓰는 자리."""
 
-    분리로 넘어가는 순간에만 생기는 상태다. 배선은 셸이 뜰 때마다 다시 판단하므로 앱을
-    나중에 깔아도 다음 셸부터 홈이 바뀌는데, 자격증명은 따라오지 않는다. 사용자에게는
-    잘 쓰던 도구가 갑자기 로그아웃된 것처럼 보인다.
+
+def seed_source(default_home: Path) -> Path | None:
+    """지금 홈은 비었는데 **다른 자리에 로그인이 남아 있으면** 그 경로. 아니면 None.
+
+    홈이 바뀌는 순간에만 생기는 상태다. 자격증명은 따라오지 않으므로, 사용자에게는 잘
+    쓰던 도구가 갑자기 로그아웃된 것처럼 보인다.
+
+    **두 방향 다 본다.** 앱을 깔면 `~/.codex` → `~/.codex-cli` 로 옮겨 가지만, 앱을
+    **지우면** 그 반대로 돌아온다. 뒤쪽을 빠뜨리기 쉬운데 사용자가 겪는 증상은 똑같고,
+    오히려 더 당황스럽다 — 앱을 지웠을 뿐인데 codex 가 로그아웃되기 때문이다.
 
     슬롯이 남아 있으면 전환 한 번으로 채워지지만(슬롯 저장소는 옮기지 않는다), 아직 계정을
     등록하지 않았다면 그마저 없다 — `adopt` 가 "로그인이 없다" 며 막히고, 사용자는 방금까지
@@ -66,10 +73,10 @@ def seed_source(default_home: Path) -> Path | None:
     here = default_home.expanduser()
     if (here / "auth.json").is_file():
         return None  # 지금 자리에 이미 있다
-    original = DEFAULT_HOME.expanduser()
-    if original == here:
-        return None  # 분리하지 않은 설치다
-    return original if (original / "auth.json").is_file() else None
+    for other in (DEFAULT_HOME.expanduser(), ISOLATED_PATH.expanduser()):
+        if other != here and (other / "auth.json").is_file():
+            return other
+    return None
 
 
 WRAPPER = Path("~/.local/bin/codex")
