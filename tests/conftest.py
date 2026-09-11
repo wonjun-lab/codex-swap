@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import pytest
 
+# 앱 공존 테스트 파일들이 함께 쓰는 임시 HOME 픽스처(`box`). 여기서 한 번 등록하는 까닭은
+# `_coexist.py` 의 docstring 에 적었다.
+pytest_plugins = ("_coexist",)
+
 _LEAKY = (
     "HOME",
     "CODEX_HOME",

@@ -307,6 +307,12 @@ def test_homebrew_is_recognised_on_every_platform(
     assert install is not None and install.manager == "brew"
 
 
+def test_a_brew_head_install_is_told_about_fetch_head() -> None:
+    install = selfupdate.Install(manager="brew", source="git+https://example/repo.git")
+    with pytest.raises(selfupdate.UpdateError, match="--fetch-HEAD"):
+        selfupdate.upgrade_command(install)
+
+
 def test_the_installer_script_is_shipped_and_runnable() -> None:
     """`curl … | sh` 로 안내해 두고 파일이 없으면 그 한 줄이 404 를 내려받는다."""
     import subprocess as sp
