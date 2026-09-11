@@ -508,9 +508,8 @@ def _home_output(value: str, from_home: set[str], held: set[str]) -> bool:
     if len(inner) != 1:
         return False
     steps = _split(inner[0])
-    if not steps or steps[0][2] not in ("", "\n", "||"):
-        return False
-    if any(before != "||" for _, before, _ in steps[1:]):
+    # 첫 명령 뒤로는 실패했을 때의 대안(`||`)만 허용한다. 파이프·`;`·`&&` 로 이으면 출력이 달라진다.
+    if not steps or any(before != "||" for _, before, _ in steps[1:]):
         return False
     head = _program(_parts(steps[0][0])[1])
     return len(head) > 1 and _bare(head[1]) == "home" and _names(head[0], "codex-swap", held)
