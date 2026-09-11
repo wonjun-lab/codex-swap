@@ -171,7 +171,26 @@ def _refresh_fingerprint(path) -> str | None:
     return hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
 
 
-def shared_with_app(settings: config.Settings) -> list[Finding]:
+def _app_token() -> str | None:
+    """지금 앱이 쥔 refresh token 의 지문. 앱이 없거나 로그인이 없으면 None."""
+    from codex_swap.core import wiring
+
+    if not wiring.app_installed():
+        return None
+    return _refresh_fingerprint(wiring.DEFAULT_HOME.expanduser() / "auth.json")
+
+
+def _shared_slot(label: str) -> Finding:
+    return Finding(
+        label,
+        SHARED,
+        "this slot holds the same refresh token as the ChatGPT app — whichever "
+        "refreshes first logs the other out",
+        f"sign this account in on its own: codex-swap add {label} --force",
+    )
+
+
+def shared_with_app(settings: config.Settings, labels: list[str] | None = None) -> list[Finding]:
     """**지금 앱이 쥔 refresh token 과 같은 것**을 쥔 자리가 있나.
 
     refresh token 은 쓰일 때마다 새것으로 바뀌고 옛것은 무효가 된다. 같은 토큰을 두 곳이
@@ -182,6 +201,8 @@ def shared_with_app(settings: config.Settings) -> list[Finding]:
     **찾는 것은 현재 공유뿐이다.** 과거에 공유했다가 앱이 먼저 갱신해 버린 사본은 이미 죽은
     토큰이라 여기서는 안 보이고, 대신 계정별 검사가 "서버가 거절했다" 로 짚는다. 파일을
     옮기는 것으로는 공유가 끊기지 않으며, 그 계정을 따로 다시 로그인시켜야 끊긴다.
+
+    `labels` 를 주면 그 목록만 본다 — `run` 이 프로브할 목록과 **같은 스냅숏**으로 견주려고.
     """
     from codex_swap.core import wiring
 
@@ -209,17 +230,10 @@ def shared_with_app(settings: config.Settings) -> list[Finding]:
     if app_fp is None:
         return found
 
-    for label in store.labels(settings):
+    names = store.labels(settings) if labels is None else labels
+    for label in names:
         if _refresh_fingerprint(store.slot_auth(settings, label)) == app_fp:
-            found.append(
-                Finding(
-                    label,
-                    SHARED,
-                    "this slot holds the same refresh token as the ChatGPT app — whichever "
-                    "refreshes first logs the other out",
-                    f"sign this account in on its own: codex-swap add {label} --force",
-                )
-            )
+            found.append(_shared_slot(label))
     if not same_home and _refresh_fingerprint(ours / "auth.json") == app_fp:
         found.append(
             Finding(
@@ -237,7 +251,10 @@ def run(settings: config.Settings) -> list[Finding]:
     # **토큰을 견주는 검사를 프로브보다 먼저 한다.** 프로브는 슬롯의 토큰을 갱신하도록 되어
     # 있어서, 뒤에 두면 방금 그 갱신이 공유의 증거를 지운다 — 경고해야 할 슬롯이 "reachable"
     # 로 나왔다.
-    shared = shared_with_app(settings)
+    # 슬롯 목록은 **한 번만** 읽는다. 공유 검사와 프로브가 각자 읽으면, 그 사이에 생긴 슬롯은
+    # 공유 검사를 거치지 않고 프로브로 넘어간다.
+    labels = store.labels(settings)
+    shared = shared_with_app(settings, labels)
     # 앱과 토큰을 나눠 쥔 자리는 **프로브하지 않는다.** 프로브가 그 토큰을 갱신하는 순간 앱 쪽
     # 사본이 무효가 되어, 진단하려다 앱을 로그아웃시킨다.
     flagged = {f.label for f in shared}
@@ -246,11 +263,18 @@ def run(settings: config.Settings) -> list[Finding]:
     # 환경 쪽 문제는 **맨 앞**에 둔다. 계정마다 "서버가 거절했다" 가 줄줄이 뜨는데 그
     # 까닭이 맨 아래 있으면, 사용자는 그 전에 계정을 다시 만들기 시작한다.
     outside = [f for f in (drifted(settings),) if f is not None]
-    out = [
-        check(settings, label, active)
-        for label in store.labels(settings)
-        if label not in flagged and not (skip_active and label == active)
-    ]
+    out: list[Finding] = []
+    for label in labels:
+        if label in flagged or (skip_active and label == active):
+            continue
+        # **프로브 직전에 한 번 더 견준다.** 위의 검사와 여기 사이에 슬롯 내용이 바뀔 수 있다 —
+        # `add`·`adopt` 가 동시에 돌면 그렇다. 늦게 알아채면 앱은 이미 로그아웃된 뒤다.
+        app_fp = _app_token()
+        home = settings.default_home if label == active else store.slot_dir(settings, label)
+        if app_fp is not None and _refresh_fingerprint(home.expanduser() / "auth.json") == app_fp:
+            shared.append(_shared_slot(label))
+            continue
+        out.append(check(settings, label, active))
     return [*shared, *outside, *out]
 
 

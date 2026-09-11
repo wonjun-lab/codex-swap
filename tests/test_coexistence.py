@@ -217,25 +217,29 @@ def test_discovery_never_mistakes_our_own_wrapper_for_codex(box, tmp_path) -> No
         DOTFILES_WRAPPER,
         'exec codex-swap exec "$@"\n',
         'CODEX_HOME="$(codex-swap home)"\nexport CODEX_HOME\ncodex-swap rotate || true\n',
-        ': "${CODEX_HOME:=$(codex-swap home)}"\nexport CODEX_HOME\ncodex-swap rotate\n',
         'export CODEX_HOME="$("codex-swap" home)"\ncodex-swap rotate || true\n',
         'codex() { codex-swap exec "$@"; }\n',
         "# don't rotate before the home is set\n" + HOME_LINE + "\ncodex-swap rotate || true\n",
         HOME_LINE + "; codex-swap rotate || true\n",
         'command -v codex-swap >/dev/null && export CODEX_HOME="$(codex-swap home)"\n'
         "codex-swap rotate || true\n",
+        'command -- codex-swap exec "$@"\n',
+        "main() {\n  "
+        + HOME_LINE
+        + '\n  codex-swap rotate || true\n  exec real "$@"\n}\nmain "$@"\n',
     ],
     ids=[
         "canonical-line",
         "dotfiles-via-variable",
         "delegates-to-exec",
         "export-on-its-own-line",
-        "default-when-unset",
         "quoted-program-name",
         "shell-function",
         "apostrophe-in-a-comment",
         "one-line",
         "guarded-one-liner",
+        "command-double-dash",
+        "helper-function-that-is-called",
     ],
 )
 def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
@@ -260,10 +264,17 @@ def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
         HOME_LINE + "; unset CODEX_HOME\ncodex-swap rotate || true\n",
         'echo "codex-swap exec"\ncodex-swap rotate || true\nexec real "$@"\n',
         'export CODEX_HOME="$(codex-swap home)/sub"\ncodex-swap rotate || true\n',
-        'CODEX_HOME=/somewhere/else\n: "${CODEX_HOME:=$(codex-swap home)}"\nexport CODEX_HOME\n',
+        ': "${CODEX_HOME:=$(codex-swap home)}"\nexport CODEX_HOME\ncodex-swap rotate\n',
         'codex-swap rotate || true\nexec "$real_codex" exec "$@"\n',
         HOME_LINE + '\nunset CODEX_HOME\nCODEX_HOME="$(codex-swap home)"\ncodex-swap rotate\n',
         HOME_LINE + "\nexport -n CODEX_HOME\ncodex-swap rotate || true\n",
+        "export CODEX_HOME='$(codex-swap home)'\ncodex-swap rotate || true\n",
+        'export CODEX_HOME="$(codex-swap home | sed s,a,b,)"\ncodex-swap rotate\n',
+        'helper=printf\nexport CODEX_HOME="$("$helper" home)"\ncodex-swap rotate\n',
+        HOME_LINE + ' | cat\ncodex-swap rotate || true\nexec real "$@"\n',
+        HOME_LINE + '\ncodex-swap rotate || true\nCODEX_HOME=/other exec real "$@"\n',
+        HOME_LINE + '\ncodex-swap rotate || true\nexec env -i real "$@"\n',
+        HOME_LINE + '\ncodex-swap rotate || true\nexec env -u CODEX_HOME real "$@"\n',
     ],
     ids=[
         "comment",
@@ -280,10 +291,17 @@ def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
         "unset-on-the-same-line",
         "exec-only-printed",
         "path-appended",
-        "default-does-not-replace-a-value",
+        "default-keeps-an-inherited-home",
         "codex-own-exec-subcommand",
         "set-again-after-unset-without-export",
         "export-attribute-removed",
+        "single-quoted-literal",
+        "output-rewritten-by-a-pipe",
+        "helper-is-not-codex-swap",
+        "export-inside-a-pipeline",
+        "child-given-another-home",
+        "child-given-no-environment",
+        "child-loses-the-home",
     ],
 )
 def test_lookalikes_do_not_count_as_passing_the_home(body: str) -> None:
@@ -315,8 +333,21 @@ def test_the_dotfiles_wrapper_is_complete(box) -> None:
         '#!/bin/bash\nrotate_cmd="$script_dir/codex-account"\n"$rotate_cmd" rotate\n',
         '#!/bin/bash\necho "moving to codex-swap"\n"$d/codex-account" rotate\n',
         "#!/bin/bash\necho '$(codex-swap rotate)'\n\"$d/codex-account\" rotate\n",
+        '#!/bin/bash\ncmd=codex-swap\ncmd=printf\n"$cmd" exec\n"$d/codex-account" rotate\n',
+        "#!/bin/bash\nalias other='codex-swap exec'\n\"$d/codex-account\" rotate\n",
+        '#!/bin/bash\n( "$d/codex-account" rotate )\nexec real "$@"\n',
+        '#!/bin/bash\nexport CODEX_HOME="$(codex-swap home)"\n"$d/codex-account" rotate\n',
     ],
-    ids=["direct", "through-a-variable", "codex-swap-only-printed", "inside-single-quotes"],
+    ids=[
+        "direct",
+        "through-a-variable",
+        "codex-swap-only-printed",
+        "inside-single-quotes",
+        "variable-reassigned-away",
+        "alias-with-another-name",
+        "inside-a-subshell",
+        "asks-codex-swap-only-for-the-home",
+    ],
 )
 def test_the_old_bash_switcher_is_recognised(box, body: str) -> None:
     """글자로 찍힌 `codex-swap` 하나에 옛 전환기 판정이 사라졌었다(교차 검토 재현)."""
@@ -324,6 +355,30 @@ def test_the_old_bash_switcher_is_recognised(box, body: str) -> None:
     state = wiring.inspect("bash")
     assert state.kind == wiring.LEGACY
     assert not state.complete(isolate=False)
+
+
+def test_a_wrapper_that_only_asks_for_the_home_does_not_switch(box) -> None:
+    """홈만 받아 쓰고 `rotate` 를 안 부르면 codex 를 칠 때 전환이 일어나지 않는다 — 배선이 아니다.
+
+    그런데도 "codex-swap 을 부른다" 로 읽어 완성된 배선으로 쳤다(교차 검토).
+    """
+    _on_path(box, '#!/bin/bash\nexport CODEX_HOME="$(codex-swap home)"\nexec real "$@"\n')
+    assert wiring.inspect("bash").kind == wiring.NONE
+
+
+def test_a_long_wrapper_is_read_to_the_end(box) -> None:
+    """앞 8KB 만 읽던 때, 뒤쪽의 `unset CODEX_HOME` 이 잘려 나가 "넘긴다" 로 읽혔다."""
+    _on_path(
+        box,
+        "#!/bin/bash\n"
+        + HOME_LINE
+        + "\ncodex-swap rotate || true\n# "
+        + "x" * 9000
+        + '\nunset CODEX_HOME\nexec real "$@"\n',
+    )
+    state = wiring.inspect("bash")
+    assert state.kind == wiring.EXTERNAL
+    assert not state.complete(isolate=True)
 
 
 def test_a_wrapper_that_falls_back_to_the_old_switcher_counts_as_ours(box) -> None:
@@ -508,6 +563,26 @@ def test_sharing_the_apps_home_keeps_the_probe_off_every_copy_of_its_login(box) 
     # 같은 홈이면 활성 파일이 곧 앱의 파일이다. "다른 슬롯으로 바꿔라" 를 덧붙이면 틀린 안내다 —
     # 홈을 나누기 전에는 어느 슬롯으로 바꿔도 앱과 같은 파일을 쓴다.
     assert [f.label for f in found].count("active") == 1, found
+
+
+def test_doctor_looks_again_right_before_each_probe(box) -> None:
+    """**공유 검사와 프로브 사이에 슬롯 내용이 바뀔 수 있다** — `add`·`adopt` 가 동시에 돌면.
+
+    첫 검사 결과만 믿으면 그사이 앱의 로그인을 받은 슬롯이 프로브로 넘어가 앱을 로그아웃시킨다.
+    """
+    s = _shared_setup(box)
+    box.mp.setattr(doctor, "shared_with_app", lambda _settings, _labels=None: [])
+    probed: list[str] = []
+
+    def fake_check(_settings, label, _active):
+        probed.append(label)
+        return doctor.Finding(label, doctor.OK, "reachable")
+
+    box.mp.setattr(doctor, "check", fake_check)
+    box.mp.setattr(doctor, "drifted", lambda _s: None)
+    found = doctor.run(s)
+    assert probed == ["master"], probed
+    assert [f.label for f in found if f.state == doctor.SHARED] == ["shared"], found
 
 
 def test_a_malformed_token_cannot_leak_through_an_exception(box, tmp_path) -> None:

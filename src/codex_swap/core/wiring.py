@@ -128,7 +128,7 @@ HOME_LINE = 'export CODEX_HOME="$(codex-swap home)"'
 """외부 wrapper 에 넣으라고 안내할 한 줄. **`rotate` 보다 앞에** 둔다."""
 
 
-# ── 셸 스크립트를 "실행되는 줄" 로만 읽는다 ─────────────────────────────────────
+# ── 셸 스크립트를 "실행되는 명령" 으로 읽는다 ────────────────────────────────────
 #
 # 문자열이 어딘가 들어 있는지로 판정하던 때가 있었다. 그러면 설명 주석 하나(`# CODEX_HOME …`),
 # `unset CODEX_HOME`, `CODEX_HOME="$HOME/.codex"` 가 전부 "홈을 넘긴다" 로 읽혔고, 옛 전환기를
@@ -138,10 +138,16 @@ HOME_LINE = 'export CODEX_HOME="$(codex-swap home)"'
 # 다시 넣은 값, 같은 줄의 `; unset CODEX_HOME`, `echo "codex-swap exec"` 가 모두 "넘긴다" 로
 # 통과했다 — 교차 검토가 하나씩 재현했다.
 #
-# 셸을 해석하는 것은 아니다. 조건문·함수·동적 source 까지 문자열로 증명할 수는 없다. 여기서는
-# 따옴표·명령 치환·주석·heredoc 을 가려 **명령 단위로 끊고, 위에서부터 차례로 따라간다.**
-# 조건문 안의 명령도 일어난 것으로 친다. 해석 못 한 것을 "됐다" 로 접으면 전환이 codex 에 안
-# 닿는 기기를 ready 라고 부르게 되므로, 모르면 "안 넘긴다" 쪽으로 기운다.
+# 셸을 해석하는 것은 아니다. 따옴표·명령 치환·주석·heredoc 을 가려 **명령 단위로 끊고, 위에서부터
+# 차례로 따라간다.** 파이프·`&` 로 서브셸에 들어간 명령은 변수를 남기지 않는 것으로, `if`·`case`
+# 안이나 `&&`·`||` 뒤의 명령은 조건부로 본다.
+#
+# 기우는 방향은 하나다. 해석 못 한 것을 "됐다" 로 접으면 전환이 codex 에 안 닿는 기기를 ready 라고
+# 부르게 된다. 예외는 조건부 export 하나 — dotfiles wrapper 가 "codex-swap 이 답했을 때만" export
+# 하는 모양이라, 그걸 빼면 가장 흔한 배선을 못 알아본다. 덮어쓰기·unset 은 조건부여도 친다.
+#
+# 따라가지 **않는** 것: 조건이 실제로 참인지, 정의만 하고 부르지 않은 함수, `eval`·`source` 로
+# 들어오는 코드, 배열에 담아 부르는 명령. 셸을 실제로 돌려야 알 수 있는 것들이다.
 
 _RESERVED = frozenset(
     {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "time", "!"}
@@ -149,30 +155,37 @@ _RESERVED = frozenset(
 )
 """명령어 자리 앞에 오는 예약어. 걷어내야 그 뒤의 명령이 보인다."""
 
-_PREFIXES = frozenset({"exec", "command", "builtin", "nohup", "env"})
-"""뒤의 명령을 그대로 실행하는 앞말."""
+_OPENERS = frozenset({"if", "while", "until", "for", "select", "case"})
+_CLOSERS = frozenset({"fi", "done", "esac"})
+"""조건부 구간을 열고 닫는 말. 그 안의 명령은 일어날 수도, 안 일어날 수도 있다."""
+
+_PREFIXES = frozenset({"exec", "builtin", "nohup", "env"})
+"""뒤의 명령을 그대로 실행하는 앞말. `command` 는 `-v` 가 붙으면 찾기만 하므로 따로 본다."""
 
 _DECLARERS = frozenset({"export", "declare", "typeset", "local", "readonly"})
 
 _ASSIGN = re.compile(r"([A-Za-z_]\w*)=(.*)", re.S)
 _VAR = re.compile(r"\$\{?(\w+)\}?")
 _SUBST = re.compile(r"\$\(.*\)|`.*`", re.S)
-_DEFAULT_ASSIGN = re.compile(r"\$\{(\w+):?=(.*)\}", re.S)
 _FUNC_HEAD = re.compile(r"[\w.:-]+\(\)")
 _HEREDOC = re.compile(r"<<-?\s*\\?(['\"]?)([\w.-]+)\1")
 
+_SCRIPT_LIMIT = 1 << 20
+"""wrapper 를 끝까지 읽는 상한. 이보다 큰 wrapper 는 없다고 본다."""
 
-def _statements(text: str) -> list[list[str]]:
-    """실행되는 명령들을 나온 순서대로, 각각 **단어 목록**으로.
 
-    따옴표와 `$( )` 안은 한 단어로 둔다. 주석과 heredoc 본문은 명령이 아니므로 뺀다.
-    `;` · `&&` · `||` · `|` · `&` 와 줄바꿈에서 끊는다.
+def _split(text: str) -> list[tuple[list[str], str, str]]:
+    """명령마다 (단어들, 앞 구분자, 뒤 구분자)를 나온 순서대로.
+
+    따옴표와 `$( )` 안은 한 단어로 둔다. 주석과 heredoc 본문은 명령이 아니므로 뺀다. 구분자는
+    `;` · `&&` · `||` · `|` · `|&` · `&` · `;;` · 줄바꿈이다 — 무엇으로 이어졌는지가 뜻을 바꾼다.
     """
-    out: list[list[str]] = []
+    out: list[tuple[list[str], str, str]] = []
     words: list[str] = []
     word: list[str] = []
     closers: list[str] = []  # 열려 있는 것이 무엇으로 닫히는가: '"' · ')' · '`'
     heredocs: list[str] = []  # 이 줄이 끝나면 건너뛸 본문의 끝 표시
+    before = ""
     i, n = 0, len(text)
 
     def cut_word() -> None:
@@ -180,11 +193,15 @@ def _statements(text: str) -> list[list[str]]:
             words.append("".join(word))
             word.clear()
 
-    def cut_statement() -> None:
+    def cut_statement(sep: str) -> None:
+        nonlocal before
         cut_word()
         if words:
-            out.append(words.copy())
+            out.append((words.copy(), before, sep))
             words.clear()
+            before = sep
+        elif sep != "\n":
+            before = sep  # `a ||` 다음 줄바꿈은 이음을 끊지 않는다
 
     while i < n:
         c = text[i]
@@ -242,7 +259,7 @@ def _statements(text: str) -> list[list[str]]:
         elif c in " \t\r":
             cut_word()
         elif c == "\n":
-            cut_statement()
+            cut_statement("\n")
             if heredocs:
                 i = _past_heredocs(text, i + 1, heredocs)
                 heredocs.clear()
@@ -250,7 +267,10 @@ def _statements(text: str) -> list[list[str]]:
         elif c == "&" and (pair == "&>" or (word and word[-1][-1] in "<>")):
             word.append(c)  # `2>&1` · `&>` 는 리디렉션이다
         elif c in ";&|":
-            cut_statement()
+            op = pair if pair in ("&&", "||", ";;", "|&") else c
+            cut_statement(op)
+            i += len(op)
+            continue
         elif text.startswith("<<<", i):
             word.append("<<<")
             i += 3
@@ -263,8 +283,30 @@ def _statements(text: str) -> list[list[str]]:
         else:
             word.append(c)
         i += 1
-    cut_statement()
+    cut_statement("")
     return out
+
+
+def _flow(text: str) -> Iterator[tuple[list[str], bool, bool]]:
+    """명령마다 (단어들, 조건부인가, 서브셸에서 도는가).
+
+    `if`·`while`·`for`·`case` 안이거나 `&&`·`||` 뒤면 조건부다. 파이프로 이어졌거나 `&` 로 뒤에
+    보낸 명령은 서브셸에서 돌아, 거기서 바꾼 변수가 셸에 남지 않는다.
+    """
+    depth = 0
+    for words, before, after in _split(text):
+        closes = 0
+        for w in words:
+            if w in _OPENERS:
+                depth += 1
+            elif w in _CLOSERS:
+                closes += 1
+            elif w not in _RESERVED:
+                break
+        conditional = depth > 0 or before in ("&&", "||")
+        transient = after in ("|", "|&", "&") or before in ("|", "|&")
+        yield words, conditional, transient
+        depth = max(0, depth - closes)
 
 
 def _past_heredocs(text: str, i: int, ends: list[str]) -> int:
@@ -319,14 +361,21 @@ def _substitutions(word: str) -> list[str]:
     return found
 
 
-def _commands(text: str, depth: int = 0) -> Iterator[list[str]]:
-    """실행되는 명령 전부 — 명령 치환 안의 것까지. 치환은 바깥 명령보다 먼저 돈다."""
-    for words in _statements(text):
+def _commands(text: str, depth: int = 0) -> Iterator[tuple[list[str], bool, bool]]:
+    """실행되는 명령 전부와 (조건부인가, 셸에 남는가) — 명령 치환·서브셸 안의 것까지.
+
+    치환은 바깥 명령보다 먼저 돌고, 그 안에서 바꾼 변수는 바깥에 남지 않는다.
+    """
+    for words, conditional, transient in _flow(text):
         if depth < 3:
             for w in words:
-                for inner in _substitutions(w):
-                    yield from _commands(inner, depth + 1)
-        yield words
+                bodies = _substitutions(w)
+                if w.startswith("(") and w.endswith(")"):
+                    bodies.append(w[1:-1])  # `( … )` 서브셸
+                for body in bodies:
+                    for inner, inner_conditional, _ in _commands(body, depth + 1):
+                        yield inner, conditional or inner_conditional, False
+        yield words, conditional, depth == 0 and not transient
 
 
 def _parts(words: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
@@ -351,16 +400,25 @@ def _parts(words: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
 
 
 def _program(words: list[str]) -> list[str]:
-    """명령어부터의 단어들. `exec` · `command` · `env A=b` · `timeout 20` 같은 앞말은 걷어낸다."""
+    """명령어부터의 단어들. `exec` · `command` · `env …` · `timeout 20` 같은 앞말은 걷어낸다."""
     i = 0
     while i < len(words):
         w = words[i]
-        if w == "command" and words[i + 1 : i + 2] and words[i + 1].startswith("-"):
-            break  # `command -v x` 는 찾기만 한다 — 부르는 것이 아니다
-        if w in _PREFIXES:
+        if w == "command":
+            if words[i + 1 : i + 2] in (["-v"], ["-V"]):
+                break  # `command -v x` 는 찾기만 한다 — 부르는 것이 아니다
             i += 1
-            while w == "env" and i < len(words) and _ASSIGN.fullmatch(words[i]):
-                i += 1
+            while i < len(words) and words[i].startswith("-"):
+                i += 1  # `command -p` · `command --`
+        elif w in _PREFIXES:
+            i += 1
+            while w == "env" and i < len(words):
+                if words[i] in ("-u", "--unset", "-C", "--chdir"):
+                    i += 2
+                elif words[i].startswith("-") or _ASSIGN.fullmatch(words[i]):
+                    i += 1
+                else:
+                    break
         elif w in ("timeout", "gtimeout"):
             i += 1
             while i < len(words) and words[i].startswith("-"):
@@ -372,7 +430,9 @@ def _program(words: list[str]) -> list[str]:
 
 
 def _bare(word: str) -> str:
-    """바깥 따옴표 한 겹을 벗긴 글자."""
+    """바깥 따옴표 한 겹을 벗긴 글자. `$'…'` 도 벗긴다."""
+    if len(word) >= 3 and word.startswith("$'") and word.endswith("'"):
+        return word[2:-1]
     if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
         return word[1:-1]
     return word
@@ -407,43 +467,67 @@ def _calls(text: str, tool: str) -> list[str]:
     """그 도구를 **명령으로 부르는** 자리마다 첫 인자(`rotate` 등). 안 부르면 빈 목록.
 
     변수에 담아 부르는 것도 센다 — `rotate_cmd="$(command -v codex-swap)"` 뒤의
-    `"$rotate_cmd" rotate`. 여러 갈래 중 한 곳에서라도 담긴 적이 있으면 담긴 것으로 본다.
-    여기서 묻는 것은 "부를 수 있나" 이지 "반드시 부르나" 가 아니다.
+    `"$rotate_cmd" rotate`. 조건부로 다시 담으면 둘 다 담긴 것으로(`[[ -n "$c" ]] || c=…`), 조건
+    없이 다시 담으면 앞의 것은 사라진 것으로 본다. alias 는 이름이 `codex` 일 때만 센다 — 다른
+    이름은 codex 를 칠 때 쓰이지 않는다.
     """
     held: set[str] = set()
     found: list[str] = []
-    for words in _commands(text):
-        for name, value in _stored(words):
-            if _mentions(tool, value):
-                held.add(name)
+    for words, conditional, persistent in _commands(text):
+        if persistent:
+            for name, value in _stored(words):
+                if _mentions(tool, value):
+                    held.add(name)
+                elif not conditional:
+                    held.discard(name)
         head = _program(_parts(words)[1])
         if not head:
             continue
         if head[0] == "alias":
             for w in head[1:]:
-                if alias := _ASSIGN.fullmatch(w):
+                alias = _ASSIGN.fullmatch(w)
+                if alias and alias.group(1) == "codex":
                     found += _calls(_bare(alias.group(2)), tool)
         elif _names(head[0], tool, held):
             found.append(_bare(head[1]) if len(head) > 1 else "")
     return found
 
 
-def _home_output(value: str, from_home: set[str]) -> bool:
-    """그 값이 **통째로** `codex-swap home` 의 출력인가. 뒤에 경로를 덧붙이면 다른 홈이다."""
-    bare = _bare(value)
+def _home_output(value: str, from_home: set[str], held: set[str]) -> bool:
+    """그 값이 **통째로** `codex-swap home` 의 출력인가.
+
+    뒤에 경로를 덧붙이거나, 파이프로 고치거나, 다른 출력을 이어 붙이면 다른 값이다. 실패했을
+    때의 `|| true` 는 괜찮다. 작은따옴표 안의 `$( )` 는 명령이 아니라 글자다.
+    """
+    if value.startswith(("'", "$'")):
+        return False
+    bare = value[1:-1] if len(value) >= 2 and value[0] == value[-1] == '"' else value
     var = _VAR.fullmatch(bare)
     if var:
         return var.group(1) in from_home
     inner = _substitutions(bare) if _SUBST.fullmatch(bare) else []
     if len(inner) != 1:
         return False
-    first = next(iter(_statements(inner[0])), [])
-    head = _program(_parts(first)[1])
-    return (
-        len(head) > 1
-        and _bare(head[1]) == "home"
-        and (_names(head[0], "codex-swap", set()) or _VAR.fullmatch(_bare(head[0])) is not None)
-    )
+    steps = _split(inner[0])
+    if not steps or steps[0][2] not in ("", "\n", "||"):
+        return False
+    if any(before != "||" for _, before, _ in steps[1:]):
+        return False
+    head = _program(_parts(steps[0][0])[1])
+    return len(head) > 1 and _bare(head[1]) == "home" and _names(head[0], "codex-swap", held)
+
+
+def _drops_home(prefix: list[str]) -> bool:
+    """`env -i` · `env -u CODEX_HOME` — 그 명령의 자식은 `CODEX_HOME` 을 못 받는다."""
+    if "env" not in prefix:
+        return False
+    tail = prefix[prefix.index("env") + 1 :]
+    for k, w in enumerate(tail):
+        if w in ("-i", "-", "--ignore-environment", "-uCODEX_HOME", "--unset=CODEX_HOME"):
+            return True
+        if w in ("-u", "--unset") and tail[k + 1 : k + 2] == ["CODEX_HOME"]:
+            return True
+    return False
 
 
 def passes_home(text: str) -> bool:
@@ -456,45 +540,46 @@ def passes_home(text: str) -> bool:
       (`export CODEX_HOME="$(codex-swap home)"`), 변수를 거치든(`h="$("$swap" home)"` →
       `export CODEX_HOME="$h"`). 그 상태가 첫 `rotate` 때도, 스크립트 끝에서도 살아 있어야 한다.
 
-    위에서부터 차례로 따라가므로 뒤의 재대입·`unset`·`export -n` 이 앞의 설정을 지운다. 명령
-    앞에만 붙인 대입(`CODEX_HOME=… codex-swap rotate`)은 그 명령에만 걸리므로 치지 않는다.
+    위에서부터 차례로 따라가므로 뒤의 재대입·`unset`·`export -n` 이 앞의 설정을 지운다. 어느
+    명령에든 다른 `CODEX_HOME=…` 을 앞에 붙이거나 `env -i`·`env -u CODEX_HOME` 으로 띄우면 그 자식은
+    다른 홈을 받으므로 인정하지 않는다. `${CODEX_HOME:=…}` 도 인정하지 않는다 — 물려받은 앱의 홈을
+    그대로 둔다.
 
     순서를 보는 이유가 있다. 홈을 정하기 전에 `rotate` 를 부르면, 물려받은 `CODEX_HOME` 이 앱의
     홈일 때 전환 가드가 "다른 홈을 골랐다" 며 멈추고 그 뒤로 전환이 한 번도 안 일어난다.
     """
     from_home: set[str] = set()  # 지금 값이 `codex-swap home` 에서 온 변수
-    assigned: set[str] = set()  # 스크립트 안에서 값을 받은 변수
     held: set[str] = set()  # codex-swap 을 담은 변수
     exported = False  # CODEX_HOME 이 자식에게 넘어가는가
+    overridden = False  # 어느 명령엔가 다른 홈을 쥐여 줬나
     at_rotate: bool | None = None  # 첫 rotate 때 넘길 준비가 돼 있었나
 
     def ready() -> bool:
         return exported and "CODEX_HOME" in from_home
 
-    def store(name: str, value: str) -> None:
-        assigned.add(name)
-        if _home_output(value, from_home):
+    def keep(name: str, value: str, conditional: bool) -> None:
+        # 홈에서 왔다는 쪽도, 덮였다는 쪽도 조건부여도 믿는다(모듈 머리말의 예외).
+        if _home_output(value, from_home, held):
             from_home.add(name)
         else:
             from_home.discard(name)
         if _mentions("codex-swap", value):
             held.add(name)
+        elif not conditional:
+            held.discard(name)
 
-    for words in _statements(text):
-        # `${CODEX_HOME:=…}` 는 명령보다 먼저 펼쳐진다. 이미 값을 받은 변수는 그대로 둔다.
-        for w in words:
-            default = _DEFAULT_ASSIGN.fullmatch(_bare(w))
-            if default and default.group(1) not in assigned:
-                store(default.group(1), default.group(2))
+    for words, conditional, transient in _flow(text):
         assigns, rest = _parts(words)
-        if not rest:
-            for name, value in assigns:
-                store(name, value)
-            continue
         head = _program(rest)
         verb = _bare(head[0]) if head else ""
         args = head[1:]
-        if verb in _DECLARERS:
+        if not rest:
+            if not transient:  # 파이프 속 대입은 서브셸과 함께 사라진다
+                for name, value in assigns:
+                    keep(name, value, conditional)
+        elif verb in _DECLARERS:
+            if transient:
+                continue
             flags = [a for a in args if a[0] in "-+"]
             marks = verb == "export" or any(f[0] == "-" and "x" in f for f in flags)
             drops = any(
@@ -507,46 +592,69 @@ def passes_home(text: str) -> bool:
                 pair = _ASSIGN.fullmatch(a)
                 name = pair.group(1) if pair else _bare(a)
                 if pair:
-                    store(name, pair.group(2))
+                    keep(name, pair.group(2), conditional)
                 if name == "CODEX_HOME":
                     exported = False if drops else exported or marks
         elif verb == "unset":
+            if transient:
+                continue
             for a in args:
                 from_home.discard(_bare(a))
-                assigned.discard(_bare(a))
                 if _bare(a) == "CODEX_HOME":
                     exported = False
         elif verb == "alias":
-            if "exec" in _calls(" ".join(head), "codex-swap"):
-                return True
-        elif len(head) > 1:
-            sub = _bare(head[1])
-            if sub == "exec" and _names(head[0], "codex-swap", held):
-                return True
-            names_swap = _names(head[0], "codex-swap", held) or _VAR.fullmatch(_bare(head[0]))
-            if sub == "rotate" and at_rotate is None and names_swap:
-                at_rotate = ready()
-    return ready() and at_rotate is not False
+            for a in args:
+                alias = _ASSIGN.fullmatch(a)
+                body = _bare(alias.group(2)) if alias and alias.group(1) == "codex" else ""
+                if "exec" in _calls(body, "codex-swap"):
+                    return True
+        elif head:
+            prefix = rest[: len(rest) - len(head)]
+            given = assigns + [
+                (m.group(1), m.group(2)) for w in prefix if (m := _ASSIGN.fullmatch(w))
+            ]
+            if _drops_home(prefix) or any(
+                name == "CODEX_HOME" and not _home_output(value, from_home, held)
+                for name, value in given
+            ):
+                overridden = True
+            if len(head) > 1:
+                sub = _bare(head[1])
+                if sub == "exec" and _names(head[0], "codex-swap", held):
+                    return True
+                names_swap = _names(head[0], "codex-swap", held) or _VAR.fullmatch(_bare(head[0]))
+                if sub == "rotate" and at_rotate is None and names_swap:
+                    at_rotate = ready()
+    return ready() and at_rotate is not False and not overridden
 
 
 def calls_us(text: str) -> bool:
-    """codex-swap 을 **명령으로** 부르는가. 글자로 찍거나 주석에 적은 것은 치지 않는다."""
-    return bool(_calls(text, "codex-swap"))
+    """codex-swap 으로 **전환을** 부르는가 — `rotate` 나 `exec`.
+
+    글자로 찍거나 주석에 적은 것, `home` 만 묻는 것은 치지 않는다. 홈만 받아 쓰는 wrapper 로는
+    codex 를 칠 때 전환이 일어나지 않는다.
+    """
+    return bool({"rotate", "exec"} & set(_calls(text, "codex-swap")))
 
 
 def uses_legacy_rotator(text: str) -> bool:
-    """**옛 bash 전환기**를 명령으로 부르고, codex-swap 은 부르지 않는가."""
+    """**옛 bash 전환기**를 명령으로 부르고, codex-swap 으로는 전환하지 않는가."""
     return bool(_calls(text, LEGACY_ROTATOR)) and not calls_us(text)
 
 
 def _head(path: Path) -> str:
-    """스크립트 앞부분. 진짜 바이너리를 통째로 읽지 않으려고 8KB 만 본다."""
+    """스크립트 본문. 앞 두 바이트가 `#!` 일 때만 읽는다 — 진짜 바이너리는 통째로 읽지 않는다.
+
+    앞 8KB 만 보던 때는 뒤쪽의 `unset CODEX_HOME` 이 잘려 나가 "넘긴다" 로 읽혔다.
+    """
     try:
         with path.open("rb") as fh:
-            raw = fh.read(8192)
+            if fh.read(2) != b"#!":
+                return ""
+            raw = b"#!" + fh.read(_SCRIPT_LIMIT)
     except OSError:
         return ""
-    return raw.decode("utf-8", "replace") if raw[:2] == b"#!" else ""
+    return raw.decode("utf-8", "replace")
 
 
 def wrapper_here(path: Path | None = None) -> bool:
@@ -613,7 +721,7 @@ def inspect(shell: str) -> Wiring:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if {"rotate", "exec"} & set(_calls(text, "codex-swap")):
+        if calls_us(text):
             return Wiring(PROFILE, path, passes_home=passes_home(text))
 
     own = WRAPPER.expanduser()
