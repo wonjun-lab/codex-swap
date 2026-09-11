@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 ISOLATED_HOME = "$HOME/.codex-cli"
@@ -47,66 +48,23 @@ def shell_of(path: str | None = None) -> str:
     return name if name in {"bash", "zsh", "fish"} else "bash"
 
 
-def snippet(shell: str, *, isolate: bool) -> str:
-    """프로필에 넣을 배선. `eval` 로 먹이는 것을 전제로 한다.
-
-    `rotate` 를 감싸는 규칙은 README 와 같은 이유로 여기서도 지킨다 — 실패해도 codex 는
-    떠야 하고(`|| true`), stderr 는 삼키지 않는다(전환이 일어난 그 한 줄이 거기로 나온다).
-
-    `CODEX_HOME` 은 **export 하지 않는다.** 그 변수는 codex 를 부르는 그 한 번에만 걸어야
-    한다 — 셸 전체에 남기면 사용자가 여는 다른 도구까지 따라오고, 그중에는 앱이 띄운
-    것도 있다.
-    """
-    home_prefix = f"CODEX_HOME={ISOLATED_HOME} " if isolate else ""
-    if shell == "fish":
-        lines = []
-        if isolate:
-            lines.append(f"set -gx CODEX_ACCOUNT_DEFAULT_HOME {ISOLATED_HOME}")
-        lines += [
-            "function codex",
-            "    command codex-swap rotate >/dev/null; or true",
-            (
-                f"    env CODEX_HOME={ISOLATED_HOME} command codex $argv"
-                if isolate
-                else "    command codex $argv"
-            ),
-            "end",
-        ]
-        return "\n".join(lines) + "\n"
-
-    lines = []
-    if isolate:
-        lines.append(f'export CODEX_ACCOUNT_DEFAULT_HOME="{ISOLATED_HOME}"')
-    lines += [
-        "codex() {",
-        "  command codex-swap rotate >/dev/null || true",
-        f'  {home_prefix}command codex "$@"',
-        "}",
-    ]
-    return "\n".join(lines) + "\n"
-
-
-def line_for(shell: str) -> str:
-    """프로필에 적어 둘 **한 줄**. 이것만 넣으면 나머지는 매번 새로 만들어진다.
-
-    배선을 통째로 붙여 넣게 하면 그 사본이 낡는다 — 규칙이 바뀌어도 사용자의 프로필에는
-    옛 판이 그대로 남고, 그것을 고치라고 알릴 방법이 없다.
-    """
-    if shell == "fish":
-        return "codex-swap shell-init | source"
-    return 'eval "$(codex-swap shell-init)"'
-
-
 DEFAULT_HOME = Path("~/.codex")
 """분리하기 전의 자리. 공식 앱도 여기를 쓴다."""
 
 
-def seed_source(default_home: Path) -> Path | None:
-    """지금 홈은 비었는데 **원래 자리에 로그인이 남아 있으면** 그 경로. 아니면 None.
+ISOLATED_PATH = Path("~/.codex-cli")
+"""분리했을 때 우리가 쓰는 자리."""
 
-    분리로 넘어가는 순간에만 생기는 상태다. 배선은 셸이 뜰 때마다 다시 판단하므로 앱을
-    나중에 깔아도 다음 셸부터 홈이 바뀌는데, 자격증명은 따라오지 않는다. 사용자에게는
-    잘 쓰던 도구가 갑자기 로그아웃된 것처럼 보인다.
+
+def seed_source(default_home: Path) -> Path | None:
+    """지금 홈은 비었는데 **다른 자리에 로그인이 남아 있으면** 그 경로. 아니면 None.
+
+    홈이 바뀌는 순간에만 생기는 상태다. 자격증명은 따라오지 않으므로, 사용자에게는 잘
+    쓰던 도구가 갑자기 로그아웃된 것처럼 보인다.
+
+    **두 방향 다 본다.** 앱을 깔면 `~/.codex` → `~/.codex-cli` 로 옮겨 가지만, 앱을
+    **지우면** 그 반대로 돌아온다. 뒤쪽을 빠뜨리기 쉬운데 사용자가 겪는 증상은 똑같고,
+    오히려 더 당황스럽다 — 앱을 지웠을 뿐인데 codex 가 로그아웃되기 때문이다.
 
     슬롯이 남아 있으면 전환 한 번으로 채워지지만(슬롯 저장소는 옮기지 않는다), 아직 계정을
     등록하지 않았다면 그마저 없다 — `adopt` 가 "로그인이 없다" 며 막히고, 사용자는 방금까지
@@ -115,10 +73,66 @@ def seed_source(default_home: Path) -> Path | None:
     here = default_home.expanduser()
     if (here / "auth.json").is_file():
         return None  # 지금 자리에 이미 있다
-    original = DEFAULT_HOME.expanduser()
-    if original == here:
-        return None  # 분리하지 않은 설치다
-    return original if (original / "auth.json").is_file() else None
+    for other in (DEFAULT_HOME.expanduser(), ISOLATED_PATH.expanduser()):
+        if other != here and (other / "auth.json").is_file():
+            return other
+    return None
+
+
+WRAPPER = Path("~/.local/bin/codex")
+"""우리가 놓는 wrapper 자리. **PATH 에 있기만 하면 셸이 무엇이든 통한다.**
+
+셸 프로필에 함수를 넣는 방식은 셸마다 문법이 다르고, 사용자가 파일을 찾아 손으로 고쳐야
+하며, 그 사본이 낡는다. 파일 하나면 그 셋이 전부 사라진다.
+"""
+
+MARKER = "# codex-swap wrapper"
+"""우리가 놓은 것인지 알아보는 표시. 남의 wrapper 를 덮지 않기 위한 것이다."""
+
+WRAPPER_BODY = f"""#!/bin/sh
+{MARKER} — do not edit; regenerate with: codex-swap init
+exec codex-swap exec "$@"
+"""
+"""**얇게 둔다.** 판단은 전부 `codex-swap exec` 안에 있다.
+
+여기에 로직을 넣으면 그 사본이 사용자 기기에서 낡는다 — 규칙이 바뀌어도 이미 놓인 파일은
+그대로이고, 우리는 그것을 고치라고 알릴 방법이 없다. 한 줄짜리 위임이면 갱신은 패키지를
+새로 까는 것으로 끝난다.
+"""
+
+
+def wrapper_here(path: Path | None = None) -> bool:
+    """그 자리에 **우리가 놓은** wrapper 가 있나."""
+    target = (path or WRAPPER).expanduser()
+    try:
+        return MARKER in target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def occupied_by_other(path: Path | None = None) -> bool:
+    """그 자리에 **남의 것**이 있나. 덮으면 안 되는 상태다.
+
+    dotfiles 로 자기 wrapper 를 심어 둔 사람이 실제로 있다. 그것도 제 몫을 하고 있으므로
+    덮지 않고, "빠졌다" 고 말하지도 않는다.
+    """
+    target = (path or WRAPPER).expanduser()
+    return target.exists() and not wrapper_here(target)
+
+
+def calls_us(path: Path) -> bool:
+    """남이 놓은 것이라도 우리를 부르고 있으면 배선된 것이다.
+
+    `discovery.is_wrapper` 는 우리 자신의 재귀를 막으려는 것이라 판정이 좁다(dotfiles 가
+    쓰는 특정 marker 를 본다). 여기서 묻는 것은 더 느슨하다 — **무엇이 됐든 codex-swap 을
+    부르는가.**
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(8192)
+    except OSError:
+        return False
+    return head[:2] == b"#!" and b"codex-swap" in head
 
 
 def already_wired(shell: str) -> Path | None:
@@ -129,6 +143,13 @@ def already_wired(shell: str) -> Path | None:
     직접 감싼 함수)도 배선으로 친다 — 그것도 제 몫을 하고 있고, 우리가 시킨 적 없는 것을
     "빠졌다" 고 말하면 사용자는 자기가 뭘 잘못했나 찾게 된다.
     """
+    # **PATH 를 먼저 본다.** 배선은 셸 프로필에만 있는 것이 아니다 — `codex` 를 가로채는
+    # wrapper 가 PATH 에 있으면 그쪽이 이미 제 몫을 하고 있고, 그것을 못 보면 멀쩡히
+    # 돌아가는 기기에 "배선이 빠졌다" 고 말하게 된다. 실제로 그렇게 오탐했다.
+    found = shutil.which("codex")
+    if found and calls_us(Path(found)):
+        return Path(found)
+
     for name in (profile_for(shell), "~/.bashrc", "~/.zshrc", "~/.profile"):
         path = Path(name).expanduser()
         try:
@@ -138,6 +159,28 @@ def already_wired(shell: str) -> Path | None:
         if "codex-swap shell-init" in text or "codex-swap rotate" in text:
             return path
     return None
+
+
+def install_wrapper(path: Path | None = None) -> Path:
+    """wrapper 를 놓는다. 이미 남의 것이 있으면 건드리지 않고 예외를 올린다."""
+    target = (path or WRAPPER).expanduser()
+    if occupied_by_other(target):
+        raise FileExistsError(str(target))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(WRAPPER_BODY, encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
+def on_path(path: Path | None = None) -> bool:
+    """그 자리가 PATH 에 들어 있나.
+
+    놓았는데 PATH 에 없으면 아무 일도 일어나지 않는다. 그 침묵이 가장 헷갈리는 결말이라
+    따로 확인해 말해 준다.
+    """
+    target = (path or WRAPPER).expanduser()
+    entries = [Path(p).expanduser() for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    return target.parent in entries
 
 
 def profile_for(shell: str) -> str:

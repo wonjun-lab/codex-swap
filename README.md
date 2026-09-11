@@ -84,20 +84,18 @@ idea of the world out of step with what is on disk.
 codex-swap init
 ```
 
-It checks this machine and prints the next step, whatever that turns out to be: codex
-missing, shell not wired, no accounts yet. Run it again after each step; it stops telling
-you about things you have done. The installer calls it for you at the end.
+It sets this machine up and prints whatever is left: codex missing, no accounts yet.
+The installer calls it for you at the end, and you can run it again any time — it stops
+mentioning things you have already done.
 
-The one thing it asks you to add by hand is a single line in your shell profile:
+Wiring is not something it asks you to do. `init` places a two-line `codex` wrapper in
+`~/.local/bin` and everything else happens behind it: the policy runs before each codex
+call, and on machines with the ChatGPT desktop app your accounts are kept out of its way.
+The wrapper only delegates (`exec codex-swap exec "$@"`), so it cannot go stale — upgrade
+the package and the behaviour follows.
 
-```bash
-eval "$(codex-swap shell-init)"        # fish: codex-swap shell-init | source
-```
-
-That line carries automatic switching, and on machines with the ChatGPT desktop app it
-also keeps your accounts out of the app's way — see below. It is one line rather than a
-block to paste because it is re-evaluated in every new shell: install the app a month
-from now and the wiring follows, where a pasted copy would quietly go stale.
+If something already occupies `~/.local/bin/codex`, `init` leaves it alone and says so.
+A wrapper of your own that calls `codex-swap` counts as wired.
 
 ### Sharing a machine with the ChatGPT desktop app
 
@@ -106,12 +104,16 @@ The desktop app runs its own codex with `CODEX_HOME=~/.codex` and keeps its acco
 where you sit, like an account that keeps logging itself out — and the ledger fills up with
 switches that all start from the same account, because the app's are never recorded.
 
-**codex-swap is the third party here, so codex-swap moves.** When the app is installed, the
-wiring above puts the live credentials in `~/.codex-cli` and leaves `~/.codex` to the app.
-Your registered accounts stay where they are: the app never touches `~/.codex/accounts`, so
-there is nothing to migrate.
+**codex-swap is the third party here, so codex-swap moves.** With the app installed, the
+live credentials go in `~/.codex-cli` and `~/.codex` is left to the app. No setting to
+change: it is decided each time codex-swap runs, so installing the app later is enough.
 
-`codex-swap doctor` reports it if the two ever drift apart again.
+**Your registered accounts do not move with it.** They stay in `~/.codex/accounts`, which
+the app never touches, so there is nothing to migrate and nothing to lose. The first switch
+after the split fills the new home; `codex-swap init` says so if you have not made it yet.
+
+Set `CODEX_ACCOUNT_DEFAULT_HOME` if you would rather choose the location yourself — an
+explicit value always wins. `codex-swap doctor` reports it if the two ever drift apart.
 
 ### When something looks wrong
 
@@ -138,6 +140,14 @@ It reads how it was installed — uv, pipx or pip, from git or from a path — a
 that, so you do not have to remember. Since a git install keeps the same version number
 while the commit moves, it compares commits rather than versions and tells you when there
 is nothing to do.
+
+**If `update` is not there yet**, you are on a build from before it existed — run the
+install line again instead. Nothing needs uninstalling first: every path above overwrites
+in place, and your accounts live in `~/.codex/accounts`, outside the package.
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/wonjun-lab/codex-swap/main/install.sh | sh
+```
 
 If it cannot tell where it came from it prints the command and stops rather than guessing:
 running the default URL over an install that came from a fork would quietly replace it.
@@ -179,13 +189,14 @@ the policy. Or move down to the menu and press `enter` — every shortcut has an
 
 ## Wiring up automatic switching
 
-`rotate` **does not run itself.** Calling it right before codex is the caller's job —
-usually a shell function.
+`init` already did this: the wrapper it puts in `~/.local/bin/codex` runs the policy
+before handing over to the real binary. Nothing else to set up.
+
+If you would rather wire it yourself — you keep your shell config in a repo, or you want
+the policy on some invocations and not others — a shell function does the same job:
 
 <details>
-<summary>bash · zsh</summary>
-
-In `~/.bashrc` or `~/.zshrc`:
+<summary>bash · zsh · fish</summary>
 
 ```bash
 codex() {
@@ -193,12 +204,6 @@ codex() {
   command codex "$@"
 }
 ```
-</details>
-
-<details>
-<summary>fish</summary>
-
-In `~/.config/fish/functions/codex.fish`:
 
 ```fish
 function codex
@@ -206,6 +211,9 @@ function codex
     command codex $argv
 end
 ```
+
+`init` recognises any wrapper or function that calls `codex-swap` and leaves it alone,
+so it will not tell you something is missing that is not.
 </details>
 
 Two things about that line.
