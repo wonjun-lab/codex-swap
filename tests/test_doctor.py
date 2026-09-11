@@ -196,6 +196,17 @@ def test_a_matching_state_is_not_reported(env: config.Settings) -> None:
     assert doctor.drifted(env) is None
 
 
+def test_renaming_the_slot_last_switched_to_is_not_an_outside_change(
+    env: config.Settings,
+) -> None:
+    """원장은 옛 이름을 기억한다. 화면에서 `n` 으로 방금 바꾼 이름을 남의 짓이라고 하면 안 된다."""
+    from codex_swap.core import account_slots, log
+
+    log.append(env, from_label="shared", to_label="master", reason="manual (tui)")
+    account_slots.rename(env, "master", "work")
+    assert doctor.drifted(env) is None
+
+
 def test_no_ledger_yet_means_nothing_to_compare(env: config.Settings) -> None:
     """한 번도 안 바꿨으면 견줄 것이 없다. 첫 실행에 경고가 뜨면 안 된다."""
     assert doctor.drifted(env) is None
