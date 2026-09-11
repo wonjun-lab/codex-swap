@@ -650,6 +650,63 @@ def test_doctor_has_nothing_to_say_about_the_app_when_there_is_none(box) -> None
     assert doctor.shared_with_app(s) == []
 
 
+# ── 비켜 준 자리는 **실제로 있어야 한다** ──────────────────────────────────────
+
+
+def test_stepping_aside_creates_the_home_we_hand_to_codex(box) -> None:
+    """**앱이 깔린 기기에서 codex 가 아예 안 떴다.**
+
+    `Error finding codex home: CODEX_HOME points to "…/.codex-cli", but that path does not
+    exist` — codex 는 없는 `CODEX_HOME` 을 거부한다. 비어 있는 디렉토리는 괜찮다("Not logged
+    in" 으로 끝난다). 자리를 비켜 주기로 한 순간 그 경로는 codex 가 한 번도 본 적 없는
+    곳이 되므로, 만드는 쪽은 우리여야 한다.
+    """
+    box.app.mkdir(parents=True)
+    s = config.load()
+    isolated = box.home / ".codex-cli"
+    assert isolated.is_dir(), s.default_home
+    assert isolated.stat().st_mode & 0o777 == 0o700, oct(isolated.stat().st_mode)
+
+
+def test_stepping_aside_does_not_conjure_the_apps_home(box) -> None:
+    """**앱의 홈은 앱의 것이다.** 우리가 만들면 "앱을 쓰던 흔적" 을 보는 판정이 흔들린다."""
+    box.app.mkdir(parents=True)
+    config.load()
+    assert not (box.home / ".codex").exists(), "비켜 준 쪽이 아니라 앱의 자리를 만들었다"
+
+
+def test_the_home_we_print_to_a_wrapper_exists(box, capsys) -> None:
+    """wrapper 는 이 한 줄을 그대로 `CODEX_HOME` 에 넣는다. 없는 경로를 주면 codex 가 죽는다."""
+    box.app.mkdir(parents=True)
+    assert cli.main(["home"]) == 0
+    printed = Path(capsys.readouterr().out.strip())
+    assert printed.is_dir(), printed
+
+
+def test_switching_on_a_freshly_separated_machine(box, capsys) -> None:
+    """**실기기 재현.** `Switch failed: [Errno 2] No such file or directory:
+    '…/.codex-cli/auth.json.tmp.59753'`
+
+    전환은 활성 자리 **옆에** temp 를 쓰고 rename 한다. 그 자리가 없으면 열기부터 실패한다.
+    분리 직후에는 아직 아무것도 그 디렉토리를 만든 적이 없다 — 활성 `auth.json` 을 일부러
+    두지 않는 것이 이 테스트의 전부다.
+    """
+    box.app.mkdir(parents=True)
+    s = config.load()
+    _auth(s.accounts_dir / "work/auth.json", "work@example.com", refresh="rt-work")
+    _auth(s.accounts_dir / "personal/auth.json", "personal@example.com", refresh="rt-personal")
+    code = cli.main(["use", "work"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.out + captured.err
+    assert (box.home / ".codex-cli/auth.json").is_file()
+
+
+def test_the_plain_home_is_there_too_without_the_app(box) -> None:
+    """앱이 없어도 같은 약속이다 — `~/.codex` 는 codex 가 만들어 주지만 기대지 않는다."""
+    config.load()
+    assert (box.home / ".codex").is_dir()
+
+
 # ── update: brew 로 깐 사람을 옛 판에 가두지 않는다 ────────────────────────────
 
 

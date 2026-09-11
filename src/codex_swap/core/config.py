@@ -6,6 +6,7 @@ bash 의 파라미터 확장 의미를 한 곳에서 재현한다. 흩어 두면
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass
@@ -285,6 +286,26 @@ def load(environ: dict[str, str] | None = None) -> Settings:
     state_root = Path(
         _raw("CODEX_ROTATE_STATE_ROOT") or home / ".claude/plugins/data/codex-openai-codex/state"
     )
+
+    # **활성 홈은 여기서 만든다.** 자리를 비켜 주기로 한 순간 `~/.codex-cli` 는 codex 가 한
+    # 번도 본 적 없는 경로가 된다 — 예전 기본값 `~/.codex` 는 codex 자신이 만들어 주므로
+    # 아무도 이 일을 할 필요가 없었고, 그래서 만드는 코드가 어디에도 없다. 실기기에서 앱을
+    # 깔고 분리된 뒤 두 가지가 같이 터졌다.
+    #
+    # `Error finding codex home: CODEX_HOME points to "…/.codex-cli", but that path does not
+    # exist` — codex 는 없는 `CODEX_HOME` 을 거부하고 아예 뜨지 않는다(비어 있기만 한
+    # 디렉토리는 괜찮다. "Not logged in" 으로 끝난다). `home`·`exec` 가 건네는 그 경로다.
+    #
+    # `Switch failed: [Errno 2] No such file or directory: '…/.codex-cli/auth.json.tmp.59753'`
+    # — `store._install` 은 활성 `auth.json` **옆에** temp 를 쓰고 rename 한다. 그 자리가
+    # 없으면 첫 전환이 열기부터 실패한다.
+    #
+    # 홈을 건네는 쪽·쓰는 쪽마다 `mkdir` 을 흩어 두면 새 진입점이 생길 때마다 같은 구멍이
+    # 다시 열린다. 홈을 **정하는** 자리가 한 곳이니 만드는 자리도 여기 한 곳이다.
+    # 실패는 삼킨다 — `load` 는 `rotate` 가 매 codex 호출에 부르는 자리라 여기서 예외가
+    # 새면 그 트레이스백이 모든 호출에 실린다. 못 만들었으면 codex 가 위 메시지로 말한다.
+    with contextlib.suppress(OSError):
+        default_home.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     file_cfg = _file_config(accounts_dir)
 
