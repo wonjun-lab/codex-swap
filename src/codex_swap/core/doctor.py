@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from codex_swap.core import config, discovery, identity, log, probe, store
@@ -138,11 +139,89 @@ def drifted(settings: config.Settings) -> Finding | None:
         DRIFT,
         f"codex-swap last switched to {expected}, but {now} is live now — "
         "something changed the credentials without going through it",
-        "if the ChatGPT desktop app is signed in, its own codex runs with "
-        "CODEX_HOME=~/.codex and will keep putting its account back. Give the CLI a "
-        "home of its own: export CODEX_HOME=~/.codex-cli and "
-        "CODEX_ACCOUNT_DEFAULT_HOME=~/.codex-cli, then register the accounts there",
+        "if the ChatGPT desktop app is installed, its own codex writes ~/.codex/auth.json. "
+        "Current codex-swap moves out of its way by itself — update it (codex-swap update), "
+        "then run codex-swap init and follow what it says about the wiring",
     )
+
+
+SHARED = "shared_with_app"
+
+
+def _refresh_fingerprint(path) -> str | None:
+    """그 파일의 refresh token 지문. **토큰 자체는 이 함수 밖으로 나가지 않는다.**
+
+    값이 아니라 해시만 돌려준다 — 견주는 데는 그걸로 충분하고, 진단 출력이나 예외 메시지에
+    토큰 조각이 섞일 여지를 처음부터 없앤다.
+    """
+    import hashlib
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    tokens = data.get("tokens") if isinstance(data, dict) else None
+    token = tokens.get("refresh_token") if isinstance(tokens, dict) else None
+    if not isinstance(token, str) or not token:
+        return None
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def shared_with_app(settings: config.Settings) -> list[Finding]:
+    """**앱과 같은 refresh token 을 쥔 자리**가 있나.
+
+    refresh token 은 쓰일 때마다 새것으로 바뀌고 옛것은 무효가 된다. 같은 토큰을 두 곳이
+    쥐면, 먼저 갱신한 쪽만 살고 다른 쪽은 조용히 로그아웃된다. 앱과 codex-swap 이 한 파일을
+    나눠 쓰던 기기에서 정확히 그렇게 됐다 — 앱의 codex 로그에 `401 Encountered invalidated
+    oauth token` 이 수만 줄 쌓였고, 사용자에게는 "shared 로그인이 자꾸 풀린다" 로 보였다.
+
+    그 시절에 슬롯에 들어간 사본은 **분리한 뒤에도** 앱과 계보를 공유한다. 파일을 옮기는 것으로는
+    끊기지 않고, 그 계정을 따로 다시 로그인시켜야 끊긴다. 그래서 여기서 찾아 짚는다.
+    """
+    from codex_swap.core import wiring
+
+    if not wiring.app_installed():
+        return []
+    app_home = wiring.DEFAULT_HOME.expanduser()
+    ours = settings.default_home.expanduser()
+    if os.path.realpath(ours) == os.path.realpath(app_home):
+        # 분리가 안 된 채 앱과 같은 홈을 쓰고 있다 — 이것 자체가 다툼의 원인이다.
+        return [
+            Finding(
+                "active",
+                SHARED,
+                f"codex-swap and the ChatGPT app are both using {app_home}",
+                "unset CODEX_ACCOUNT_DEFAULT_HOME so codex-swap moves out of the app's way, "
+                "then run codex-swap init",
+            )
+        ]
+    app_fp = _refresh_fingerprint(app_home / "auth.json")
+    if app_fp is None:
+        return []
+
+    found: list[Finding] = []
+    for label in store.labels(settings):
+        if _refresh_fingerprint(store.slot_auth(settings, label)) == app_fp:
+            found.append(
+                Finding(
+                    label,
+                    SHARED,
+                    "this slot holds the same refresh token as the ChatGPT app — whichever "
+                    "refreshes first logs the other out",
+                    f"sign this account in on its own: codex-swap add {label} --force",
+                )
+            )
+    if _refresh_fingerprint(ours / "auth.json") == app_fp:
+        found.append(
+            Finding(
+                "active",
+                SHARED,
+                f"{ours}/auth.json holds the same refresh token as the ChatGPT app",
+                "switch to a slot that was signed in on its own: codex-swap use <label>",
+            )
+        )
+    return found
 
 
 def run(settings: config.Settings) -> list[Finding]:
@@ -151,8 +230,8 @@ def run(settings: config.Settings) -> list[Finding]:
     out = [check(settings, label, active) for label in store.labels(settings)]
     # 환경 쪽 문제는 **맨 앞**에 둔다. 계정마다 "서버가 거절했다" 가 줄줄이 뜨는데 그
     # 까닭이 맨 아래 있으면, 사용자는 그 전에 계정을 다시 만들기 시작한다.
-    outside = drifted(settings)
-    return [outside, *out] if outside is not None else out
+    outside = [f for f in (drifted(settings),) if f is not None]
+    return [*shared_with_app(settings), *outside, *out]
 
 
 def summary(findings: list[Finding]) -> str:

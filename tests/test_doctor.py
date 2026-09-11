@@ -181,7 +181,11 @@ def test_the_fix_names_the_chatgpt_app_and_a_separate_home(env: config.Settings)
 
     fix = doctor.drifted(env).fix
     assert "ChatGPT" in fix, fix
-    assert "CODEX_HOME" in fix and "CODEX_ACCOUNT_DEFAULT_HOME" in fix, fix
+    # 예전에는 `export CODEX_HOME=… CODEX_ACCOUNT_DEFAULT_HOME=…` 를 손으로 치게 했다. 지금은
+    # codex-swap 이 앱을 보고 스스로 비켜 서므로, 남은 일은 새 판을 받고 init 이 짚는 배선을
+    # 고치는 것뿐이다. 수동 export 를 계속 권하면 dotfiles wrapper 와 우리 판단이 갈린다.
+    assert "codex-swap init" in fix, fix
+    assert "export CODEX_HOME" not in fix, fix
 
 
 def test_a_matching_state_is_not_reported(env: config.Settings) -> None:

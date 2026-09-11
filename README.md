@@ -67,16 +67,12 @@ pipx install git+https://github.com/wonjun-lab/codex-swap.git       # isolated
 pip install --user git+https://github.com/wonjun-lab/codex-swap.git
 ```
 
-Homebrew, from [`packaging/homebrew/codex-swap.rb`](packaging/homebrew/codex-swap.rb):
+`codex-swap update` knows which of these you used and reuses it.
 
-```bash
-brew install --HEAD wonjun-lab/tap/codex-swap
-```
-
-There is no release tarball yet, so the formula is HEAD-only. `codex-swap update` knows
-which of these you used and reuses it — with Homebrew it steps aside and tells you to run
-`brew upgrade` instead, because reinstalling over a Cellar with pip would leave brew's
-idea of the world out of step with what is on disk.
+A Homebrew formula is kept in [`packaging/homebrew/`](packaging/homebrew/codex-swap.rb) but is
+**not published yet.** There is no tagged release to point it at, and a HEAD-only formula is
+one that plain `brew upgrade` skips — people would install it and quietly stay on the first
+build. It goes into the tap with the first release.
 
 ### Then run init
 
