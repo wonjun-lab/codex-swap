@@ -1,14 +1,16 @@
 # Homebrew formula for codex-swap.
 #
-# There is no release tarball yet, so this is HEAD-only:
+#   brew install wonjun-lab/tap/codex-swap
+#   brew install --HEAD wonjun-lab/tap/codex-swap   # unreleased main
 #
-#   brew install --HEAD wonjun-lab/tap/codex-swap
+# Homebrew reads the copy in the `wonjun-lab/homebrew-tap` repository, under
+# `Formula/codex-swap.rb`; it maps `wonjun-lab/tap` to that name. Keeping the formula here
+# as well means the packaging lives with the thing it packages — when the runtime
+# requirements change, the formula is in the diff rather than in another repo nobody
+# remembers to open.
 #
-# To serve it, put this file in a repository named `homebrew-tap` under
-# `Formula/codex-swap.rb`; Homebrew maps `wonjun-lab/tap` to that name. Keeping the
-# formula here as well means the packaging lives with the thing it packages — when the
-# runtime requirements change, the formula is in the diff rather than in another repo
-# nobody remembers to open.
+# On each release: tag vX.Y.Z, point `url` at that tag's tarball, set `sha256` from
+# `curl -fsSL <url> | shasum -a 256`, and copy this file to the tap.
 #
 # `codex` itself is not a dependency: it is distributed through npm, and depending on it
 # here would drag a whole node toolchain in for a tool that only ever shells out to it.
@@ -18,8 +20,10 @@ class CodexSwap < Formula
 
   desc "Keep several Codex accounts and swap between them as usage climbs"
   homepage "https://github.com/wonjun-lab/codex-swap"
-  head "https://github.com/wonjun-lab/codex-swap.git", branch: "main"
+  url "https://github.com/wonjun-lab/codex-swap/archive/refs/tags/v0.2.0.tar.gz"
+  sha256 "455000df603c716018f5def4964665236f4d84c5e2febe59f75de36961ad5f2a"
   license "MIT"
+  head "https://github.com/wonjun-lab/codex-swap.git", branch: "main"
 
   depends_on "python@3.12"
 
@@ -39,7 +43,7 @@ class CodexSwap < Formula
   end
 
   test do
-    assert_match "codex-swap", shell_output("#{bin}/codex-swap --version")
+    assert_match "codex-swap #{version}", shell_output("#{bin}/codex-swap --version")
     # `list` on an empty config must not fail: a fresh machine has no slots yet, and a
     # formula test that needs credentials is a test that never runs in CI.
     ENV["CODEX_ACCOUNTS_DIR"] = testpath/"accounts"
