@@ -220,6 +220,10 @@ def test_discovery_never_mistakes_our_own_wrapper_for_codex(box, tmp_path) -> No
         ': "${CODEX_HOME:=$(codex-swap home)}"\nexport CODEX_HOME\ncodex-swap rotate\n',
         'export CODEX_HOME="$("codex-swap" home)"\ncodex-swap rotate || true\n',
         'codex() { codex-swap exec "$@"; }\n',
+        "# don't rotate before the home is set\n" + HOME_LINE + "\ncodex-swap rotate || true\n",
+        HOME_LINE + "; codex-swap rotate || true\n",
+        'command -v codex-swap >/dev/null && export CODEX_HOME="$(codex-swap home)"\n'
+        "codex-swap rotate || true\n",
     ],
     ids=[
         "canonical-line",
@@ -229,9 +233,13 @@ def test_discovery_never_mistakes_our_own_wrapper_for_codex(box, tmp_path) -> No
         "default-when-unset",
         "quoted-program-name",
         "shell-function",
+        "apostrophe-in-a-comment",
+        "one-line",
+        "guarded-one-liner",
     ],
 )
 def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
+    """놓치면 멀쩡한 기기에 "배선이 반쪽" 이라고 말한다. 주석 속 `don't` 도 흔하다."""
     assert wiring.passes_home("#!/bin/sh\n" + body)
 
 
@@ -327,6 +335,22 @@ def test_a_wrapper_that_falls_back_to_the_old_switcher_counts_as_ours(box) -> No
         '"$rotate_cmd" rotate\nexec real "$@"\n',
     )
     assert wiring.inspect("bash").kind == wiring.EXTERNAL
+
+
+def test_a_profile_that_only_uses_codex_swap_is_not_wiring(box) -> None:
+    """셸 프로필에서 codex-swap 을 부른다고 전환이 걸린 것은 아니다 — `rotate` 나 `exec` 여야 한다.
+
+    배선이 없는데 있다고 읽으면 `init` 이 wrapper 를 놓지 않고 넘어간다.
+    """
+    (box.home / ".bashrc").write_text('alias cs="codex-swap"\ncodex-swap list >/dev/null || true\n')
+    assert wiring.inspect("bash").kind == wiring.NONE
+
+
+def test_a_profile_function_that_delegates_to_exec_is_complete(box) -> None:
+    (box.home / ".bashrc").write_text('codex() { codex-swap exec "$@"; }\n')
+    state = wiring.inspect("bash")
+    assert state.kind == wiring.PROFILE
+    assert state.complete(isolate=True)
 
 
 def test_a_migration_comment_does_not_hide_the_old_switcher(box) -> None:
