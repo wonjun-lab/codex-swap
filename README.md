@@ -22,7 +22,7 @@ codex-swap    gate 70% · margin 5%p
    Update codex-swap
    Quit
 
-   enter select   s switch   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
+   enter select   s switch   n rename   d remove   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
 ```
 
 `*` is the account in use, `>` is the cursor. On a bar, `┆` is the gate you have to
@@ -32,11 +32,12 @@ is an alternative to switching.
 
 The cursor runs past the accounts into the menu underneath, and `enter` does whatever the
 row it is on says: switches to that account, or opens that menu entry. `s` still switches,
-so the old finger memory keeps working.
+so the old finger memory keeps working. On an account row, `n` renames that slot and `d`
+removes it; those two stay row actions because the menu cursor no longer selects an account.
 
-Switching is not the irreversible part — you can always switch back. The one thing you
-cannot undo is discarding credentials that are not saved in any slot, and that asks twice
-no matter which key you arrive on.
+Switching itself is reversible — you can always switch back. During a switch, the one
+consequence you cannot undo is discarding credentials that are not saved in any slot, and
+that asks twice no matter which key you arrive on.
 
 ## What you need
 
@@ -200,8 +201,9 @@ Then run it with no arguments to get the TUI:
 codex-swap
 ```
 
-`enter` (or `s`) switches to the account under the cursor, `r` refreshes usage, `p` edits
-the policy. Or move down to the menu and press `enter` — every shortcut has an entry there.
+`enter` (or `s`) switches to the account under the cursor, `n` renames it, `d` removes it,
+`r` refreshes usage, and `p` edits the policy. Move down to the menu and press `enter` for
+actions that do not require a selected account.
 
 ## Wiring up automatic switching
 
@@ -399,8 +401,9 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 `ls`, `switch` and `rm` exist as aliases.
 
 `remove` asks for confirmation when it is talking to a terminal, and names the account it
-is about to delete. `--yes` skips the question; called from a script it does not ask at
-all, because a prompt behind a pipe never returns.
+is about to delete. The TUI's `d` key shows the same identity and irreversible consequence
+before its `[y/N]` prompt. `--yes` skips the CLI question; called from a script it does not
+ask at all, because a prompt behind a pipe never returns.
 
 If a slot's token has gone stale, `codex-swap add --force <label>` logs in again and
 replaces it. Without `--force` an existing label is refused — the point is that you should

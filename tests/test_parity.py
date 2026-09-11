@@ -31,8 +31,6 @@ KNOWN_ASYMMETRY = {
     "clean": "유지보수용. 잘못 눌러서 좋을 것이 없는 정리 작업이다",
     "--json": "기계용 출력. 화면에는 대응물이 없다",
     "add": "브라우저 로그인을 띄운다. curses 를 벗어났다 돌아오는 경로가 따로 필요하다",
-    "rename": "아직 없다. TUI 에 넣을 값어치는 있지만 이번 범위가 아니다",
-    "remove": "아직 없다. 위와 같다",
     "home": (
         "기계용 출력이다. 외부 wrapper 가 `$(codex-swap home)` 으로 먹는 경로 한 줄이라 "
         "화면에 대응물이 없다"
@@ -159,13 +157,17 @@ def test_every_cli_command_is_either_on_screen_or_listed_as_known(
     for name, sub_parser in sub.choices.items():
         by_parser.setdefault(id(sub_parser), set()).add(name)
 
-    on_screen = {action for action, _ in tui.MENU} | {
-        "use",
-        "switch",
-        "list",
-        "ls",
-        "status",
-    }
+    on_screen = (
+        {action for action, _ in tui.MENU}
+        | {action for _, action in tui.ACCOUNT_COMMAND_KEYS}
+        | {
+            "use",
+            "switch",
+            "list",
+            "ls",
+            "status",
+        }
+    )
     known = on_screen | set(KNOWN_ASYMMETRY)
     missing = {sorted(names)[0] for names in by_parser.values() if not (names & known)}
     assert not missing, (

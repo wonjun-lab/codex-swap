@@ -347,6 +347,25 @@ def test_s_on_the_menu_does_not_switch(session: Session) -> None:
     assert "Switched to" not in screen.text, screen.text
 
 
+def test_n_renames_the_account_under_the_cursor(session: Session) -> None:
+    """실제 키 분기가 입력한 이름을 선택된 슬롯에 적용한다."""
+    screen = session.run([b"\x1bOB", b"n", b"personal\n", b"q"])
+    assert screen.exit_code == 0
+    assert "Renamed shared -> personal" in screen.text, screen.text
+    assert (session.accounts / "personal/auth.json").is_file()
+    assert not (session.accounts / "shared").exists()
+
+
+def test_d_shows_the_full_warning_then_removes_on_yes(session: Session) -> None:
+    """삭제 키는 긴 경고를 그린 뒤 짧은 y 입력만 받는다."""
+    screen = session.run([b"\x1bOB", b"d", b"y\n", b"q"], cols=80)
+    assert screen.exit_code == 0
+    assert "cannot be undone" in screen.raw
+    assert "[y/N]" in screen.raw
+    assert "Removed shared" in screen.text, screen.text
+    assert not (session.accounts / "shared").exists()
+
+
 # ── 회귀 6: 프롬프트가 화면 맨 아래에 떴다 ──────────────────────────────────
 
 
