@@ -497,10 +497,9 @@ def _home_output(value: str, from_home: set[str], held: set[str]) -> bool:
     """그 값이 **통째로** `codex-swap home` 의 출력인가.
 
     뒤에 경로를 덧붙이거나, 파이프로 고치거나, 다른 출력을 이어 붙이면 다른 값이다. 실패했을
-    때의 `|| true` 는 괜찮다. 작은따옴표 안의 `$( )` 는 명령이 아니라 글자다.
+    때의 `|| true` 는 괜찮다. **큰따옴표만 벗긴다** — 작은따옴표 안의 `$( )` 는 명령이 아니라
+    글자라서, 벗기지 않은 채로는 치환으로 읽히지 않는다.
     """
-    if value.startswith(("'", "$'")):
-        return False
     bare = value[1:-1] if len(value) >= 2 and value[0] == value[-1] == '"' else value
     var = _VAR.fullmatch(bare)
     if var:
@@ -596,8 +595,6 @@ def passes_home(text: str) -> bool:
                 if name == "CODEX_HOME":
                     exported = False if drops else exported or marks
         elif verb == "unset":
-            if transient:
-                continue
             for a in args:
                 from_home.discard(_bare(a))
                 if _bare(a) == "CODEX_HOME":

@@ -227,6 +227,8 @@ def test_discovery_never_mistakes_our_own_wrapper_for_codex(box, tmp_path) -> No
         "main() {\n  "
         + HOME_LINE
         + '\n  codex-swap rotate || true\n  exec real "$@"\n}\nmain "$@"\n',
+        "alias codex='codex-swap exec'\n",
+        "$'codex-swap' exec \"$@\"\n",
     ],
     ids=[
         "canonical-line",
@@ -240,6 +242,8 @@ def test_discovery_never_mistakes_our_own_wrapper_for_codex(box, tmp_path) -> No
         "guarded-one-liner",
         "command-double-dash",
         "helper-function-that-is-called",
+        "alias-named-codex",
+        "ansi-c-quoted-program-name",
     ],
 )
 def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
@@ -275,6 +279,10 @@ def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
         HOME_LINE + '\ncodex-swap rotate || true\nCODEX_HOME=/other exec real "$@"\n',
         HOME_LINE + '\ncodex-swap rotate || true\nexec env -i real "$@"\n',
         HOME_LINE + '\ncodex-swap rotate || true\nexec env -u CODEX_HOME real "$@"\n',
+        'export CODEX_HOME="$(codex-swap home || true; echo /x)"\ncodex-swap rotate\n',
+        'swap=codex-swap\nswap=printf\nexport CODEX_HOME="$("$swap" home)"\ncodex-swap rotate\n',
+        "alias other='codex-swap exec'\ncodex-swap rotate || true\n",
+        'h="$(codex-swap home)" | cat\nexport CODEX_HOME="$h"\ncodex-swap rotate\n',
     ],
     ids=[
         "comment",
@@ -302,6 +310,10 @@ def test_real_ways_of_passing_the_home_are_recognised(body: str) -> None:
         "child-given-another-home",
         "child-given-no-environment",
         "child-loses-the-home",
+        "extra-output-after-the-fallback",
+        "helper-reassigned-away",
+        "alias-with-another-name",
+        "assignment-inside-a-pipeline",
     ],
 )
 def test_lookalikes_do_not_count_as_passing_the_home(body: str) -> None:
@@ -381,15 +393,36 @@ def test_a_long_wrapper_is_read_to_the_end(box) -> None:
     assert not state.complete(isolate=True)
 
 
-def test_a_wrapper_that_falls_back_to_the_old_switcher_counts_as_ours(box) -> None:
-    """codex-swap 이 있으면 그것을, 없을 때만 옛 전환기를 부른다 — dotfiles 의 한때 모양."""
+@pytest.mark.parametrize(
+    "fallback",
+    [
+        '[[ -n "$rotate_cmd" ]] || rotate_cmd="$script_dir/codex-account"\n',
+        'if [[ -z "$rotate_cmd" ]]; then\n  rotate_cmd="$script_dir/codex-account"\nfi\n',
+    ],
+    ids=["or-list", "if-block"],
+)
+def test_a_wrapper_that_falls_back_to_the_old_switcher_counts_as_ours(box, fallback: str) -> None:
+    """codex-swap 이 있으면 그것을, 없을 때만 옛 전환기를 부른다 — dotfiles 의 한때 모양.
+
+    조건부로 다시 담은 것을 "덮어썼다" 로 읽으면 codex-swap 쪽 갈래가 사라져 옛 전환기로 분류된다.
+    """
     _on_path(
         box,
         '#!/bin/bash\nrotate_cmd="$(command -v codex-swap || true)"\n'
-        '[[ -n "$rotate_cmd" ]] || rotate_cmd="$script_dir/codex-account"\n'
-        '"$rotate_cmd" rotate\nexec real "$@"\n',
+        + fallback
+        + '"$rotate_cmd" rotate\nexec real "$@"\n',
     )
     assert wiring.inspect("bash").kind == wiring.EXTERNAL
+
+
+def test_only_looking_up_the_old_switcher_is_not_calling_it(box) -> None:
+    """`command -v` 는 찾기만 한다 — 부르는 것으로 치면 안내만 하는 wrapper 가 옛 배선이 된다."""
+    _on_path(
+        box,
+        '#!/bin/bash\nif command -v codex-account >/dev/null; then echo "old switcher left"; fi\n'
+        'exec real "$@"\n',
+    )
+    assert wiring.inspect("bash").kind == wiring.NONE
 
 
 def test_a_profile_that_only_uses_codex_swap_is_not_wiring(box) -> None:
@@ -560,6 +593,9 @@ def test_sharing_the_apps_home_keeps_the_probe_off_every_copy_of_its_login(box) 
     found = doctor.run(s)
     assert probed == ["work"], probed
     assert "both using" in found[0].detail, found
+    # 프로브를 막는 것만으로는 모자라다 — 어느 슬롯이 앱과 로그인을 나눠 쥐었는지 **처음부터**
+    # 짚어야 사용자가 그 슬롯을 다시 로그인시킨다. 활성이라 검사에서 빠진 슬롯도 마찬가지다.
+    assert {"master", "master-2"} <= {f.label for f in found if f.state == doctor.SHARED}, found
     # 같은 홈이면 활성 파일이 곧 앱의 파일이다. "다른 슬롯으로 바꿔라" 를 덧붙이면 틀린 안내다 —
     # 홈을 나누기 전에는 어느 슬롯으로 바꿔도 앱과 같은 파일을 쓴다.
     assert [f.label for f in found].count("active") == 1, found
