@@ -20,6 +20,8 @@ and 2026-09-11.
   keys move, Enter switches, and the colours follow a light or dark terminal
   (`CODEX_SWAP_THEME` forces one).
 - Checking accounts and updating are reachable from the screen's menu.
+- On an account row, `n` renames the slot and `d` removes it, behind the same checks as the
+  CLI. Removing shows which account it is and what stops working before asking `[y/N]`.
 
 ### Setup and upkeep
 
