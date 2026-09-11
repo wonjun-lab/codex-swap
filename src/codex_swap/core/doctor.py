@@ -189,9 +189,11 @@ def shared_with_app(settings: config.Settings) -> list[Finding]:
         return []
     app_home = wiring.DEFAULT_HOME.expanduser()
     ours = settings.default_home.expanduser()
-    if os.path.realpath(ours) == os.path.realpath(app_home):
+    same_home = os.path.realpath(ours) == os.path.realpath(app_home)
+    found: list[Finding] = []
+    if same_home:
         # 분리가 안 된 채 앱과 같은 홈을 쓰고 있다 — 이것 자체가 다툼의 원인이다.
-        return [
+        found.append(
             Finding(
                 "active",
                 SHARED,
@@ -199,12 +201,14 @@ def shared_with_app(settings: config.Settings) -> list[Finding]:
                 "unset CODEX_ACCOUNT_DEFAULT_HOME so codex-swap moves out of the app's way, "
                 "then run codex-swap init",
             )
-        ]
+        )
+    # 같은 홈이어도 **슬롯 비교는 끝까지 한다.** 여기서 멈추면 `run` 은 활성 라벨 하나만 프로브에서
+    # 빼고, 앱의 로그인을 그대로 쥔 다른 슬롯(같은 계정을 두 이름으로 등록한 경우)은 검사로
+    # 넘긴다 — 그 프로브가 토큰을 갱신하는 순간 앱이 로그아웃된다.
     app_fp = _refresh_fingerprint(app_home / "auth.json")
     if app_fp is None:
-        return []
+        return found
 
-    found: list[Finding] = []
     for label in store.labels(settings):
         if _refresh_fingerprint(store.slot_auth(settings, label)) == app_fp:
             found.append(
@@ -216,7 +220,7 @@ def shared_with_app(settings: config.Settings) -> list[Finding]:
                     f"sign this account in on its own: codex-swap add {label} --force",
                 )
             )
-    if _refresh_fingerprint(ours / "auth.json") == app_fp:
+    if not same_home and _refresh_fingerprint(ours / "auth.json") == app_fp:
         found.append(
             Finding(
                 "active",

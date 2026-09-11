@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -133,26 +134,316 @@ HOME_LINE = 'export CODEX_HOME="$(codex-swap home)"'
 # `unset CODEX_HOME`, `CODEX_HOME="$HOME/.codex"` 가 전부 "홈을 넘긴다" 로 읽혔고, 옛 전환기를
 # 부르는 wrapper 에 `# codex-swap 으로 옮길 것` 이라는 주석만 붙어도 옛 전환기 판정이 사라졌다.
 #
-# 셸을 해석하는 것이 아니다. 조건문·함수·동적 source 까지 문자열로 증명할 수는 없다. 여기서
-# 하는 것은 **흔한 두 모양만 인정하고 나머지는 인정하지 않는 것** — 해석 못 한 것을 "됐다" 로
-# 접으면 전환이 codex 에 안 닿는 기기를 ready 라고 부르게 된다.
+# 주석을 걷고 줄마다 정규식을 대는 것으로도 모자랐다. `export` 없는 대입, heredoc 본문, 뒤에서
+# 다시 넣은 값, 같은 줄의 `; unset CODEX_HOME`, `echo "codex-swap exec"` 가 모두 "넘긴다" 로
+# 통과했다 — 교차 검토가 하나씩 재현했다.
+#
+# 셸을 해석하는 것은 아니다. 조건문·함수·동적 source 까지 문자열로 증명할 수는 없다. 여기서는
+# 따옴표·명령 치환·주석·heredoc 을 가려 **명령 단위로 끊고, 위에서부터 차례로 따라간다.**
+# 조건문 안의 명령도 일어난 것으로 친다. 해석 못 한 것을 "됐다" 로 접으면 전환이 codex 에 안
+# 닿는 기기를 ready 라고 부르게 되므로, 모르면 "안 넘긴다" 쪽으로 기운다.
 
-_INLINE_COMMENT = re.compile(r"(^|\s)#.*$")
-_EXEC_DELEGATE = re.compile(r"\bcodex-swap\s+exec\b")
-_HOME_CALL = re.compile(r'^(?:export\s+)?(\w+)=.*(?:\bcodex-swap|"?\$\{?\w+\}?"?)\s+home\b')
-_SET_HOME = re.compile(r"^(?:export\s+)?CODEX_HOME=(.*)$")
-_VAR_REF = re.compile(r"\$\{?(\w+)\}?")
-_UNSET_HOME = re.compile(r"\bunset\s+(?:-v\s+)?CODEX_HOME\b")
-_ROTATE_CALL = re.compile(r'(?:\bcodex-swap|"?\$\{?\w+\}?"?)\s+rotate\b')
+_RESERVED = frozenset(
+    {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "time", "!"}
+    | {"{", "}"}
+)
+"""명령어 자리 앞에 오는 예약어. 걷어내야 그 뒤의 명령이 보인다."""
+
+_PREFIXES = frozenset({"exec", "command", "builtin", "nohup", "env"})
+"""뒤의 명령을 그대로 실행하는 앞말."""
+
+_DECLARERS = frozenset({"export", "declare", "typeset", "local", "readonly"})
+
+_ASSIGN = re.compile(r"([A-Za-z_]\w*)=(.*)", re.S)
+_VAR = re.compile(r"\$\{?(\w+)\}?")
+_SUBST = re.compile(r"\$\(.*\)|`.*`", re.S)
+_DEFAULT_ASSIGN = re.compile(r"\$\{(\w+):?=(.*)\}", re.S)
+_FUNC_HEAD = re.compile(r"[\w.:-]+\(\)")
+_HEREDOC = re.compile(r"<<-?\s*\\?(['\"]?)([\w.-]+)\1")
 
 
-def _code_lines(text: str) -> list[str]:
-    """주석을 걷어낸 줄들. 줄 번호를 지키려고 빈 줄도 남긴다."""
-    out = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        out.append("" if line.startswith("#") else _INLINE_COMMENT.sub("", line).strip())
+def _statements(text: str) -> list[list[str]]:
+    """실행되는 명령들을 나온 순서대로, 각각 **단어 목록**으로.
+
+    따옴표와 `$( )` 안은 한 단어로 둔다. 주석과 heredoc 본문은 명령이 아니므로 뺀다.
+    `;` · `&&` · `||` · `|` · `&` 와 줄바꿈에서 끊는다.
+    """
+    out: list[list[str]] = []
+    words: list[str] = []
+    word: list[str] = []
+    closers: list[str] = []  # 열려 있는 것이 무엇으로 닫히는가: '"' · ')' · '`'
+    heredocs: list[str] = []  # 이 줄이 끝나면 건너뛸 본문의 끝 표시
+    i, n = 0, len(text)
+
+    def cut_word() -> None:
+        if word:
+            words.append("".join(word))
+            word.clear()
+
+    def cut_statement() -> None:
+        cut_word()
+        if words:
+            out.append(words.copy())
+            words.clear()
+
+    while i < n:
+        c = text[i]
+        pair = text[i : i + 2]
+        inside = closers[-1] if closers else None
+        if c == "\\":
+            if pair != "\\\n":  # 줄 잇기는 없던 것으로 친다
+                word.append(pair)
+            i += 2
+            continue
+        if inside == '"':
+            word.append(c)
+            if c == '"':
+                closers.pop()
+            elif pair == "$(":
+                word.append("(")
+                closers.append(")")
+                i += 1
+            elif c == "`":
+                closers.append("`")
+            i += 1
+            continue
+        if c == "'":
+            end = text.find("'", i + 1)
+            end = n - 1 if end < 0 else end
+            word.append(text[i : end + 1])
+            i = end + 1
+            continue
+        if c == '"':
+            word.append(c)
+            closers.append('"')
+        elif pair == "$(":
+            word.append(pair)
+            closers.append(")")
+            i += 1
+        elif c == "`":
+            word.append(c)
+            if inside == "`":
+                closers.pop()
+            else:
+                closers.append("`")
+        elif inside is not None:
+            word.append(c)
+            if c == "(":
+                closers.append(")")
+            elif c == ")" and inside == ")":
+                closers.pop()
+        elif c == "#" and not word:
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        elif c == "(":
+            word.append(c)
+            closers.append(")")
+        elif c in " \t\r":
+            cut_word()
+        elif c == "\n":
+            cut_statement()
+            if heredocs:
+                i = _past_heredocs(text, i + 1, heredocs)
+                heredocs.clear()
+                continue
+        elif c == "&" and (pair == "&>" or (word and word[-1][-1] in "<>")):
+            word.append(c)  # `2>&1` · `&>` 는 리디렉션이다
+        elif c in ";&|":
+            cut_statement()
+        elif text.startswith("<<<", i):
+            word.append("<<<")
+            i += 3
+            continue
+        elif pair == "<<" and (doc := _HEREDOC.match(text, i)):
+            cut_word()
+            heredocs.append(doc.group(2))
+            i = doc.end()
+            continue
+        else:
+            word.append(c)
+        i += 1
+    cut_statement()
     return out
+
+
+def _past_heredocs(text: str, i: int, ends: list[str]) -> int:
+    """heredoc 본문을 건너뛴 자리. 본문은 데이터라 그 안의 글자는 명령이 아니다."""
+    for end in ends:
+        while i < len(text):
+            stop = text.find("\n", i)
+            line = text[i:] if stop < 0 else text[i:stop]
+            i = len(text) if stop < 0 else stop + 1
+            if line.strip() == end:
+                break
+    return i
+
+
+def _substitutions(word: str) -> list[str]:
+    """단어 안의 명령 치환 본문(`$( )` · 백틱). 작은따옴표 안의 것은 글자일 뿐이다."""
+    found: list[str] = []
+    quoted = False  # 큰따옴표 안인가 — 그 안의 작은따옴표는 글자다
+    i = 0
+    while i < len(word):
+        c = word[i]
+        if c == "\\":
+            i += 2
+        elif c == '"':
+            quoted = not quoted
+            i += 1
+        elif c == "'" and not quoted:
+            end = word.find("'", i + 1)
+            i = len(word) if end < 0 else end + 1
+        elif word.startswith("$(", i):
+            depth, j, mark = 1, i + 2, ""
+            while j < len(word) and depth:
+                ch = word[j]
+                if mark:
+                    mark = "" if ch == mark else mark
+                elif ch in "'\"":
+                    mark = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                j += 1
+            found.append(word[i + 2 : j - 1 if depth == 0 else j])
+            i = j
+        elif c == "`":
+            end = word.find("`", i + 1)
+            end = len(word) if end < 0 else end
+            found.append(word[i + 1 : end])
+            i = end + 1
+        else:
+            i += 1
+    return found
+
+
+def _commands(text: str, depth: int = 0) -> Iterator[list[str]]:
+    """실행되는 명령 전부 — 명령 치환 안의 것까지. 치환은 바깥 명령보다 먼저 돈다."""
+    for words in _statements(text):
+        if depth < 3:
+            for w in words:
+                for inner in _substitutions(w):
+                    yield from _commands(inner, depth + 1)
+        yield words
+
+
+def _parts(words: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
+    """(명령 앞에 붙은 대입들, 나머지 단어들). 예약어·case 패턴·함수 머리는 걷어낸다.
+
+    나머지가 비면 그 대입은 셸에 남는다. 나머지가 있으면 **그 명령에만** 걸리는 대입이다.
+    """
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "function":
+            i += 2
+        elif w in _RESERVED or _FUNC_HEAD.fullmatch(w) or (w.endswith(")") and "(" not in w):
+            i += 1
+        else:
+            break
+    assigns: list[tuple[str, str]] = []
+    while i < len(words) and (pair := _ASSIGN.fullmatch(words[i])):
+        assigns.append((pair.group(1), pair.group(2)))
+        i += 1
+    return assigns, words[i:]
+
+
+def _program(words: list[str]) -> list[str]:
+    """명령어부터의 단어들. `exec` · `command` · `env A=b` · `timeout 20` 같은 앞말은 걷어낸다."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "command" and words[i + 1 : i + 2] and words[i + 1].startswith("-"):
+            break  # `command -v x` 는 찾기만 한다 — 부르는 것이 아니다
+        if w in _PREFIXES:
+            i += 1
+            while w == "env" and i < len(words) and _ASSIGN.fullmatch(words[i]):
+                i += 1
+        elif w in ("timeout", "gtimeout"):
+            i += 1
+            while i < len(words) and words[i].startswith("-"):
+                i += 1
+            i += 1  # 시간
+        else:
+            break
+    return words[i:]
+
+
+def _bare(word: str) -> str:
+    """바깥 따옴표 한 겹을 벗긴 글자."""
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
+        return word[1:-1]
+    return word
+
+
+def _mentions(tool: str, text: str) -> bool:
+    return re.search(rf"(?<![\w-]){re.escape(tool)}(?![\w-])", text) is not None
+
+
+def _names(word: str, tool: str, held: set[str]) -> bool:
+    """이 명령어 자리가 그 도구인가 — 경로로든, 담아 둔 변수로든, `$(command -v …)` 로든."""
+    bare = _bare(word)
+    if re.fullmatch(rf"(?:\S*/)?{re.escape(tool)}", bare):
+        return True
+    var = _VAR.fullmatch(bare)
+    if var:
+        return var.group(1) in held
+    return _SUBST.fullmatch(bare) is not None and _mentions(tool, bare)
+
+
+def _stored(words: list[str]) -> list[tuple[str, str]]:
+    """셸에 **남는** 대입들. 명령 앞에만 붙은 대입은 그 명령과 함께 사라지므로 뺀다."""
+    assigns, rest = _parts(words)
+    if not rest:
+        return assigns
+    if rest[0] in _DECLARERS:
+        return [(m.group(1), m.group(2)) for w in rest[1:] if (m := _ASSIGN.fullmatch(w))]
+    return []
+
+
+def _calls(text: str, tool: str) -> list[str]:
+    """그 도구를 **명령으로 부르는** 자리마다 첫 인자(`rotate` 등). 안 부르면 빈 목록.
+
+    변수에 담아 부르는 것도 센다 — `rotate_cmd="$(command -v codex-swap)"` 뒤의
+    `"$rotate_cmd" rotate`. 여러 갈래 중 한 곳에서라도 담긴 적이 있으면 담긴 것으로 본다.
+    여기서 묻는 것은 "부를 수 있나" 이지 "반드시 부르나" 가 아니다.
+    """
+    held: set[str] = set()
+    found: list[str] = []
+    for words in _commands(text):
+        for name, value in _stored(words):
+            if _mentions(tool, value):
+                held.add(name)
+        head = _program(_parts(words)[1])
+        if not head:
+            continue
+        if head[0] == "alias":
+            for w in head[1:]:
+                if alias := _ASSIGN.fullmatch(w):
+                    found += _calls(_bare(alias.group(2)), tool)
+        elif _names(head[0], tool, held):
+            found.append(_bare(head[1]) if len(head) > 1 else "")
+    return found
+
+
+def _home_output(value: str, from_home: set[str]) -> bool:
+    """그 값이 **통째로** `codex-swap home` 의 출력인가. 뒤에 경로를 덧붙이면 다른 홈이다."""
+    bare = _bare(value)
+    var = _VAR.fullmatch(bare)
+    if var:
+        return var.group(1) in from_home
+    inner = _substitutions(bare) if _SUBST.fullmatch(bare) else []
+    if len(inner) != 1:
+        return False
+    first = next(iter(_statements(inner[0])), [])
+    head = _program(_parts(first)[1])
+    return (
+        len(head) > 1
+        and _bare(head[1]) == "home"
+        and (_names(head[0], "codex-swap", set()) or _VAR.fullmatch(_bare(head[0])) is not None)
+    )
 
 
 def passes_home(text: str) -> bool:
@@ -160,53 +451,92 @@ def passes_home(text: str) -> bool:
 
     인정하는 모양은 둘이다.
 
-    - `codex-swap exec` 로 통째로 넘긴다.
-    - `CODEX_HOME` 을 `codex-swap home` 의 출력으로 정한다. 직접이든(`CODEX_HOME="$(codex-swap
-      home)"`), 변수를 거치든(`h="$("$swap" home)"` → `export CODEX_HOME="$h"`). 그리고 그것이
-      **`rotate` 보다 앞**이고, 뒤에서 `unset` 되지 않는다.
+    - `codex-swap exec` 로 통째로 넘긴다 — 명령으로 부를 때만. 글자로 찍는 것은 아니다.
+    - `CODEX_HOME` 을 `codex-swap home` 의 출력으로 정하고 **export 한다.** 직접이든
+      (`export CODEX_HOME="$(codex-swap home)"`), 변수를 거치든(`h="$("$swap" home)"` →
+      `export CODEX_HOME="$h"`). 그 상태가 첫 `rotate` 때도, 스크립트 끝에서도 살아 있어야 한다.
+
+    위에서부터 차례로 따라가므로 뒤의 재대입·`unset`·`export -n` 이 앞의 설정을 지운다. 명령
+    앞에만 붙인 대입(`CODEX_HOME=… codex-swap rotate`)은 그 명령에만 걸리므로 치지 않는다.
 
     순서를 보는 이유가 있다. 홈을 정하기 전에 `rotate` 를 부르면, 물려받은 `CODEX_HOME` 이 앱의
     홈일 때 전환 가드가 "다른 홈을 골랐다" 며 멈추고 그 뒤로 전환이 한 번도 안 일어난다.
     """
-    lines = _code_lines(text)
-    if any(_EXEC_DELEGATE.search(line) for line in lines):
-        return True
+    from_home: set[str] = set()  # 지금 값이 `codex-swap home` 에서 온 변수
+    assigned: set[str] = set()  # 스크립트 안에서 값을 받은 변수
+    held: set[str] = set()  # codex-swap 을 담은 변수
+    exported = False  # CODEX_HOME 이 자식에게 넘어가는가
+    at_rotate: bool | None = None  # 첫 rotate 때 넘길 준비가 돼 있었나
 
-    from_home: dict[str, int] = {}
-    for i, line in enumerate(lines):
-        found = _HOME_CALL.search(line)
-        if found:
-            from_home.setdefault(found.group(1), i)
+    def ready() -> bool:
+        return exported and "CODEX_HOME" in from_home
 
-    set_at: int | None = None
-    for i, line in enumerate(lines):
-        assigned = _SET_HOME.match(line)
-        if not assigned:
+    def store(name: str, value: str) -> None:
+        assigned.add(name)
+        if _home_output(value, from_home):
+            from_home.add(name)
+        else:
+            from_home.discard(name)
+        if _mentions("codex-swap", value):
+            held.add(name)
+
+    for words in _statements(text):
+        # `${CODEX_HOME:=…}` 는 명령보다 먼저 펼쳐진다. 이미 값을 받은 변수는 그대로 둔다.
+        for w in words:
+            default = _DEFAULT_ASSIGN.fullmatch(_bare(w))
+            if default and default.group(1) not in assigned:
+                store(default.group(1), default.group(2))
+        assigns, rest = _parts(words)
+        if not rest:
+            for name, value in assigns:
+                store(name, value)
             continue
-        if from_home.get("CODEX_HOME") == i:
-            set_at = i
-            break
-        ref = _VAR_REF.search(assigned.group(1))
-        if ref and from_home.get(ref.group(1), i + 1) <= i:
-            set_at = i
-            break
-    if set_at is None:
-        return False
-    if any(_UNSET_HOME.search(line) for line in lines[set_at + 1 :]):
-        return False
-    rotate_at = next((i for i, line in enumerate(lines) if _ROTATE_CALL.search(line)), None)
-    return rotate_at is None or rotate_at > set_at
+        head = _program(rest)
+        verb = _bare(head[0]) if head else ""
+        args = head[1:]
+        if verb in _DECLARERS:
+            flags = [a for a in args if a[0] in "-+"]
+            marks = verb == "export" or any(f[0] == "-" and "x" in f for f in flags)
+            drops = any(
+                (f[0] == "+" and "x" in f) or (verb == "export" and f[0] == "-" and "n" in f)
+                for f in flags
+            )
+            for a in args:
+                if a in flags:
+                    continue
+                pair = _ASSIGN.fullmatch(a)
+                name = pair.group(1) if pair else _bare(a)
+                if pair:
+                    store(name, pair.group(2))
+                if name == "CODEX_HOME":
+                    exported = False if drops else exported or marks
+        elif verb == "unset":
+            for a in args:
+                from_home.discard(_bare(a))
+                assigned.discard(_bare(a))
+                if _bare(a) == "CODEX_HOME":
+                    exported = False
+        elif verb == "alias":
+            if "exec" in _calls(" ".join(head), "codex-swap"):
+                return True
+        elif len(head) > 1:
+            sub = _bare(head[1])
+            if sub == "exec" and _names(head[0], "codex-swap", held):
+                return True
+            names_swap = _names(head[0], "codex-swap", held) or _VAR.fullmatch(_bare(head[0]))
+            if sub == "rotate" and at_rotate is None and names_swap:
+                at_rotate = ready()
+    return ready() and at_rotate is not False
 
 
 def calls_us(text: str) -> bool:
-    """실행되는 줄에서 codex-swap 을 부르는가."""
-    return any("codex-swap" in line for line in _code_lines(text))
+    """codex-swap 을 **명령으로** 부르는가. 글자로 찍거나 주석에 적은 것은 치지 않는다."""
+    return bool(_calls(text, "codex-swap"))
 
 
 def uses_legacy_rotator(text: str) -> bool:
-    """실행되는 줄에서 **옛 bash 전환기**를 부르고, codex-swap 은 부르지 않는가."""
-    lines = _code_lines(text)
-    return any(LEGACY_ROTATOR in line for line in lines) and not calls_us(text)
+    """**옛 bash 전환기**를 명령으로 부르고, codex-swap 은 부르지 않는가."""
+    return bool(_calls(text, LEGACY_ROTATOR)) and not calls_us(text)
 
 
 def _head(path: Path) -> str:
@@ -283,8 +613,7 @@ def inspect(shell: str) -> Wiring:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        code = "\n".join(_code_lines(text))
-        if "codex-swap rotate" in code or "codex-swap exec" in code:
+        if {"rotate", "exec"} & set(_calls(text, "codex-swap")):
             return Wiring(PROFILE, path, passes_home=passes_home(text))
 
     own = WRAPPER.expanduser()

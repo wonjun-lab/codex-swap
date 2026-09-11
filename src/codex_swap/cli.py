@@ -1358,7 +1358,7 @@ def cmd_exec(settings: config.Settings, argv: Sequence[str]) -> int:
 
 
 def cmd_home(settings: config.Settings) -> int:
-    """지금 쓰는 활성 홈을 **한 줄로** 낸다. 조회하지 않으므로 빠르다.
+    """codex 가 **여기서** 떠야 할 홈을 한 줄로 낸다. 조회하지 않으므로 빠르다.
 
     우리 wrapper 를 거치지 않는 소비자가 있다 — dotfiles 로 심어 둔 `codex` wrapper, 브로커를
     내리는 Claude 훅. 그들이 `~/.codex` 를 고정으로 보면, 공식 앱과 자리를 나눈 기기에서
@@ -1367,9 +1367,14 @@ def cmd_home(settings: config.Settings) -> int:
 
         export CODEX_HOME="$(codex-swap home)"
 
+    그래서 답은 `exec` 가 고르는 홈과 **같다.** 호출자가 일부러 고른 `CODEX_HOME` 은 그대로
+    돌려주고, 앱과 나뉜 기기에서 물려받은 앱의 홈은 우리 자리로 바로잡는다. 설정값만 내던 때는
+    wrapper 가 "이미 정해져 있으면 둔다" 는 조건을 따로 달아야 했고, 그 조건이 물려받은 앱의
+    홈까지 지켜 줬다 — `exec` 는 바로잡는데 dotfiles wrapper 는 앱의 홈으로 띄웠다(교차 검토).
+
     출력은 경로 하나뿐이다 — 명령 치환으로 먹히는 자리라 안내 한 글자도 섞으면 안 된다.
     """
-    print(settings.default_home)
+    print(exec_home(settings, os.environ))
     return 0
 
 
@@ -1696,7 +1701,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("clean", help="clear probe leftovers from the slots")
     sub.add_parser("doctor", help="test each account and say how to fix what is broken")
     sub.add_parser("init", help="set this machine up and say what is left")
-    sub.add_parser("home", help="print the codex home codex-swap is using (for wrappers)")
+    sub.add_parser("home", help="print the home codex should start in here (for wrappers)")
     p = sub.add_parser("exec", help="run codex through the policy (used by the wrapper)")
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed straight to codex")
 

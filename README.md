@@ -116,8 +116,10 @@ reading the app's, and nothing reports an error. Put this before it runs `codex-
 export CODEX_HOME="$(codex-swap home)"
 ```
 
-`codex-swap init` looks for exactly this and says so when it is missing, or when the wrapper
-still calls the old bash switcher.
+It answers with the home `codex-swap exec` would pick, so the wrapper needs no conditions of
+its own: a `CODEX_HOME` you set on purpose comes back unchanged, and one inherited from the app
+(`~/.codex`) is replaced. `codex-swap init` looks for this and says so when it is missing, or
+when the wrapper still calls the old bash switcher.
 
 **Accounts registered before the split may share a login with the app.** A refresh token is
 replaced every time it is used, so two copies of one login cannot both stay valid. `doctor`
