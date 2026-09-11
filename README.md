@@ -108,8 +108,26 @@ change: it is decided each time codex-swap runs, so installing the app later is 
 the app never touches, so there is nothing to migrate and nothing to lose. The first switch
 after the split fills the new home; `codex-swap init` says so if you have not made it yet.
 
+**If your own `codex` wrapper is on PATH** — from a dotfiles repo, say — it has to start codex
+in that home too. Otherwise switching changes codex-swap's credentials while codex keeps
+reading the app's, and nothing reports an error. Put this before it runs `codex-swap rotate`:
+
+```bash
+export CODEX_HOME="$(codex-swap home)"
+```
+
+`codex-swap init` looks for exactly this and says so when it is missing, or when the wrapper
+still calls the old bash switcher.
+
+**Accounts registered before the split may share a login with the app.** A refresh token is
+replaced every time it is used, so two copies of one login cannot both stay valid. `doctor`
+flags a slot holding the same token as the app; sign that account in again on its own with
+`codex-swap add <label> --force`. It does not probe such a slot, because refreshing it could
+sign the app out.
+
 Set `CODEX_ACCOUNT_DEFAULT_HOME` if you would rather choose the location yourself — an
-explicit value always wins. `codex-swap doctor` reports it if the two ever drift apart.
+explicit value always wins, but pointing it at `~/.codex` puts you back in the app's way, and
+`init` and `doctor` both say so.
 
 ### When something looks wrong
 

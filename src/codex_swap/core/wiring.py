@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,31 @@ ISOLATED_PATH = Path("~/.codex-cli")
 """분리했을 때 우리가 쓰는 자리."""
 
 
+def _same(a: str | os.PathLike[str], b: str | os.PathLike[str]) -> bool:
+    return os.path.realpath(os.path.expanduser(a)) == os.path.realpath(os.path.expanduser(b))
+
+
+def apart_from_app(default_home: Path) -> bool:
+    """앱이 깔려 있고, **실제로** 우리 홈이 앱의 홈과 다른가.
+
+    앱이 있다는 것만으로 분리됐다고 말하면 안 된다. `CODEX_ACCOUNT_DEFAULT_HOME` 으로 앱의 홈을
+    직접 가리킨 설정에서 `init` 이 "나눠 뒀다" 고 말한 적이 있다 — 실제로는 여전히 같은 파일을
+    다투는 중이었다.
+    """
+    return app_installed() and not _same(default_home, DEFAULT_HOME)
+
+
+def inherits_app_home(default_home: Path, environ: dict[str, str] | None = None) -> bool:
+    """분리된 기기인데 **물려받은 `CODEX_HOME` 이 앱의 홈**을 가리키나.
+
+    옛 셸 설정의 `export CODEX_HOME=~/.codex` 나 앱이 띄운 환경에서 흘러온 값이다. 그대로 두면
+    codex 가 앱의 계정으로 뜨고, 우리 전환 가드는 "호출자가 다른 홈을 골랐다" 며 조용히 멈춘다.
+    """
+    table = os.environ if environ is None else environ
+    raw = table.get("CODEX_HOME")
+    return bool(raw) and apart_from_app(default_home) and _same(raw, DEFAULT_HOME)
+
+
 def seed_source(default_home: Path) -> Path | None:
     """지금 홈은 비었는데 **다른 자리에 로그인이 남아 있으면** 그 경로. 아니면 None.
 
@@ -81,69 +107,128 @@ WRAPPER = Path("~/.local/bin/codex")
 """우리가 놓는 wrapper 자리. **PATH 에 있기만 하면 셸이 무엇이든 통한다.**"""
 
 MARKER = "# codex-swap wrapper"
-"""우리가 놓은 것인지 알아보는 표시. 남의 wrapper 를 덮지 않기 위한 것이다."""
+"""우리가 놓은 것인지 알아보는 표시.
+
+`discovery.is_wrapper` 도 이 표시를 본다 — 못 보면 upstream 이 사라진 기기에서 이 wrapper 를
+진짜 codex 로 집어 `exec` 가 자기 자신을 끝없이 다시 띄운다. 두 곳이 갈라지지 않는지는 테스트가
+묶는다.
+"""
 
 WRAPPER_BODY = f"""#!/bin/sh
 {MARKER} — do not edit; regenerate with: codex-swap init
 exec codex-swap exec "$@"
 """
-"""**얇게 둔다.** 판단은 전부 `codex-swap exec` 안에 있다.
+"""**얇게 둔다.** 판단은 전부 `codex-swap exec` 안에 있다."""
 
-여기에 로직을 넣으면 그 사본이 사용자 기기에서 낡는다 — 규칙이 바뀌어도 이미 놓인 파일은
-그대로이고, 우리는 그것을 고치라고 알릴 방법이 없다.
-"""
-
-LEGACY_ROTATOR = b"codex-account"
-"""codex-swap 이전의 bash 전환기. dotfiles wrapper 가 아직 이것을 부르는 기기가 있다.
-
-그 전환기는 **우리와 같은 원장·락·스탬프**(`accounts/rotate.log` · `.lock` · `.last-check`)를
-쓴다. 둘이 한 기기에 살아 있으면 전환기가 둘이 되어, 서로의 결정을 번갈아 덮는다.
-"""
+LEGACY_ROTATOR = "codex-account"
+"""codex-swap 이전의 bash 전환기. 우리와 같은 원장·락·스탬프를 쓴다."""
 
 HOME_LINE = 'export CODEX_HOME="$(codex-swap home)"'
-"""외부 wrapper 에 넣으라고 안내할 한 줄. 판단을 각자 흉내내지 않고 우리 것을 받아 쓰게 한다."""
+"""외부 wrapper 에 넣으라고 안내할 한 줄. **`rotate` 보다 앞에** 둔다."""
 
 
-def _head(path: Path) -> bytes:
+# ── 셸 스크립트를 "실행되는 줄" 로만 읽는다 ─────────────────────────────────────
+#
+# 문자열이 어딘가 들어 있는지로 판정하던 때가 있었다. 그러면 설명 주석 하나(`# CODEX_HOME …`),
+# `unset CODEX_HOME`, `CODEX_HOME="$HOME/.codex"` 가 전부 "홈을 넘긴다" 로 읽혔고, 옛 전환기를
+# 부르는 wrapper 에 `# codex-swap 으로 옮길 것` 이라는 주석만 붙어도 옛 전환기 판정이 사라졌다.
+#
+# 셸을 해석하는 것이 아니다. 조건문·함수·동적 source 까지 문자열로 증명할 수는 없다. 여기서
+# 하는 것은 **흔한 두 모양만 인정하고 나머지는 인정하지 않는 것** — 해석 못 한 것을 "됐다" 로
+# 접으면 전환이 codex 에 안 닿는 기기를 ready 라고 부르게 된다.
+
+_INLINE_COMMENT = re.compile(r"(^|\s)#.*$")
+_EXEC_DELEGATE = re.compile(r"\bcodex-swap\s+exec\b")
+_HOME_CALL = re.compile(r'^(?:export\s+)?(\w+)=.*(?:\bcodex-swap|"?\$\{?\w+\}?"?)\s+home\b')
+_SET_HOME = re.compile(r"^(?:export\s+)?CODEX_HOME=(.*)$")
+_VAR_REF = re.compile(r"\$\{?(\w+)\}?")
+_UNSET_HOME = re.compile(r"\bunset\s+(?:-v\s+)?CODEX_HOME\b")
+_ROTATE_CALL = re.compile(r'(?:\bcodex-swap|"?\$\{?\w+\}?"?)\s+rotate\b')
+
+
+def _code_lines(text: str) -> list[str]:
+    """주석을 걷어낸 줄들. 줄 번호를 지키려고 빈 줄도 남긴다."""
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        out.append("" if line.startswith("#") else _INLINE_COMMENT.sub("", line).strip())
+    return out
+
+
+def passes_home(text: str) -> bool:
+    """이 스크립트가 codex 에게 **codex-swap 이 정한 홈**을 넘기는가.
+
+    인정하는 모양은 둘이다.
+
+    - `codex-swap exec` 로 통째로 넘긴다.
+    - `CODEX_HOME` 을 `codex-swap home` 의 출력으로 정한다. 직접이든(`CODEX_HOME="$(codex-swap
+      home)"`), 변수를 거치든(`h="$("$swap" home)"` → `export CODEX_HOME="$h"`). 그리고 그것이
+      **`rotate` 보다 앞**이고, 뒤에서 `unset` 되지 않는다.
+
+    순서를 보는 이유가 있다. 홈을 정하기 전에 `rotate` 를 부르면, 물려받은 `CODEX_HOME` 이 앱의
+    홈일 때 전환 가드가 "다른 홈을 골랐다" 며 멈추고 그 뒤로 전환이 한 번도 안 일어난다.
+    """
+    lines = _code_lines(text)
+    if any(_EXEC_DELEGATE.search(line) for line in lines):
+        return True
+
+    from_home: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        found = _HOME_CALL.search(line)
+        if found:
+            from_home.setdefault(found.group(1), i)
+
+    set_at: int | None = None
+    for i, line in enumerate(lines):
+        assigned = _SET_HOME.match(line)
+        if not assigned:
+            continue
+        if from_home.get("CODEX_HOME") == i:
+            set_at = i
+            break
+        ref = _VAR_REF.search(assigned.group(1))
+        if ref and from_home.get(ref.group(1), i + 1) <= i:
+            set_at = i
+            break
+    if set_at is None:
+        return False
+    if any(_UNSET_HOME.search(line) for line in lines[set_at + 1 :]):
+        return False
+    rotate_at = next((i for i, line in enumerate(lines) if _ROTATE_CALL.search(line)), None)
+    return rotate_at is None or rotate_at > set_at
+
+
+def calls_us(text: str) -> bool:
+    """실행되는 줄에서 codex-swap 을 부르는가."""
+    return any("codex-swap" in line for line in _code_lines(text))
+
+
+def uses_legacy_rotator(text: str) -> bool:
+    """실행되는 줄에서 **옛 bash 전환기**를 부르고, codex-swap 은 부르지 않는가."""
+    lines = _code_lines(text)
+    return any(LEGACY_ROTATOR in line for line in lines) and not calls_us(text)
+
+
+def _head(path: Path) -> str:
     """스크립트 앞부분. 진짜 바이너리를 통째로 읽지 않으려고 8KB 만 본다."""
     try:
         with path.open("rb") as fh:
-            return fh.read(8192)
+            raw = fh.read(8192)
     except OSError:
-        return b""
+        return ""
+    return raw.decode("utf-8", "replace") if raw[:2] == b"#!" else ""
 
 
 def wrapper_here(path: Path | None = None) -> bool:
     """그 자리에 **우리가 놓은** wrapper 가 있나."""
     target = (path or WRAPPER).expanduser()
-    return MARKER.encode() in _head(target)
+    return MARKER in _head(target)
 
 
 def occupied_by_other(path: Path | None = None) -> bool:
     """그 자리에 **남의 것**이 있나. 덮으면 안 되는 상태다."""
     target = (path or WRAPPER).expanduser()
     return target.exists() and not wrapper_here(target)
-
-
-def calls_us(path: Path) -> bool:
-    """무엇이 됐든 **codex-swap 을 부르는** 스크립트인가."""
-    head = _head(path)
-    return head[:2] == b"#!" and b"codex-swap" in head
-
-
-def passes_home(text: bytes) -> bool:
-    """codex 에게 **우리 홈을 넘기는가.**
-
-    `codex-swap rotate` 만 부르는 wrapper 는 전환은 하지만 codex 를 기본 홈으로 띄운다. 앱이
-    없는 기기에서는 그걸로 충분하지만, 앱이 있는 기기에서는 **전환이 아무 효과가 없다** —
-    우리는 `~/.codex-cli` 를 바꾸는데 codex 는 여전히 앱의 `~/.codex` 를 읽는다. 에러도 없이.
-    """
-    return b"codex-swap exec" in text or b"codex-swap home" in text or b"CODEX_HOME" in text
-
-
-def uses_legacy_rotator(text: bytes) -> bool:
-    """codex-swap 이 아니라 **옛 bash 전환기**를 부르는가."""
-    return LEGACY_ROTATOR in text and b"codex-swap" not in text
 
 
 OURS = "ours"
@@ -165,7 +250,8 @@ class Wiring:
     def complete(self, isolate: bool) -> bool:
         """이 배선으로 전환이 **실제로 codex 에 닿는가.**
 
-        앱이 없으면(`isolate` 가 거짓) 전환만 되면 된다. 앱이 있으면 홈까지 넘겨야 한다.
+        앱과 나뉘어 있지 않으면(`isolate` 가 거짓) 전환만 되면 된다. 나뉘어 있으면 홈까지 넘겨야
+        한다.
         """
         if self.kind == OURS:
             return True
@@ -184,26 +270,26 @@ def inspect(shell: str) -> Wiring:
     if found:
         target = Path(found)
         head = _head(target)
-        if MARKER.encode() in head:
+        if MARKER in head:
             return Wiring(OURS, target, passes_home=True)
-        if head[:2] == b"#!" and uses_legacy_rotator(head):
+        if uses_legacy_rotator(head):
             return Wiring(LEGACY, target)
-        if head[:2] == b"#!" and b"codex-swap" in head:
+        if calls_us(head):
             return Wiring(EXTERNAL, target, passes_home=passes_home(head))
 
     for name in (profile_for(shell), "~/.bashrc", "~/.zshrc", "~/.profile"):
         path = Path(name).expanduser()
         try:
-            text = path.read_bytes()
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if b"codex-swap rotate" in text or b"codex-swap exec" in text:
+        code = "\n".join(_code_lines(text))
+        if "codex-swap rotate" in code or "codex-swap exec" in code:
             return Wiring(PROFILE, path, passes_home=passes_home(text))
 
     own = WRAPPER.expanduser()
     if own.exists() and not wrapper_here(own):
-        head = _head(own)
-        return Wiring(LEGACY if uses_legacy_rotator(head) else FOREIGN, own)
+        return Wiring(LEGACY if uses_legacy_rotator(_head(own)) else FOREIGN, own)
     return Wiring(NONE)
 
 

@@ -99,7 +99,10 @@ def is_wrapper(candidate: str | os.PathLike[str]) -> bool:
     except OSError:
         # bash 의 `head -c` 도 읽기 실패면 빈 출력이라 shebang 검사에서 탈락한다.
         return False
-    return head[:2] == b"#!" and WRAPPER_MARKER in head
+    # dotfiles wrapper 만 알아보던 판정이다. codex-swap 이 직접 놓는 wrapper(`wiring.MARKER`)도
+    # 우리 자신이다 — 못 알아보면 upstream 이 사라진 기기에서 그 wrapper 를 진짜 codex 로 집고,
+    # `exec` 가 자기 자신을 끝없이 다시 띄운다. 두 marker 가 갈라지지 않는지는 테스트가 묶는다.
+    return head[:2] == b"#!" and (WRAPPER_MARKER in head or b"# codex-swap wrapper" in head)
 
 
 def is_usable_binary(candidate: str | os.PathLike[str]) -> bool:

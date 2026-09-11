@@ -165,19 +165,23 @@ def _refresh_fingerprint(path) -> str | None:
     token = tokens.get("refresh_token") if isinstance(tokens, dict) else None
     if not isinstance(token, str) or not token:
         return None
-    return hashlib.sha256(token.encode()).hexdigest()
+    # `surrogatepass` 로 인코딩한다. JSON 은 짝 없는 surrogate 를 담을 수 있고, 그대로 `encode()`
+    # 하면 `UnicodeEncodeError` 가 나는데 그 예외의 `.object` 에 **토큰 원문이 통째로** 실린다.
+    # 정상 토큰에서는 안 생기지만, 진단 도구가 비밀을 흘리는 길은 하나도 남기지 않는다.
+    return hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def shared_with_app(settings: config.Settings) -> list[Finding]:
-    """**앱과 같은 refresh token 을 쥔 자리**가 있나.
+    """**지금 앱이 쥔 refresh token 과 같은 것**을 쥔 자리가 있나.
 
     refresh token 은 쓰일 때마다 새것으로 바뀌고 옛것은 무효가 된다. 같은 토큰을 두 곳이
     쥐면, 먼저 갱신한 쪽만 살고 다른 쪽은 조용히 로그아웃된다. 앱과 codex-swap 이 한 파일을
     나눠 쓰던 기기에서 정확히 그렇게 됐다 — 앱의 codex 로그에 `401 Encountered invalidated
     oauth token` 이 수만 줄 쌓였고, 사용자에게는 "shared 로그인이 자꾸 풀린다" 로 보였다.
 
-    그 시절에 슬롯에 들어간 사본은 **분리한 뒤에도** 앱과 계보를 공유한다. 파일을 옮기는 것으로는
-    끊기지 않고, 그 계정을 따로 다시 로그인시켜야 끊긴다. 그래서 여기서 찾아 짚는다.
+    **찾는 것은 현재 공유뿐이다.** 과거에 공유했다가 앱이 먼저 갱신해 버린 사본은 이미 죽은
+    토큰이라 여기서는 안 보이고, 대신 계정별 검사가 "서버가 거절했다" 로 짚는다. 파일을
+    옮기는 것으로는 공유가 끊기지 않으며, 그 계정을 따로 다시 로그인시켜야 끊긴다.
     """
     from codex_swap.core import wiring
 
@@ -226,12 +230,24 @@ def shared_with_app(settings: config.Settings) -> list[Finding]:
 
 def run(settings: config.Settings) -> list[Finding]:
     """등록된 슬롯을 전부 본다. 하나가 실패해도 나머지는 계속한다."""
+    # **토큰을 견주는 검사를 프로브보다 먼저 한다.** 프로브는 슬롯의 토큰을 갱신하도록 되어
+    # 있어서, 뒤에 두면 방금 그 갱신이 공유의 증거를 지운다 — 경고해야 할 슬롯이 "reachable"
+    # 로 나왔다.
+    shared = shared_with_app(settings)
+    # 앱과 토큰을 나눠 쥔 자리는 **프로브하지 않는다.** 프로브가 그 토큰을 갱신하는 순간 앱 쪽
+    # 사본이 무효가 되어, 진단하려다 앱을 로그아웃시킨다.
+    flagged = {f.label for f in shared}
     active = store.active_label(settings)
-    out = [check(settings, label, active) for label in store.labels(settings)]
+    skip_active = "active" in flagged
     # 환경 쪽 문제는 **맨 앞**에 둔다. 계정마다 "서버가 거절했다" 가 줄줄이 뜨는데 그
     # 까닭이 맨 아래 있으면, 사용자는 그 전에 계정을 다시 만들기 시작한다.
     outside = [f for f in (drifted(settings),) if f is not None]
-    return [*shared_with_app(settings), *outside, *out]
+    out = [
+        check(settings, label, active)
+        for label in store.labels(settings)
+        if label not in flagged and not (skip_active and label == active)
+    ]
+    return [*shared, *outside, *out]
 
 
 def summary(findings: list[Finding]) -> str:
