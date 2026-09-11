@@ -26,6 +26,12 @@ def test_the_screenshot_shows_the_keys_that_exist() -> None:
     )
 
 
+def test_every_account_shortcut_is_documented() -> None:
+    """행 전용 키도 메뉴에 없다는 이유로 README 에서 사라지면 안 된다."""
+    for key, description in tui.ACCOUNT_KEYS:
+        assert f"{key} {description}" in README
+
+
 def test_the_screenshot_shows_the_menu() -> None:
     """메뉴는 이 화면의 절반이다. 샘플에 없으면 있는 줄도 모른다."""
     for _, title in tui.MENU:

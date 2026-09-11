@@ -28,6 +28,7 @@ from typing import Any
 
 from codex_swap import __version__
 from codex_swap.core import (
+    account_slots,
     cache,
     config,
     discovery,
@@ -1140,40 +1141,26 @@ def cmd_rename(settings: config.Settings, old: str, new: str) -> int:
     락을 잡는 이유는 이 연산이 슬롯 디렉토리를 움직이기 때문이다. 전환이 같은 순간에
     그 디렉토리를 읽으면 반쯤 옮겨진 상태를 본다.
     """
-    for name in (old, new):
-        if not store.label_syntax_ok(name):
-            raise CliError(f"not a usable label: {name}")
-    src = store.slot_dir(settings, old)
-    if not src.is_dir() or src.is_symlink():
-        raise CliError(f"no such label: {old}")
-    dst = store.slot_dir(settings, new)
-    if dst.exists():
-        # 덮어쓰면 그 계정의 보관본이 사라진다 — `adopt` 와 같은 종류의 손실이다.
-        raise CliError(f"label already exists: {new} (use remove to drop it first)")
-
-    with store.switch_lock(settings):
-        os.rename(src, dst)
-    # 캐시는 라벨로만 색인된다. 옛 이름의 숫자가 남으면 그 이름을 재사용할 때 `remove`
-    # 에서와 같은 오염이 생긴다. 파일째 버리는 것도 그쪽과 같다.
-    cache.clear(settings)
+    try:
+        account_slots.rename(settings, old, new)
+    except account_slots.SlotRefusal as exc:
+        raise CliError(_slot_refusal_message(exc)) from exc
     print(f"renamed {old} -> {new}")
     return 0
 
 
 def cmd_remove(settings: config.Settings, label: str, *, assume_yes: bool = False) -> int:
-    if not store.label_syntax_ok(label):
-        raise CliError(f"not a usable label: {label}")
-    target = store.slot_dir(settings, label)
-    if not target.is_dir() or target.is_symlink():
-        raise CliError(f"no such label: {label}")
-    was_active = store.active_label(settings) == label
+    try:
+        description = account_slots.describe(settings, label)
+    except account_slots.SlotRefusal as exc:
+        raise CliError(_slot_refusal_message(exc)) from exc
 
     # 자격증명 삭제는 되돌릴 수 없다. 사람이 보고 있으면 한 번 묻는다 — 무엇을 지우는지
     # 이메일까지 보여 주고서다. 라벨만으로는 어느 계정인지 확신할 수 없다.
     #
     # tty 가 아니면 묻지 않는다. 파이프 뒤에서 물으면 영영 끝나지 않는다.
     if not assume_yes and sys.stdin.isatty():
-        who = identity.email_of(store.slot_auth(settings, label)) or "email unknown"
+        who = description.email or "email unknown"
         print(f"About to delete slot '{label}' ({who}). This cannot be undone.")
         try:
             answer: str | None = input("Type y to continue: ")
@@ -1183,25 +1170,29 @@ def cmd_remove(settings: config.Settings, label: str, *, assume_yes: bool = Fals
             print("Left it alone.")
             return 1
 
-    shutil.rmtree(target)
-    # 캐시는 라벨로만 색인된다 — 어느 계정의 숫자인지는 적혀 있지 않다. 항목을 남기면
-    # `adopt <같은 라벨>` 로 다른 계정을 그 이름에 넣었을 때 새 계정이 지운 계정의
-    # 사용량을 최대 한 TTL 뒤집어쓴다. 표시만의 문제가 아니다: `rotate` 도 이 캐시를
-    # 정책 입력으로 읽으므로(`rotate._usage_of`) 후보 선택이 통째로 틀어진다.
-    #
-    # 한 키만 빼지 않고 파일째 버리는 것은 `store.switch` 와 같다. 남는 항목도 어차피
-    # TTL 안에서만 유효하고, 대가는 다음 rotate 의 프로브 몇 번뿐이다.
-    cache.clear(settings)
+    try:
+        account_slots.remove(settings, label)
+    except account_slots.SlotRefusal as exc:
+        raise CliError(_slot_refusal_message(exc)) from exc
     print(f"removed {label}")
     # 지운 것이 **활성 라벨**이면 자동 전환이 이 순간부터 영구 무동작이다 — 이후 rotate
     # 는 `active account is not a registered slot` 으로 끝나는데 그 사유는 `--dry-run`
     # 에서만 보인다. 여기서 말하지 않으면 사용자는 며칠 뒤에 "왜 안 바뀌지" 로 만난다.
-    if was_active:
+    if description.active:
         print(
             "Note: that was the account you are using, so it is now in no slot. "
             "Automatic switching stops until you run: codex-swap adopt <label>"
         )
     return 0
+
+
+def _slot_refusal_message(exc: account_slots.SlotRefusal) -> str:
+    """공유 거부 이유를 기존 CLI 문구로 옮긴다."""
+    if exc.reason == "invalid_label":
+        return f"not a usable label: {exc.label}"
+    if exc.reason == "missing_source":
+        return f"no such label: {exc.label}"
+    return f"label already exists: {exc.label} (use remove to drop it first)"
 
 
 def cmd_clean(settings: config.Settings) -> int:

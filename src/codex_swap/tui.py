@@ -28,6 +28,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from codex_swap.core import (
+    account_slots,
     cache,
     config,
     doctor,
@@ -147,6 +148,9 @@ class View:
     cooldown_left: int | None = None
     """쿨다운이 걸려 있으면 남은 초. 화면이 "왜 안 바뀌는가" 에 답하는 자리다."""
 
+    confirmation: str = ""
+    """짧은 입력을 받기 전에 화면에 온전히 보여 줄 되돌릴 수 없는 동작의 설명."""
+
 
 POLICY_FIELDS = (
     (
@@ -211,11 +215,15 @@ _UPDATE_ASK = "  Leave the screen and update codex-swap? [y/N] "
 """
 
 
+ACCOUNT_COMMAND_KEYS = (("n", "rename"), ("d", "remove"))
+"""메뉴가 선택한 계정을 잃는 행 전용 명령과 실제 키의 대응."""
+
 ACCOUNT_KEYS = (
     # `open` 이었다. 계정 줄에서는 전환이고 메뉴 줄에서는 화면을 여는데, 그중 하나만
     # 적어 두면 나머지 자리에서 `enter` 가 무슨 키인지 알 수 없다.
     ("enter", "select"),
     ("s", "switch"),
+    *ACCOUNT_COMMAND_KEYS,
     ("r", "usage"),
     ("a", "adopt"),
     ("p", "policy"),
@@ -340,6 +348,38 @@ def _note(text: str, width: int | None) -> str:
     if width is None:
         return f"{_INDENT}{text}"
     return f"{_INDENT}{_cell(text, max(width - len(_INDENT), 0), ellipsis=True)}".rstrip()
+
+
+def _wrapped_note(text: str, width: int | None) -> list[str]:
+    """확인 경고를 말줄임표 없이 여러 줄로 보존한다.
+
+    평상시 메시지는 한 줄에서 결과를 빠르게 훑는 것이 먼저지만, 삭제 확인은 뒤가
+    잘리면 되돌릴 수 없음이나 활성 계정의 결과를 읽지 못한 채 `y` 를 누르게 된다.
+    """
+    if width is None:
+        return [_note(text, None)]
+    room = max(width - len(_INDENT), 1)
+    remaining = text.strip()
+    lines: list[str] = []
+    while _width(remaining) > room:
+        cells = 0
+        cut = 0
+        for cut, char in enumerate(remaining, start=1):
+            cells += _width(char)
+            if cells > room:
+                cut -= 1
+                break
+        cut = max(cut, 1)
+        space = remaining.rfind(" ", 0, cut + 1)
+        if space > 0:
+            lines.append(remaining[:space])
+            remaining = remaining[space + 1 :].lstrip()
+        else:
+            lines.append(remaining[:cut])
+            remaining = remaining[cut:].lstrip()
+    if remaining:
+        lines.append(remaining)
+    return [f"{_INDENT}{line}" for line in lines] or [_INDENT]
 
 
 def _help_line(*variants: str, width: int | None) -> str:
@@ -577,7 +617,12 @@ def keys_line(
     않고 판을 바꾸는 이유는 잘리면 **뒤쪽 키가 통째로 사라지기** 때문이다(40 칸에서
     실제로 `r` 에서 잘렸다).
     """
-    for joiner, labels in (("   ", True), ("  ", True), ("  ", False)):
+    for joiner, labels in (
+        ("   ", True),
+        ("  ", True),
+        ("  ", False),
+        (" ", False),
+    ):
         text, spans = _assemble_keys(pairs, joiner, labels=labels)
         if width is None or _width(text) <= width:
             return text, spans
@@ -990,6 +1035,8 @@ def render_screen(
                 Style("warn"),
             )
         )
+    if view.confirmation:
+        keep.extend((line, Style("warn")) for line in _wrapped_note(view.confirmation, width))
     if view.message:
         keep.append((_note(view.message, width), _PLAIN))
 
@@ -1379,6 +1426,138 @@ def _carry(view: View) -> dict[str, Row]:
     것으로 보인다.
     """
     return {r.label: r for r in view.rows}
+
+
+def account_command_for(key: int) -> str | None:
+    """대소문자를 같은 행 전용 명령으로 접는다."""
+    if not 0 <= key <= 255:
+        return None
+    typed = chr(key).lower()
+    return next((action for glyph, action in ACCOUNT_COMMAND_KEYS if glyph == typed), None)
+
+
+def _slot_refusal_message(exc: account_slots.SlotRefusal) -> str:
+    """공유 거부 이유를 화면 문장으로 옮긴다."""
+    if exc.reason == "invalid_label":
+        return f"Not a usable label: {exc.label}"
+    if exc.reason == "missing_source":
+        return f"No such label: {exc.label}"
+    return f"Label already exists: {exc.label} (use remove to drop it first)"
+
+
+def _account_label(view: View, label: str | None) -> str | None:
+    """명시한 라벨 또는 현재 계정 행의 라벨을 돌려준다."""
+    if label is not None:
+        return label
+    row = selected_row(view)
+    return None if row is None else row.label
+
+
+def rename_prompt(view: View) -> str | None:
+    """선택한 계정 이름을 바꿀 한 줄 입력 문구를 만든다."""
+    row = selected_row(view)
+    if row is None:
+        return None
+    return f"  Rename '{row.label}' to: "
+
+
+def do_rename(view: View, old: str | None, new: str | None) -> View:
+    """터미널 없이 슬롯 이름 변경을 적용하고 목록을 다시 읽는다."""
+    if not view.rows:
+        return replace(view, message="No accounts yet")
+    label = _account_label(view, old)
+    if label is None:
+        return replace(view, message="Move to an account first, then press n")
+    if new is None:
+        return replace(view, message="")
+
+    carry = _carry(view)
+    try:
+        account_slots.rename(view.settings, label, new)
+    except account_slots.SlotRefusal as exc:
+        return replace(view, message=_slot_refusal_message(exc))
+    except store.LockBusy:
+        return build_view(
+            view.settings,
+            select=label,
+            message="Another switch is in progress. Try again in a moment",
+            carry=carry,
+        )
+    except (store.LockUnusable, store.StoreError, OSError) as exc:
+        return build_view(
+            view.settings,
+            select=label,
+            message=f"Rename failed: {exc}",
+            carry=carry,
+        )
+
+    previous = carry.pop(label, None)
+    if previous is not None:
+        carry[new] = replace(previous, label=new)
+    return build_view(
+        view.settings,
+        select=new,
+        message=f"Renamed {label} -> {new}",
+        carry=carry,
+    )
+
+
+def remove_warning(view: View, label: str | None = None) -> str | None:
+    """삭제 입력 전에 온전히 보여 줄 대상·손실·활성 결과를 만든다."""
+    chosen = _account_label(view, label)
+    if chosen is None:
+        return None
+    description = account_slots.describe(view.settings, chosen)
+    who = description.email or "email unknown"
+    warning = f"Delete slot '{chosen}' ({who}). This cannot be undone."
+    if description.active:
+        warning += (
+            " This is the account you are using; its live credentials stay in place. "
+            "Automatic switching stops until you adopt it under a label."
+        )
+    return warning
+
+
+def do_remove(view: View, label: str | None, answer: str | None) -> View:
+    """터미널 없이 삭제 확인 답을 해석하고 슬롯과 목록을 갱신한다."""
+    if not view.rows:
+        return replace(view, message="No accounts yet", confirmation="")
+    chosen = _account_label(view, label)
+    if chosen is None:
+        return replace(
+            view,
+            message="Move to an account first, then press d",
+            confirmation="",
+        )
+    if not credits_core.said_yes(answer):
+        return replace(view, message="Left it alone", confirmation="")
+
+    carry = _carry(view)
+    try:
+        removed = account_slots.remove(view.settings, chosen)
+    except account_slots.SlotRefusal as exc:
+        return replace(view, message=_slot_refusal_message(exc), confirmation="")
+    except OSError as exc:
+        return build_view(
+            view.settings,
+            select=chosen,
+            message=f"Remove failed: {exc}",
+            carry=carry,
+        )
+
+    carry.pop(chosen, None)
+    message = f"Removed {chosen}"
+    if removed.active:
+        message += (
+            ". Live credentials are untouched. Automatic switching stops until you adopt "
+            "this account under a label"
+        )
+    return build_view(
+        view.settings,
+        cursor=view.cursor,
+        message=message,
+        carry=carry,
+    )
 
 
 def do_switch(view: View) -> View:
@@ -1976,6 +2155,37 @@ def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - �
     return apply_spend(view, _prompt(stdscr, asked, drawn))
 
 
+def _rename_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - 터미널 필요
+    """curses 입력 한 줄을 순수한 이름 변경 동작에 건넨다."""
+    asked = rename_prompt(view)
+    row = selected_row(view)
+    if asked is None or row is None:
+        return do_rename(view, None, None)
+    return do_rename(view, row.label, _prompt(stdscr, asked, drawn))
+
+
+def _remove_here(stdscr, view: View, colored: bool) -> View:  # pragma: no cover - 터미널 필요
+    """삭제 경고 전체를 먼저 그린 뒤 짧은 기본-No 입력만 받는다."""
+    row = selected_row(view)
+    if row is None:
+        return do_remove(view, None, None)
+    try:
+        warning = remove_warning(view, row.label)
+    except account_slots.SlotRefusal as exc:
+        return replace(view, message=_slot_refusal_message(exc))
+    except OSError as exc:
+        return replace(view, message=f"Could not read slot: {exc}")
+    if warning is None:
+        return do_remove(view, None, None)
+
+    warned = replace(view, message="", confirmation=warning)
+    drawn = _paint(stdscr, warned, colored)
+    # 질문이 뜨기 전에 들어온 키는 삭제 승인으로 해석하지 않는다.
+    curses.flushinp()
+    answer = _prompt(stdscr, "  Delete this slot? [y/N] ", drawn)
+    return do_remove(warned, row.label, answer)
+
+
 def _adopt_label(view: View) -> str:
     """`a` 가 물을 문구. **어느 계정을 보관하는지**를 이름에 넣는다.
 
@@ -2433,6 +2643,12 @@ def _loop(
             # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 배경에서 채운다.
             view = do_switch(view)
             kick(auto_probe_targets(view, attempted))
+            curses.flushinp()
+        elif account_command_for(key) == "rename":
+            view = _rename_here(stdscr, view, drawn)
+            curses.flushinp()
+        elif account_command_for(key) == "remove":
+            view = _remove_here(stdscr, view, colored)
             curses.flushinp()
         elif key in (ord("r"), ord("R")):
             # 사용자가 명시적으로 시켰으므로 자동 조회의 억제를 푼다 — 일시적인

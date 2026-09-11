@@ -130,6 +130,11 @@ def drifted(settings: config.Settings) -> Finding | None:
     expected = log.last_switch(settings)
     if expected is None:
         return None  # 아직 한 번도 안 바꿨다 — 견줄 것이 없다
+    if expected not in store.labels(settings):
+        # 원장이 기억하는 도착지가 이제 슬롯이 아니다 — 이름을 바꿨거나 지웠다. 원장은 그 일을
+        # 적지 않으므로 견줄 기준이 없다. 여기서 경고하면 사용자가 방금 화면에서 한 이름 바꾸기를
+        # "우리를 거치지 않고 자격증명이 바뀌었다" 로 읽게 된다.
+        return None
     active = store.active_label(settings)
     if active == expected:
         return None
