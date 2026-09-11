@@ -203,7 +203,7 @@ def test_missing_root_has_no_labels(settings: config.Settings) -> None:
 
 def test_unregistered_target_cannot_replace_live_auth(settings: config.Settings) -> None:
     live = store.active_auth(settings)
-    live.parent.mkdir(parents=True)
+    live.parent.mkdir(parents=True, exist_ok=True)  # 설정 로드가 활성 홈을 이미 만든다
     live.write_bytes(b"preserve")
     with pytest.raises(store.StoreError, match="label is not registered"):
         store.switch(settings, "missing")

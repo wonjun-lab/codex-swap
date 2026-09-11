@@ -23,3 +23,12 @@ jobs:
       - run: uv run ruff check
       - run: uv run ruff format --check
       - run: uv run pytest
+      # **처음 설치해서 codex 를 쳐 보는 것**은 여기서만 잡힌다. 단위 테스트가 1180건 전부
+      # 통과하는 상태에서 실기기가 `CODEX_HOME points to "…/.codex-cli", but that path does
+      # not exist` 로 죽었다 — 가짜 홈으로 재는 테스트는 그 디렉토리를 미리 만들어 놓고
+      # 시작하므로 아무도 그 구멍을 밟지 않았다.
+      - run: npm install -g @openai/codex
+      - name: 설치 흐름 e2e (빈 HOME · 진짜 codex)
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/uv-python
+        run: bash tests/e2e-install.sh

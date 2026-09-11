@@ -541,7 +541,17 @@ uv sync
 uv run pytest
 uv run ruff check
 uv run ruff format --check
+
+# installing it for the first time and then typing `codex`
+bash tests/e2e-install.sh
 ```
+
+The last one goes where the unit tests cannot. It installs codex-swap into an empty throwaway
+HOME and starts the real codex through the wrapper — on a fresh machine with and without the
+ChatGPT app, on a machine that gets the app later, and across an uninstall and reinstall. That
+is where a missing `~/.codex-cli` surfaced while all 1180 unit tests passed: the tests build
+their fake homes before they start, so nobody ever stepped in that hole. It needs `codex` on
+PATH, touches neither your home nor your accounts, and CI runs it on Linux and macOS.
 
 The design notes — the contracts, the places this port was easy to get wrong, and the
 divergences that were deliberate — are in [`docs/design/`](docs/design/). They are
