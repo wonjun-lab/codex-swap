@@ -112,6 +112,13 @@ def test_swap_first_then_codex_then_accounts(machine: Machine, capsys) -> None:
     assert code == 0, out
     assert "ready" in out, out
 
+    # **파일이 실제로 생겼는지 본다.** "wired" 라고 적는 것과 놓는 것은 다르다 — 출력만
+    # 재던 동안, 놓지 않고 경로만 찍도록 바꿔도 테스트가 통과했다.
+    wrapper = machine.home / ".local/bin/codex"
+    assert wrapper.is_file(), "배선했다고 해 놓고 파일이 없다"
+    assert wrapper.stat().st_mode & 0o111, "실행 권한이 없어 PATH 에서 안 잡힌다"
+    assert "codex-swap exec" in wrapper.read_text()
+
 
 # ── 순서 2: 잘 쓰던 기계에 앱이 나중에 들어온다 ────────────────────────────
 
