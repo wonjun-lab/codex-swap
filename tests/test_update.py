@@ -313,6 +313,42 @@ def test_a_brew_head_install_is_told_about_fetch_head() -> None:
         selfupdate.upgrade_command(install)
 
 
+def test_a_stable_homebrew_install_is_told_plain_brew_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**첫 릴리스부터 brew 는 안정판으로 깔린다.** 그때도 `--fetch-HEAD` 를 안내하면 틀린 말이다.
+
+    brew 의 설치 기록(`direct_url.json`)은 빌드하던 임시 디렉토리를 가리켜 둘을 가르지
+    못한다. 가르는 것은 keg 이름이다 — 안정판은 버전 번호, HEAD 는 `HEAD-<커밋>`.
+    """
+    _direct_url(monkeypatch, _git_install())
+    install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/0.2.0/libexec")
+    assert install is not None
+    with pytest.raises(selfupdate.UpdateError) as caught:
+        selfupdate.upgrade_command(install)
+    assert "Run: brew upgrade codex-swap" in str(caught.value)
+    assert "--fetch-HEAD" not in str(caught.value)
+
+
+def test_a_head_homebrew_install_is_told_to_fetch_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HEAD 로 깐 formula 는 `brew upgrade` 가 **건너뛴다** — 옵션을 안 주면 옛 판에 갇힌다."""
+    _direct_url(monkeypatch, _git_install())
+    install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/HEAD-1a2b3c4/libexec")
+    assert install is not None
+    with pytest.raises(selfupdate.UpdateError, match="brew upgrade --fetch-HEAD codex-swap"):
+        selfupdate.upgrade_command(install)
+
+
+def test_homebrew_is_recognised_without_an_install_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기록을 못 읽어도 **brew 의 우리 안이라는 것**은 경로로 안다.
+
+    모른다고 답하면 `update` 가 uv 재설치 명령을 보여 준다 — brew 사용자에게 틀린 길이다.
+    """
+    monkeypatch.setattr(selfupdate, "_dist_direct_url", lambda: None)
+    install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/0.2.0/libexec")
+    assert install is not None and install.manager == "brew"
+
+
 def test_the_installer_script_is_shipped_and_runnable() -> None:
     """`curl … | sh` 로 안내해 두고 파일이 없으면 그 한 줄이 404 를 내려받는다."""
     import subprocess as sp
