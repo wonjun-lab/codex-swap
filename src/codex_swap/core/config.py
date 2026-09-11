@@ -304,8 +304,13 @@ def load(environ: dict[str, str] | None = None) -> Settings:
     # 다시 열린다. 홈을 **정하는** 자리가 한 곳이니 만드는 자리도 여기 한 곳이다.
     # 실패는 삼킨다 — `load` 는 `rotate` 가 매 codex 호출에 부르는 자리라 여기서 예외가
     # 새면 그 트레이스백이 모든 호출에 실린다. 못 만들었으면 codex 가 위 메시지로 말한다.
-    with contextlib.suppress(OSError):
-        default_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    #
+    # 절대 경로일 때만 만든다. `CODEX_ACCOUNT_DEFAULT_HOME="~/x"` 처럼 따옴표 안에서 `~` 가 안
+    # 풀린 값이나 상대 경로는 **현재 디렉토리** 기준이 되는데, 이 자리는 codex 를 칠 때마다
+    # 지나가므로 작업하던 프로젝트마다 `~/x` 폴더를 흘리게 된다(교차 검토 재현).
+    if default_home.is_absolute():
+        with contextlib.suppress(OSError):
+            default_home.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     file_cfg = _file_config(accounts_dir)
 

@@ -707,6 +707,21 @@ def test_the_plain_home_is_there_too_without_the_app(box) -> None:
     assert (box.home / ".codex").is_dir()
 
 
+@pytest.mark.parametrize("told", ["~/unexpected", "relative-home"], ids=["tilde-kept", "relative"])
+def test_a_relative_home_is_not_created_in_the_cwd(box, tmp_path, told: str) -> None:
+    """**codex 를 칠 때마다 작업하던 폴더에 `~` 디렉토리를 흘릴 뻔했다.**
+
+    따옴표 안에서 `~` 가 안 풀린 값이나 상대 경로는 현재 디렉토리 기준이다. 활성 홈을 만드는
+    자리는 매 codex 호출의 전환이 지나가므로, 거기서 만들면 프로젝트마다 흔적이 남는다(교차 검토).
+    """
+    work = tmp_path / "some-project"
+    work.mkdir()
+    box.mp.chdir(work)
+    box.mp.setenv("CODEX_ACCOUNT_DEFAULT_HOME", told)
+    config.load()
+    assert list(work.iterdir()) == [], list(work.iterdir())
+
+
 # ── update: brew 로 깐 사람을 옛 판에 가두지 않는다 ────────────────────────────
 
 
