@@ -37,6 +37,9 @@ and 2026-09-11.
 - `codex-swap home` tells a wrapper of your own which home to start codex in, and `init` checks
   that such a wrapper really passes it on.
 - `doctor` finds slots that hold the same refresh token as the app and never probes them.
+- `init` points those slots at `add <label> --force` and only suggests switching from a slot
+  that was signed in on its own. Switching from a shared slot would have handed the same token
+  to a third place.
 
 ### Tests
 
