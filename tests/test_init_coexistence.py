@@ -101,6 +101,65 @@ def test_init_never_tells_you_to_copy_the_apps_login(box, capsys) -> None:
     assert "codex-swap add" in out, out
 
 
+def _app_login_copied_into(box, *labels: str) -> None:
+    """앱의 로그인을 베껴 등록한 슬롯. 활성 홈(`~/.codex-cli`)은 아직 비어 있다."""
+    s = config.load()
+    _auth(box.home / ".codex/auth.json", "app@example.com", refresh="rt-app")
+    _auth(s.accounts_dir / "work/auth.json", "work@example.com", refresh="rt-app")
+    _auth(s.accounts_dir / "personal/auth.json", "personal@example.com", refresh="rt-personal")
+    for label in labels:
+        _auth(s.accounts_dir / f"{label}/auth.json", f"{label}@example.com", refresh="rt-app")
+
+
+def test_init_does_not_fill_the_home_from_a_slot_that_shares_the_apps_login(box, capsys) -> None:
+    """**그 슬롯으로 `use` 하면 같은 refresh token 을 쥔 곳이 셋이 된다.**
+
+    예전 안내는 슬롯이 있기만 하면 "한 번 전환해서 채워라" 였다. 앱 기기에서는 그 슬롯이 대개
+    앱의 로그인을 베낀 것이라, 안내대로 하면 공유가 하나 더 늘었다.
+    """
+    box.app.mkdir(parents=True)
+    _app_login_copied_into(box)
+    code = cli.main(["init"])
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "codex-swap add work --force" in out, out
+    assert "codex-swap use work" not in out, out
+    assert "codex-swap use personal" in out, out
+    assert "codex-swap add personal --force" not in out, out
+
+
+def test_init_offers_no_switch_when_every_slot_shares_the_apps_login(box, capsys) -> None:
+    box.app.mkdir(parents=True)
+    _app_login_copied_into(box, "personal")
+    cli.main(["init"])
+    out = capsys.readouterr().out
+    assert "codex-swap use" not in out, out
+    assert "codex-swap add work --force" in out, out
+    assert "codex-swap add personal --force" in out, out
+
+
+def test_init_flags_a_shared_slot_even_when_the_home_is_already_filled(box, capsys) -> None:
+    """홈이 채워져 있어도 **공유는 남는다** — 앱이나 그 슬롯 중 먼저 갱신하는 쪽이 이긴다."""
+    box.app.mkdir(parents=True)
+    _app_login_copied_into(box)
+    _auth(config.load().default_home / "auth.json", "personal@example.com", refresh="rt-personal")
+    _on_path(box, '#!/bin/bash\nexport CODEX_HOME="$(codex-swap home)"\nexec real "$@"\n')
+    code = cli.main(["init"])
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "codex-swap add work --force" in out, out
+    assert "ready" not in out, out
+
+
+def test_init_does_not_mention_sharing_where_there_is_no_app(box, capsys) -> None:
+    """앱이 없으면 `~/.codex` 는 codex-swap 의 활성 홈이다. 슬롯과 같은 토큰인 것이 정상이다."""
+    _auth(box.home / ".codex/auth.json", "work@example.com", refresh="rt-work")
+    _register_two(box)
+    _on_path(box, '#!/bin/bash\ncodex-swap rotate >/dev/null || true\nexec real "$@"\n')
+    assert cli.main(["init"]) == 0
+    assert "--force" not in capsys.readouterr().out
+
+
 def test_init_still_offers_adopt_where_there_is_no_app(box, capsys) -> None:
     _auth(box.home / ".codex/auth.json", "me@example.com")
     cli.main(["init"])
