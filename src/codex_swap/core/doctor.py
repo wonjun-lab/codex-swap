@@ -190,6 +190,24 @@ def _shared_slot(label: str) -> Finding:
     )
 
 
+def _matching(settings: config.Settings, labels: list[str], app_fp: str) -> list[str]:
+    return [
+        label
+        for label in labels
+        if _refresh_fingerprint(store.slot_auth(settings, label)) == app_fp
+    ]
+
+
+def slots_shared_with_app(settings: config.Settings, labels: list[str]) -> list[str]:
+    """앱이 지금 쥔 refresh token 을 같이 쥔 **슬롯 이름**. 앱이 없으면 빈 목록.
+
+    `init` 이 안내를 고르려고 쓴다. 이 슬롯으로 `use` 하면 같은 토큰을 쥔 곳이 셋이 된다 —
+    그래서 전환하라고 하지 않고 따로 로그인시키라고 해야 한다. 지문만 견주고 프로브하지 않는다.
+    """
+    app_fp = _app_token()
+    return [] if app_fp is None else _matching(settings, labels, app_fp)
+
+
 def shared_with_app(settings: config.Settings, labels: list[str] | None = None) -> list[Finding]:
     """**지금 앱이 쥔 refresh token 과 같은 것**을 쥔 자리가 있나.
 
@@ -231,9 +249,7 @@ def shared_with_app(settings: config.Settings, labels: list[str] | None = None) 
         return found
 
     names = store.labels(settings) if labels is None else labels
-    for label in names:
-        if _refresh_fingerprint(store.slot_auth(settings, label)) == app_fp:
-            found.append(_shared_slot(label))
+    found.extend(_shared_slot(label) for label in _matching(settings, names, app_fp))
     if not same_home and _refresh_fingerprint(ours / "auth.json") == app_fp:
         found.append(
             Finding(

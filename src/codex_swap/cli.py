@@ -1480,13 +1480,28 @@ def cmd_init(settings: config.Settings) -> int:
     # 4) 홈이 막 바뀌었다면 로그인이 아직 다른 자리에 있다. **복사하라고 하지 않는다** —
     #    앱의 `auth.json` 을 베끼면 같은 refresh token 을 둘이 쥐게 되어, 먼저 갱신하는 쪽이
     #    다른 쪽을 로그아웃시킨다. 채우는 길은 슬롯에서의 전환이나 새 로그인이다.
+    #    **앱과 refresh token 을 나눠 쥔 슬롯으로는 채우라고 하지 않는다.** 앱의 로그인을 베껴
+    #    등록한 슬롯이 그렇다. 거기서 `use` 하면 같은 토큰을 쥔 곳이 셋이 되고, 예전 안내가
+    #    정확히 그 전환을 시켰다. 그런 슬롯은 따로 다시 로그인시켜야 공유가 끊긴다.
     labels = store.labels(settings)
+    shared = doctor.slots_shared_with_app(settings, labels)
+    for label in shared:
+        ok = False
+        print(f"  TODO  {label} holds the same login as the ChatGPT app — whichever refreshes")
+        print("        first signs the other out. Sign it in on its own:")
+        print(f"          codex-swap add {label} --force")
+    own = [label for label in labels if label not in shared]
     seed = wiring.seed_source(settings.default_home)
     if seed is not None:
         ok = False
         print(f"  TODO  your login is still in {seed}, not in {settings.default_home}")
-        if labels:
-            print("        switch once to fill it: codex-swap use <label>")
+        if own:
+            name = own[0] if len(own) == 1 else "<label>"
+            print(f"        switch once to fill it: codex-swap use {name}")
+            if shared:
+                print(f"        (from {', '.join(own)} — not from a slot above)")
+        elif labels:
+            print("        switch once to fill it after signing a slot in on its own (above)")
         else:
             print("        sign in here rather than copying it over:")
             print("          codex-swap add work")
