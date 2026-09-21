@@ -1570,7 +1570,15 @@ def cmd_init(settings: config.Settings) -> int:
     #    앞에** 둔다. 뒤에 두면 물려받은 홈과 어긋날 때 전환 가드가 멈춘다.
     state = wiring.inspect(shell)
     if state.kind == wiring.OURS:
-        print(f"  ok    wired: {state.path}")
+        # The marker explicitly makes this wrapper ours to regenerate. Thin wrappers still carry
+        # a transport contract: older copies called ``exec "$@"`` without the separator, so
+        # leading Codex flags were consumed by this CLI's argparse before reaching Codex.
+        try:
+            placed = wiring.install_wrapper(state.path)
+            print(f"  ok    wired: {placed}")
+        except OSError as exc:
+            ok = False
+            print(f"  FAIL  could not refresh {state.path}: {exc}")
     elif state.complete(apart):
         configured_store = credentials.configured_store(settings.default_home)
         if configured_store in credentials.NON_FILE_STORES and not state.managed_exec:
@@ -1581,7 +1589,7 @@ def cmd_init(settings: config.Settings) -> int:
             )
             print("        so the direct Codex launch can read different credentials.")
             print("        Delegate the final launch so both use the managed file backend:")
-            print('          exec env CODEX_ACCOUNT_BIN="$real_codex" codex-swap exec "$@"')
+            print('          exec env CODEX_ACCOUNT_BIN="$real_codex" codex-swap exec -- "$@"')
         else:
             print(f"  ok    codex is already wired through {state.path}")
     elif state.kind in (wiring.EXTERNAL, wiring.PROFILE):
@@ -1886,7 +1894,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    exec_argv: list[str] | None = None
+    if raw_argv[:1] == ["exec"]:
+        # argparse consumes ``--help`` and rejects unknown leading options before a REMAINDER
+        # positional gets them. A wrapper must be able to forward every Codex argv byte-for-byte,
+        # so keep the raw tail outside argparse. Wrappers insert one ``--`` transport separator;
+        # remove exactly that one. A user's own leading ``--`` is therefore represented by two
+        # separators and survives.
+        exec_argv = raw_argv[1:]
+        if exec_argv[:1] == ["--"]:
+            exec_argv = exec_argv[1:]
+        args = parser.parse_args(["exec"])
+    else:
+        args = parser.parse_args(raw_argv)
     if args.command is None:
         # 인자 없이 부르면 TUI 로 간다. 단, **TTY 일 때만** — 파이프나 스크립트에서
         # 부르면 대화형 화면이 걸려 영영 안 끝난다. 그 경우엔 지금까지처럼 도움말이다.
@@ -1973,7 +1994,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "init":
                 return cmd_init(settings)
             case "exec":
-                return cmd_exec(settings, args.args)
+                return cmd_exec(settings, exec_argv if exec_argv is not None else args.args)
             case "home":
                 return cmd_home(settings)
             case "update" | "upgrade":

@@ -146,7 +146,7 @@ def test_the_wrapper_stays_thin_so_it_never_goes_stale(_isolated_home: Path) -> 
     분리를 모르고, 우리는 그것을 고치라고 알릴 방법이 없다. 판단은 전부 `exec` 안에 있다.
     """
     body = wiring.WRAPPER_BODY
-    assert "codex-swap exec" in body
+    assert 'exec codex-swap exec -- "$@"' in body
     assert "CODEX_HOME" not in body, "판단이 파일로 새어 나왔다"
     assert len(body.strip().splitlines()) <= 3, body
 

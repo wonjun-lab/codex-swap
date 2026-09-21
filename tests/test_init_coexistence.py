@@ -33,6 +33,21 @@ def _register_two(box) -> config.Settings:
 # ── init: 그 판정을 사람에게 어떻게 말하나 ─────────────────────────────────────
 
 
+def test_init_regenerates_its_owned_wrapper_with_the_transport_separator(box, capsys) -> None:
+    _register_two(box)
+    old = (
+        "#!/bin/sh\n"
+        f"{wiring.MARKER} — do not edit; regenerate with: codex-swap init\n"
+        'exec codex-swap exec "$@"\n'
+    )
+    target = _on_path(box, old)
+
+    assert cli.main(["init"]) == 0
+    assert target.read_text() == wiring.WRAPPER_BODY
+    assert 'exec codex-swap exec -- "$@"' in target.read_text()
+    assert "wired" in capsys.readouterr().out
+
+
 def test_init_flags_a_half_wired_machine_instead_of_calling_it_ready(box, capsys) -> None:
     """계정을 둘 등록해 둔다 — 종료 코드 1 이 **배선 때문**이라는 것을 가려내려고."""
     box.app.mkdir(parents=True)
@@ -79,7 +94,7 @@ def test_init_flags_direct_external_wrapper_with_keyring_backend(box, capsys) ->
 
     assert code == 1, out
     assert "keyring" in out
-    assert 'codex-swap exec "$@"' in out
+    assert 'codex-swap exec -- "$@"' in out
     assert "ready" not in out
 
 

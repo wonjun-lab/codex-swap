@@ -117,7 +117,7 @@ MARKER = "# codex-swap wrapper"
 
 WRAPPER_BODY = f"""#!/bin/sh
 {MARKER} — do not edit; regenerate with: codex-swap init
-exec codex-swap exec "$@"
+exec codex-swap exec -- "$@"
 """
 """**얇게 둔다.** 판단은 전부 `codex-swap exec` 안에 있다."""
 

@@ -26,6 +26,45 @@ from codex_swap.core import config, discovery, wiring
 # ── exec: 사용자가 codex 를 칠 때마다 지나는 자리 ─────────────────────────────
 
 
+@pytest.mark.parametrize(
+    ("raw", "forwarded"),
+    [
+        (["exec", "--help"], ["--help"]),
+        (["exec", "--version"], ["--version"]),
+        (["exec", "-c", "model=x", "login"], ["-c", "model=x", "login"]),
+        (["exec", "--", "--remote", "host:1234"], ["--remote", "host:1234"]),
+        (["exec", "--", "--", "literal"], ["--", "literal"]),
+    ],
+)
+def test_main_forwards_raw_exec_argv(
+    box, monkeypatch: pytest.MonkeyPatch, raw: list[str], forwarded: list[str]
+) -> None:
+    """The wrapper separator is removed once; a user's own ``--`` remains."""
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "cmd_exec", lambda _settings, argv: seen.append(list(argv)) or 0)
+
+    assert cli.main(raw) == 0
+    assert seen == [forwarded]
+
+
+def test_main_exec_reaches_execve_with_leading_config_and_literal_separator(
+    box, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    seen: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(cli.discovery, "resolve_codex_bin", lambda: "/opt/codex")
+
+    def fake_execve(binary: str, argv: list[str], _env: dict[str, str]) -> None:
+        seen.append((binary, argv))
+        raise OSError("synthetic stop")
+
+    monkeypatch.setattr(cli.os, "execve", fake_execve)
+    explicit = 'cli_auth_credentials_store="keyring"'
+
+    assert cli.main(["exec", "--", "-c", explicit, "--", "literal"]) == 1
+    assert seen == [("/opt/codex", ["/opt/codex", "-c", explicit, "--", "literal"])]
+    assert "could not start codex" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("sub", ["login", "logout", "mcp-server"])
 def test_exec_does_not_switch_before_login_logout_or_a_long_lived_server(box, sub: str) -> None:
     """dotfiles wrapper 가 오래 지켜 온 규칙이다. 빠뜨리면 로그아웃이 **다른 계정**에 떨어진다."""

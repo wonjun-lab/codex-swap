@@ -93,7 +93,7 @@ mentioning things you have already done.
 Wiring is not something it asks you to do. `init` places a two-line `codex` wrapper in
 `~/.local/bin` and everything else happens behind it: the policy runs before each codex
 call, and on machines with the ChatGPT desktop app your accounts are kept out of its way.
-The wrapper only delegates (`exec codex-swap exec "$@"`), so it cannot go stale — upgrade
+The wrapper only delegates (`exec codex-swap exec -- "$@"`), so it cannot go stale — upgrade
 the package and the behaviour follows.
 
 If something already occupies `~/.local/bin/codex`, `init` leaves it alone and says so.
@@ -127,7 +127,7 @@ launch to `codex-swap exec`. That keeps the home, credential backend, daemon fre
 rotation decision together. If the wrapper already resolved the upstream binary, pass it in:
 
 ```bash
-exec env CODEX_ACCOUNT_BIN="$real_codex" codex-swap exec "$@"
+exec env CODEX_ACCOUNT_BIN="$real_codex" codex-swap exec -- "$@"
 ```
 
 The older `export CODEX_HOME=...; codex-swap rotate; exec "$real_codex" ...` form can bypass
@@ -231,13 +231,13 @@ the policy on some invocations and not others — a shell function does the same
 
 ```bash
 codex() {
-  command codex-swap exec "$@"
+  command codex-swap exec -- "$@"
 }
 ```
 
 ```fish
 function codex
-    command codex-swap exec $argv
+    command codex-swap exec -- $argv
 end
 ```
 
