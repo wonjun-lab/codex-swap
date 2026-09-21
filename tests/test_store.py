@@ -210,6 +210,56 @@ def test_unregistered_target_cannot_replace_live_auth(settings: config.Settings)
     assert live.read_bytes() == b"preserve"
 
 
+def test_failed_sync_back_keeps_the_live_credential(
+    settings: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """떠나는 슬롯을 못 갱신했으면 활성 파일을 바꾸면 안 된다.
+
+    활성 파일은 갱신된 refresh token 의 유일한 사본일 수 있다. sync-back 오류를 삼키고
+    대상을 설치하면 그 사본을 되돌릴 수 없게 잃는다.
+    """
+    live = store.active_auth(settings)
+    a = store.slot_auth(settings, "a")
+    b = store.slot_auth(settings, "b")
+    for path, payload in ((live, b"live-a"), (a, b"old-a"), (b, b"target-b")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    monkeypatch.setattr(store, "active_label", lambda _: "a")
+    original = store._install
+
+    def fail_sync(src: Path, dst: Path, *, keep_mtime: bool) -> None:
+        if dst == a:
+            raise PermissionError("slot is read-only")
+        original(src, dst, keep_mtime=keep_mtime)
+
+    monkeypatch.setattr(store, "_install", fail_sync)
+    with pytest.raises(store.StoreError, match="save active credentials"):
+        store.switch(settings, "b")
+
+    assert live.read_bytes() == b"live-a"
+    assert a.read_bytes() == b"old-a"
+
+
+def test_unregistered_live_credential_requires_explicit_discard(
+    settings: config.Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = store.active_auth(settings)
+    target = store.slot_auth(settings, "b")
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_bytes(b"unregistered-live")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"target-b")
+    monkeypatch.setattr(store, "active_label", lambda _: None)
+
+    with pytest.raises(store.UnregisteredActive, match="not in any slot"):
+        store.switch(settings, "b")
+    assert live.read_bytes() == b"unregistered-live"
+
+    store.switch(settings, "b", allow_discard=True)
+    assert live.read_bytes() == b"target-b"
+
+
 def test_the_temp_credential_file_is_never_wider_than_0600(tmp_path, monkeypatch) -> None:
     """전이 중에도 토큰이 남에게 보이면 안 된다.
 

@@ -793,12 +793,14 @@ def test_add_force_replaces_a_rotten_slot_without_removing_it_first(env, capsys)
 
     def runner(argv, env_):
         calls.append((argv, env_))
-        _write_auth(store.slot_auth(env, "b"), "renewed@example.com")
+        _write_auth(Path(env_["CODEX_HOME"]) / "auth.json", "renewed@example.com")
         return 0
 
+    _cache_usage(env, "b", 99)
     assert cli.cmd_add(env, "b", force=True, runner=runner) == 0
     assert len(calls) == 1
     assert identity.email_of(store.slot_auth(env, "b")) == "renewed@example.com"
+    assert cache.read_stale(env, "b") is None, "교체 전 계정의 사용량이 새 로그인에 붙었다"
 
 
 def test_add_without_force_still_refuses_an_existing_label(env, capsys) -> None:

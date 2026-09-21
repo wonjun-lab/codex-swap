@@ -115,6 +115,56 @@ def test_a_failed_switch_keeps_the_cursor_where_it_was(
     assert tui.selected_row(after).label == "shared", tui.selected_row(after)
 
 
+def test_switch_rechecks_an_unregistered_login_after_the_view_was_built(
+    env: config.Settings,
+) -> None:
+    view = _on_shared(env)
+    live = store.active_auth(env)
+    _auth(live, "signed-in-after-render@example.com")
+    before = live.read_bytes()
+
+    after = tui.do_switch(view)
+
+    assert after.switch_armed is True
+    assert "signed-in-after-render@example.com" in after.message
+    assert live.read_bytes() == before
+
+
+def test_switch_does_not_silently_discard_an_unreadable_live_auth(env: config.Settings) -> None:
+    live = store.active_auth(env)
+    live.write_bytes(b"{not-json-but-still-the-only-copy")
+    before = live.read_bytes()
+    view = _on_shared(env)
+    assert view.active_email is None
+
+    after = tui.do_switch(view)
+
+    assert after.switch_armed is True
+    assert "unknown account" in after.message
+    assert live.read_bytes() == before
+
+
+def test_switch_reconfirms_when_the_orphan_login_changes_after_warning(
+    env: config.Settings,
+) -> None:
+    view = _on_shared(env)
+    live = store.active_auth(env)
+    _auth(live, "orphan-a@example.com")
+
+    warned = tui.do_switch(view)
+    _auth(live, "orphan-b@example.com")
+    before_b = live.read_bytes()
+
+    rearmed = tui.do_switch(warned)
+    assert rearmed.switch_armed is True
+    assert "orphan-b@example.com" in rearmed.message
+    assert live.read_bytes() == before_b
+
+    switched = tui.do_switch(rearmed)
+    assert switched.switch_armed is False
+    assert "Switched to shared" in switched.message
+
+
 # ── 디스크를 못 읽을 때 ─────────────────────────────────────────────────────
 
 

@@ -42,8 +42,15 @@ class Machine:
         monkeypatch.setattr(wiring, "DEFAULT_HOME", home / ".codex")
         monkeypatch.setattr(wiring, "ISOLATED_PATH", home / ".codex-cli")
         monkeypatch.setattr(wiring, "WRAPPER", home / ".local/bin/codex")
-        # PATH 에 이 기기의 진짜 wrapper 가 걸리면 배선 판정이 그것을 잡는다.
-        monkeypatch.setattr(wiring.shutil, "which", lambda _: None)
+
+        # init 전에는 없고 설치 뒤에는 이 기기의 wrapper가 PATH 첫 자리에 생긴다. 고정
+        # None이면 새 PATH 검증이 실제 배선 성공도 실패로 오인해, 이 전이 테스트가
+        # "PATH가 없다"만 재게 된다.
+        def local_wrapper(_name: str) -> str | None:
+            candidate = home / ".local/bin/codex"
+            return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+        monkeypatch.setattr(wiring.shutil, "which", local_wrapper)
 
         def resolve():
             if not self._codex:

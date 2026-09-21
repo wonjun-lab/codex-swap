@@ -680,6 +680,7 @@ class Wiring:
     kind: str
     path: Path | None = None
     passes_home: bool = False
+    managed_exec: bool = False
 
     def complete(self, isolate: bool) -> bool:
         """이 배선으로 전환이 **실제로 codex 에 닿는가.**
@@ -705,11 +706,16 @@ def inspect(shell: str) -> Wiring:
         target = Path(found)
         head = _head(target)
         if MARKER in head:
-            return Wiring(OURS, target, passes_home=True)
+            return Wiring(OURS, target, passes_home=True, managed_exec=True)
         if uses_legacy_rotator(head):
             return Wiring(LEGACY, target)
         if calls_us(head):
-            return Wiring(EXTERNAL, target, passes_home=passes_home(head))
+            return Wiring(
+                EXTERNAL,
+                target,
+                passes_home=passes_home(head),
+                managed_exec="exec" in _calls(head, "codex-swap"),
+            )
 
     for name in (profile_for(shell), "~/.bashrc", "~/.zshrc", "~/.profile"):
         path = Path(name).expanduser()
@@ -718,7 +724,12 @@ def inspect(shell: str) -> Wiring:
         except OSError:
             continue
         if calls_us(text):
-            return Wiring(PROFILE, path, passes_home=passes_home(text))
+            return Wiring(
+                PROFILE,
+                path,
+                passes_home=passes_home(text),
+                managed_exec="exec" in _calls(text, "codex-swap"),
+            )
 
     own = WRAPPER.expanduser()
     if own.exists() and not wrapper_here(own):

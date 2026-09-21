@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from codex_swap.core import config, discovery, identity, log, probe, store
+from codex_swap.core import config, credentials, discovery, identity, log, probe, store
 from codex_swap.core.types import ProbeOutcome
 
 OK = "ok"
@@ -48,7 +48,7 @@ def _login_hint(label: str) -> str:
     "다시 로그인하세요" 만으로는 SSH 에서 또 같은 결과가 나온다 — 사용자가 겪은 그대로다.
     """
     return (
-        f"log in again for this slot: codex-swap add {label}. "
+        f"log in again for this slot: codex-swap add {label} --force. "
         "If you are on a remote box over SSH, do it while sitting at that machine or "
         "forward the OAuth callback port — a browser on your laptop cannot reach the "
         "listener on the remote, and the login half-finishes without saying so"
@@ -159,30 +159,12 @@ def _refresh_fingerprint(path) -> str | None:
     값이 아니라 해시만 돌려준다 — 견주는 데는 그걸로 충분하고, 진단 출력이나 예외 메시지에
     토큰 조각이 섞일 여지를 처음부터 없앤다.
     """
-    import hashlib
-    import json
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    tokens = data.get("tokens") if isinstance(data, dict) else None
-    token = tokens.get("refresh_token") if isinstance(tokens, dict) else None
-    if not isinstance(token, str) or not token:
-        return None
-    # `surrogatepass` 로 인코딩한다. JSON 은 짝 없는 surrogate 를 담을 수 있고, 그대로 `encode()`
-    # 하면 `UnicodeEncodeError` 가 나는데 그 예외의 `.object` 에 **토큰 원문이 통째로** 실린다.
-    # 정상 토큰에서는 안 생기지만, 진단 도구가 비밀을 흘리는 길은 하나도 남기지 않는다.
-    return hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+    return credentials.refresh_fingerprint(path)
 
 
 def _app_token() -> str | None:
     """지금 앱이 쥔 refresh token 의 지문. 앱이 없거나 로그인이 없으면 None."""
-    from codex_swap.core import wiring
-
-    if not wiring.app_installed():
-        return None
-    return _refresh_fingerprint(wiring.DEFAULT_HOME.expanduser() / "auth.json")
+    return credentials.app_refresh_fingerprint()
 
 
 def _shared_slot(label: str) -> Finding:

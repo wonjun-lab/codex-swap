@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from codex_swap.core import probe
+from codex_swap.core import credentials, probe
 from codex_swap.core.types import Credit, ProbeOutcome, ProbeResult, Usage
 
 FIXTURES = Path(__file__).parent / "fixtures" / "probe"
@@ -110,6 +110,54 @@ def server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Server]:
     yield fake
     if fake.events():
         fake.assert_reaped()
+
+
+def _refresh_auth(home: Path, token: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text(json.dumps({"tokens": {"refresh_token": token}}))
+
+
+def test_shared_app_login_is_not_probed_or_spawned(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (server.home / "Applications/ChatGPT.app").mkdir(parents=True)
+    app_home = server.home / ".codex"
+    slot_home = server.home / ".codex/accounts/shared"
+    _refresh_auth(app_home, "same-refresh")
+    _refresh_auth(slot_home, "same-refresh")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("shared app credential reached subprocess.Popen")
+
+    monkeypatch.setattr(probe.subprocess, "Popen", forbidden)
+    assert probe.probe(server.path, slot_home) == ProbeResult.unknown()
+    assert server.events() == []
+
+
+def test_distinct_app_and_slot_logins_still_probe(server: Server) -> None:
+    (server.home / "Applications/ChatGPT.app").mkdir(parents=True)
+    _refresh_auth(server.home / ".codex", "app-refresh")
+    _refresh_auth(server.home / ".codex/accounts/independent", "slot-refresh")
+
+    assert probe.probe(server.path, server.home / ".codex/accounts/independent").ok
+
+
+def test_shared_app_login_cannot_consume_a_credit(
+    server: Server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (server.home / "Applications/ChatGPT.app").mkdir(parents=True)
+    app_home = server.home / ".codex"
+    slot_home = server.home / ".codex/accounts/shared"
+    _refresh_auth(app_home, "same-refresh")
+    _refresh_auth(slot_home, "same-refresh")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("shared app credential reached subprocess.Popen")
+
+    monkeypatch.setattr(probe.subprocess, "Popen", forbidden)
+    with pytest.raises(probe.ProbeError, match="shared with the ChatGPT app"):
+        probe.consume_credit(server.path, slot_home, "synthetic-credit")
+    assert server.events() == []
 
 
 @pytest.mark.parametrize(
@@ -433,7 +481,7 @@ def test_lexical_parent_repairs_env_shebang(
     binary_dir = tmp_path / "bin"
     binary_dir.mkdir()
     runtime = binary_dir / "fakenode"
-    runtime.write_text(server.path.read_text().replace('"$@"', '"${2}"'))
+    runtime.write_text(server.path.read_text().replace('"$@"', '"${2}" "${3}" "${4}"'))
     runtime.chmod(0o700)
     target = tmp_path / "package" / "fakecodex"
     target.parent.mkdir()
@@ -475,7 +523,7 @@ def test_boolean_id_cannot_complete_initialize(server: Server) -> None:
     messages = captured()
     server.configure([json.dumps({"id": True, "result": "wrong response"}), *messages])
     proc = subprocess.Popen(
-        [server.path, "app-server"],
+        credentials.managed_argv(server.path, ("app-server",)),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

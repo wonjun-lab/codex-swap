@@ -17,9 +17,9 @@
 
 from __future__ import annotations
 
-from _coexist import _auth, _on_path
+from _coexist import _auth, _on_path, _script
 from codex_swap import cli
-from codex_swap.core import config
+from codex_swap.core import config, wiring
 
 
 def _register_two(box) -> config.Settings:
@@ -62,6 +62,55 @@ def test_init_is_ready_on_a_machine_without_the_app(box, capsys) -> None:
     _on_path(box, '#!/bin/bash\ncodex-swap rotate >/dev/null || true\nexec real "$@"\n')
     assert cli.main(["init"]) == 0
     assert "ready" in capsys.readouterr().out
+
+
+def test_init_flags_direct_external_wrapper_with_keyring_backend(box, capsys) -> None:
+    """auth.json 을 바꿔도 직접 실행된 codex 가 Keychain 을 읽으면 전환이 닿지 않는다."""
+    settings = _register_two(box)
+    (settings.default_home / "config.toml").write_text('cli_auth_credentials_store = "keyring"\n')
+    _on_path(
+        box,
+        '#!/bin/sh\nexport CODEX_HOME="$(codex-swap home)"\n'
+        'codex-swap rotate >/dev/null || true\nexec real "$@"\n',
+    )
+
+    code = cli.main(["init"])
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert "keyring" in out
+    assert 'codex-swap exec "$@"' in out
+    assert "ready" not in out
+
+
+def test_init_accepts_direct_external_wrapper_with_file_backend(box, capsys) -> None:
+    settings = _register_two(box)
+    (settings.default_home / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
+    _on_path(
+        box,
+        '#!/bin/sh\nexport CODEX_HOME="$(codex-swap home)"\n'
+        'codex-swap rotate >/dev/null || true\nexec real "$@"\n',
+    )
+
+    assert cli.main(["init"]) == 0
+    assert "ready" in capsys.readouterr().out
+
+
+def test_init_flags_our_wrapper_when_homebrew_wins_path_order(box, capsys) -> None:
+    """PATH 에 있기만 해서는 부족하다. 실제 `codex` 로 뽑혀야 자동 전환이 돈다."""
+    _register_two(box)
+    brew = _script(box.home / "homebrew/bin/codex", "#!/bin/sh\nexit 0\n")
+    local = box.home / ".local/bin"
+    box.mp.setenv("PATH", f"{brew.parent}:{local}:/usr/bin:/bin")
+    box.mp.setattr(wiring.shutil, "which", lambda _: str(brew))
+
+    code = cli.main(["init"])
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert "ready" not in out
+    assert "must come before" in out
+    assert str(brew) in out
 
 
 def test_init_does_not_claim_apart_when_pointed_at_the_apps_home(box, capsys) -> None:

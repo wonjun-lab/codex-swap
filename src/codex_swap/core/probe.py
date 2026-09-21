@@ -32,6 +32,7 @@ import uuid
 from enum import Enum
 from pathlib import Path
 
+from codex_swap.core import credentials
 from codex_swap.core.types import Credit, ProbeResult, Usage
 
 DEFAULT_TIMEOUT_MS = 20_000
@@ -266,8 +267,13 @@ def consume_credit(
     """
     if not credit_id:
         raise ProbeError("credit id must not be empty")
+    if credentials.shares_app_login(home):
+        raise ProbeError(
+            "credentials are shared with the ChatGPT app; sign this slot in separately "
+            "before using a reset credit"
+        )
     proc = subprocess.Popen(
-        [os.fspath(codex_bin), "app-server"],
+        credentials.managed_argv(codex_bin, ("app-server",)),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -323,9 +329,14 @@ def _run(
     home: str | os.PathLike[str] | None,
     timeout_ms: int,
 ) -> Usage:
+    if credentials.shares_app_login(home):
+        raise ProbeError(
+            "credentials are shared with the ChatGPT app; refusing a probe that could "
+            "refresh and invalidate the app login"
+        )
     # 셸을 거치지 않고 인자 배열로 띄운다. 경로는 discovery 가 해석한 upstream 바이너리다.
     proc = subprocess.Popen(
-        [os.fspath(codex_bin), "app-server"],
+        credentials.managed_argv(codex_bin, ("app-server",)),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         # 자식 stderr 는 버린다. `.mjs` 의 `stdio: [...,"ignore"]` 와 같고, 무엇보다

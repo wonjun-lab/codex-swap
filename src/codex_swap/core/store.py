@@ -40,6 +40,10 @@ class StoreError(Exception):
     """슬롯을 다루다 실패했다. rotate 경계에서 `Failed` 로 접힌다."""
 
 
+class UnregisteredActive(StoreError):
+    """활성 자격증명을 되쓸 슬롯이 없어 전환하면 유실된다."""
+
+
 def label_syntax_ok(label: str) -> bool:
     """순수 술어. 파일시스템을 만지지 않으므로 단독으로 테스트할 수 있다.
 
@@ -253,13 +257,19 @@ def _install(src: Path, dst: Path, *, keep_mtime: bool) -> None:
         raise
 
 
-def switch(settings: Settings, target: str, reason: str = "manual") -> None:
+def switch(
+    settings: Settings,
+    target: str,
+    reason: str = "manual",
+    *,
+    allow_discard: bool = False,
+) -> None:
     """활성 계정을 `target` 으로 바꾼다. 락은 호출자가 이미 잡고 있어야 한다.
 
-    **실패해도 롤백하지 않는다.** sync-back 이 install 보다 먼저 돌고 되돌려지지 않으므로,
-    install 이 실패해도 떠나려던 슬롯은 이미 갱신돼 있다. 이건 결함이 아니라 올바른
-    동작이다 — 그 바이트가 그 계정의 **최신 토큰**이고, prepare/commit 으로 감싸 롤백하면
-    오히려 그것을 잃는다. 두 효과는 독립적으로 커밋된다 (설계문 §7.5).
+    **실패해도 이미 성공한 쓰기는 롤백하지 않는다.** sync-back 이 실패하면 유일한 최신
+    토큰일 수 있는 활성 파일을 보존한 채 대상 설치 전에 멈춘다. sync-back 이 성공하고
+    대상 install 이 실패하면 떠나려던 슬롯의 갱신은 남긴다. 그 바이트가 그 계정의 최신
+    토큰이므로 되돌리는 쪽이 오히려 손실이다 (설계문 §7.5).
 
     ── mtime 을 두 효과가 다르게 다룬다 ──
 
@@ -297,11 +307,24 @@ def switch(settings: Settings, target: str, reason: str = "manual") -> None:
     active = active_label(settings)
     live = active_auth(settings)
 
+    # 이 판단은 반드시 락 안에서, 실제 교체 바로 앞에서 한다. CLI/TUI 가 화면을 그릴 때
+    # 확인한 값은 락을 기다리는 동안 `codex login` 이나 다른 전환으로 달라질 수 있다.
+    if live.is_file() and active is None and not allow_discard:
+        who = identity.email_of(live) or "unknown account"
+        raise UnregisteredActive(
+            f"the active account ({who}) is not in any slot; switching will not keep it. "
+            "Adopt it first (codex-swap adopt <label>), or pass --force to discard it"
+        )
+
     # 효과 (A) — 떠나기 전에 지금 쓰던 자격증명을 자기 슬롯에 되쓴다. 그동안 갱신된
     # 토큰이 슬롯 사본에는 없어서, 이걸 빼먹으면 돌아올 때 만료된 토큰을 집는다.
     if active is not None and live.is_file():
-        with contextlib.suppress(OSError):
+        try:
             _install(live, slot_auth(settings, active), keep_mtime=True)
+        except OSError as exc:
+            # 활성 파일이 유일한 최신 refresh token 일 수 있다. 되쓰기에 실패한 채 대상을
+            # 설치하면 그 유일한 사본을 지우므로, 교체 전에 멈춘다.
+            raise StoreError(f"could not save active credentials to slot {active}: {exc}") from exc
 
     # 효과 (B) — 대상 자격증명을 활성 자리에 건다. mtime 은 **지금**으로 찍는다.
     _install(target_auth, live, keep_mtime=False)

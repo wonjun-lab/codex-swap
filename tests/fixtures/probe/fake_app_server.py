@@ -13,7 +13,11 @@ from pathlib import Path
 
 
 def main() -> None:
-    assert sys.argv[1:] == ["app-server"]
+    assert sys.argv[1:] == [
+        "-c",
+        'cli_auth_credentials_store="file"',
+        "app-server",
+    ]
     scenario = json.loads(Path(os.environ["PROBE_SCENARIO"]).read_text())
     messages = iter(scenario["messages"])
     with Path(os.environ["PROBE_EVENTS"]).open("a", buffering=1) as events:

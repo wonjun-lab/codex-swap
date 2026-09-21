@@ -103,6 +103,17 @@ def test_t6_counterexample_both_dead_stays_put() -> None:
     assert isinstance(d, Indeterminate)
 
 
+def test_dead_active_token_skips_an_exhausted_candidate() -> None:
+    """낮은 퍼센트여도 이미 소진된 슬롯은 죽은 활성의 대체재가 아니다."""
+    d = decide(
+        snap(
+            active_probe=ProbeResult.auth_failed(),
+            candidates={"exhausted": ok(10, reached=True), "usable": ok(30)},
+        )
+    )
+    assert isinstance(d, Switched) and d.to_label == "usable"
+
+
 def test_t7_counterexample_a_general_probe_failure_is_not_an_auth_failure() -> None:
     # 1(네트워크·파싱)은 계정 상태에 대해 아무 말도 하지 않는다. 움직이면 안 된다.
     d = decide(snap(active_probe=ProbeResult.unknown(), candidates={"b": ok(0)}))
@@ -148,6 +159,18 @@ def test_t11_counterexample_logged_out_with_all_stored_accounts_dead() -> None:
         )
     )
     assert isinstance(d, Indeterminate)
+
+
+def test_logged_out_recovery_skips_an_exhausted_candidate() -> None:
+    """로그아웃 복구도 당장 요청을 처리할 수 있는 슬롯으로 가야 한다."""
+    d = decide(
+        snap(
+            active_present=False,
+            active_label=None,
+            candidates={"exhausted": ok(10, reached=True), "usable": ok(30)},
+        )
+    )
+    assert isinstance(d, Switched) and d.to_label == "usable"
 
 
 def test_t12_counterexample_an_unregistered_active_account_is_left_alone() -> None:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import curses
+import hashlib
 import io
 import queue
 import threading
@@ -126,6 +127,9 @@ class View:
     `build_view` 가 기본값으로 되돌리므로 **커서를 움직이면 저절로 풀린다** — 물어본 것을
     잊고 나중에 누른 `s` 가 곧바로 버리면 묻는 의미가 없다.
     """
+
+    switch_confirmation: tuple[str, str] | None = None
+    """경고한 대상 label 과 그때의 live auth 내용 hash. 토큰 자체는 화면 상태에 두지 않는다."""
 
     spend_armed: bool = False
     """아직 쓸 때가 아닌 리셋 앞에서 한 번 경고해 둔 상태.
@@ -499,7 +503,9 @@ def build_view(
         cursor=min(max(cursor, 0), max(len(rows) + len(MENU) - 1, 0)),
         settings=settings,
         message=message,
-        auto_off=settings.off_switch.exists(),
+        # off-switch 파일뿐 아니라 환경 가드도 실효 상태다. `CODEX_ROTATE_SKIP` 이 켜져
+        # 있으면 정책은 첫 줄에서 끝나므로 화면이 "on" 이라고 말하면 안 된다.
+        auto_off=settings.off_switch.exists() or settings.skip,
         active_email=active_email,
         active_registered=active is not None,
         saved_settings=saved_settings,
@@ -1232,7 +1238,13 @@ def selected_credit(view: View) -> tuple[credits_core.Account, Credit | None] | 
 def open_credits(view: View) -> View:
     """쿠폰 화면으로 들어간다. 자료는 아직 없다 — 배경에서 읽어 온다."""
     return replace(
-        view, mode="credits", credit_accounts=None, credit_cursor=0, message="", switch_armed=False
+        view,
+        mode="credits",
+        credit_accounts=None,
+        credit_cursor=0,
+        message="",
+        switch_armed=False,
+        switch_confirmation=None,
     )
 
 
@@ -1560,6 +1572,15 @@ def do_remove(view: View, label: str | None, answer: str | None) -> View:
     )
 
 
+def _switch_confirmation(settings: config.Settings, target: str) -> tuple[str, str] | None:
+    """버려도 된다고 확인받은 live auth 를 내용 hash 로 묶는다."""
+    try:
+        payload = store.active_auth(settings).read_bytes()
+    except OSError:
+        return None
+    return target, hashlib.sha256(payload).hexdigest()
+
+
 def do_switch(view: View) -> View:
     """선택한 계정으로 전환한다.
 
@@ -1572,41 +1593,34 @@ def do_switch(view: View) -> View:
     if target is None:
         # 커서가 메뉴 위다. 조용히 무시하면 키가 죽은 줄 안다.
         return replace(view, message="Move to an account first, then press s")
-    # **지금 로그인된 계정이 어느 슬롯에도 없으면 전환이 그것을 버린다.**
-    #
-    # CLI 는 이 자리에서 거부하고 `--force` 를 요구한다. TUI 는 꼬리말에 경고 한 줄만
-    # 띄우고 `s` 한 번에 그냥 전환했다 — 자격증명이 사라지는 동작인데 **기본 표면이 더
-    # 약했다.** 이 프로젝트에서 같은 모양의 결함이 여러 번 나왔고, 그때마다 약한 쪽이 이
-    # 도구의 실제 안전 수준이었다.
-    #
-    # 다만 완전히 막지는 않는다. 임시로 로그인해 두고 일부러 버리는 용법이 있다 — CLI 의
-    # `--force` 가 그것이다. 여기서는 한 번 더 누르는 것이 그 역할을 한다.
-    if view.active_email is not None and not view.active_registered and not view.switch_armed:
-        return replace(
-            view,
-            switch_armed=True,
-            message=(
-                f"{view.active_email} is in no slot — switching discards it. "
-                "a to adopt it first, or s again to discard"
-            ),
-        )
-    try:
-        current = store.active_label(view.settings)
-    except OSError as exc:
-        return replace(view, message=f"Could not read state: {exc}")
-    if target.label == current:
-        # 아무것도 하지 않은 분기인데도 `carry` 가 필요하다. 전환이 캐시를 비운 직후
-        # 같은 행에서 enter 를 한 번 더 누르는 것이 흔한 조작인데, 여기서 이어받지
-        # 않으면 화면이 방금 지켜 낸 숫자를 도로 물음표로 되돌린다.
-        return build_view(
-            view.settings,
-            select=target.label,
-            message=f"{target.label} is already active",
-            carry=_carry(view),
-        )
+    already_active = False
+    refusal: store.UnregisteredActive | None = None
+    refusal_confirmation: tuple[str, str] | None = None
     try:
         with store.switch_lock(view.settings):
-            store.switch(view.settings, target.label, "manual (tui)")
+            # 화면을 그린 뒤 로그인이나 다른 전환이 일어날 수 있다. 버릴 자격증명이 있는지와
+            # 이미 활성인지 모두 락 안의 최신 상태로 판단한다. 첫 시도는 절대 버리지 않고,
+            # 그 최신 경고를 본 뒤 같은 행에서 한 번 더 누른 경우에만 허용한다.
+            current = store.active_label(view.settings)
+            if target.label == current:
+                already_active = True
+            else:
+                candidate_confirmation = _switch_confirmation(view.settings, target.label)
+                confirmed = (
+                    view.switch_armed
+                    and candidate_confirmation is not None
+                    and view.switch_confirmation == candidate_confirmation
+                )
+                try:
+                    store.switch(
+                        view.settings,
+                        target.label,
+                        "manual (tui)",
+                        allow_discard=confirmed,
+                    )
+                except store.UnregisteredActive as exc:
+                    refusal = exc
+                    refusal_confirmation = _switch_confirmation(view.settings, target.label)
     except store.LockBusy:
         return build_view(
             view.settings,
@@ -1616,9 +1630,28 @@ def do_switch(view: View) -> View:
         )
     except (store.LockUnusable, store.StoreError) as exc:
         return build_view(view.settings, select=target.label, message=str(exc), carry=_carry(view))
+    except OSError as exc:
+        return replace(view, message=f"Could not read state: {exc}")
     except Exception as exc:
         return build_view(
             view.settings, select=target.label, message=f"Switch failed: {exc}", carry=_carry(view)
+        )
+    if refusal is not None:
+        return replace(
+            view,
+            switch_armed=True,
+            switch_confirmation=refusal_confirmation,
+            message=f"{refusal}. Press s again to discard it",
+        )
+    if already_active:
+        # 아무것도 하지 않은 분기인데도 `carry` 가 필요하다. 전환이 캐시를 비운 직후
+        # 같은 행에서 enter 를 한 번 더 누르는 것이 흔한 조작인데, 여기서 이어받지
+        # 않으면 화면이 방금 지켜 낸 숫자를 도로 물음표로 되돌린다.
+        return build_view(
+            view.settings,
+            select=target.label,
+            message=f"{target.label} is already active",
+            carry=_carry(view),
         )
     return build_view(
         view.settings,
@@ -1771,6 +1804,13 @@ def do_toggle_auto(view: View) -> View:
     """자동 전환 on/off. off-switch 파일 하나가 그 스위치다 — bash 와 같은 파일이다."""
     picked = selected_row(view)
     select = picked.label if picked is not None else None
+    if view.settings.skip:
+        # 화면은 실효 상태를 off 로 보인다. 여기서 파일 스위치를 뒤집으면 사용자는 켜려고
+        # 눌렀는데 off 파일만 새로 생기고, 메시지는 거꾸로 "on" 이라고 말한다.
+        return replace(
+            view,
+            message="Automatic switching remains off: CODEX_ROTATE_SKIP is set",
+        )
     try:
         now_on = policy_edit.set_auto(view.settings, not policy_edit.auto_on(view.settings))
     except OSError as exc:

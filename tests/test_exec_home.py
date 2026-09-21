@@ -33,6 +33,69 @@ def test_exec_does_not_switch_before_login_logout_or_a_long_lived_server(box, su
     assert plan.rotate is False
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["-c", "model=x", "login"],
+        ["--config=model=x", "login"],
+        ["--profile", "work", "logout"],
+        ["--sandbox", "read-only", "mcp-server"],
+    ],
+)
+def test_global_options_do_not_hide_a_protected_subcommand(box, argv: list[str]) -> None:
+    """전역 옵션 뒤의 login/logout/server 앞에서도 다른 계정으로 갈아끼우지 않는다."""
+    plan = cli.exec_plan(config.load(), argv, "/opt/x/bin/codex", {"PATH": "/usr/bin"})
+    assert plan.rotate is False
+
+
+def test_a_protected_word_after_the_real_subcommand_does_not_disable_rotation(box) -> None:
+    """`codex exec logout` 의 logout 은 프롬프트라 보호 서브커맨드가 아니다."""
+    plan = cli.exec_plan(
+        config.load(), ["exec", "logout"], "/opt/x/bin/codex", {"PATH": "/usr/bin"}
+    )
+    assert plan.rotate is True
+
+
+def test_a_protected_word_used_as_an_option_value_does_not_disable_rotation(box) -> None:
+    plan = cli.exec_plan(
+        config.load(), ["--profile", "login", "exec"], "/opt/x/bin/codex", {"PATH": "/usr/bin"}
+    )
+    assert plan.rotate is True
+
+
+def test_an_unknown_global_option_conservatively_skips_rotation(box) -> None:
+    """새 옵션의 인자를 서브커맨드로 오인해 자격증명을 갈아끼우면 안 된다."""
+    plan = cli.exec_plan(
+        config.load(),
+        ["--future-option", "value", "exec"],
+        "/opt/x/bin/codex",
+        {"PATH": "/usr/bin"},
+    )
+    assert plan.rotate is False
+
+
+def test_a_variadic_global_option_conservatively_skips_rotation(box) -> None:
+    """가변 개수 image 인자에서는 어느 bare word 가 서브커맨드인지 추측하지 않는다."""
+    plan = cli.exec_plan(
+        config.load(), ["-i", "shot.png", "exec"], "/opt/x/bin/codex", {"PATH": "/usr/bin"}
+    )
+    assert plan.rotate is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--remote", "host:1234", "exec"],
+        ["--remote=host:1234", "exec"],
+        ["exec", "hello", "--remote", "host:1234"],
+    ],
+)
+def test_remote_invocation_never_touches_local_managed_credentials(box, argv: list[str]) -> None:
+    plan = cli.exec_plan(config.load(), argv, "/opt/x/bin/codex", {"PATH": "/usr/bin"})
+    assert plan.rotate is False
+    assert plan.argv == ("/opt/x/bin/codex", *argv)
+
+
 @pytest.mark.parametrize("argv", [[], ["exec", "hi"], ["app-server"], ["--version"]])
 def test_exec_switches_before_everything_else(box, argv: list[str]) -> None:
     plan = cli.exec_plan(config.load(), argv, "/opt/x/bin/codex", {"PATH": "/usr/bin"})

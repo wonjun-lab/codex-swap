@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pytest
 
+from codex_swap.core import wiring
+
 # 앱 공존 테스트 파일들이 함께 쓰는 임시 HOME 픽스처(`box`). 여기서 한 번 등록하는 까닭은
 # `_coexist.py` 의 docstring 에 적었다.
 pytest_plugins = ("_coexist",)
@@ -55,4 +57,18 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     # 현재 파생 규칙" 이 아니고, 그 규칙이 바뀌는 날 조용히 새면 증상은 또 엉뚱한 곳에서
     # 나온다. 값이 셋 다 명시돼 있으면 그 결합이 끊긴다.
     monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
+    # macOS 개발기에는 실제 `/Applications/ChatGPT.app`가 있을 수 있다. HOME만 바꾸면
+    # 전역 설치 경로가 여전히 보여 앱 설치/제거 테스트의 가짜 기계가 항상 "설치됨"으로
+    # 굳는다. 기본 경로도 임시 HOME 아래로 옮기며, 앱이 필요한 fixture는 직접 만든다.
+    # `~`를 남겨야 자기 fixture가 HOME을 다시 잡는 테스트도 그 새 임시 홈을 따른다.
+    monkeypatch.setattr(wiring, "APP_PATHS", ("~/Applications/ChatGPT.app",))
+    # `app_installed(paths=APP_PATHS)`의 기본 인자는 import 시점 튜플을 붙든다. APP_PATHS만
+    # 갈아끼우면 인자를 생략한 실제 호출은 여전히 호스트 `/Applications`를 본다. 명시한
+    # paths는 그대로 존중하면서, 생략한 경우에만 현재 테스트 경로를 전달한다.
+    original_app_installed = wiring.app_installed
+
+    def isolated_app_installed(paths=None):
+        return original_app_installed(wiring.APP_PATHS if paths is None else paths)
+
+    monkeypatch.setattr(wiring, "app_installed", isolated_app_installed)
     return home

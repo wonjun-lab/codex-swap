@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from codex_swap.core import cache, discovery, paths, store
+from codex_swap.core import cache, credentials, discovery, paths, store
 from codex_swap.core import probe as probe_mod
 from codex_swap.core.config import ConfigError, Settings
 from codex_swap.core.policy import Snapshot, decide
@@ -95,6 +95,10 @@ def _usage_of(
     캐시는 성공(`Ok`)만 담는다. 인증 실패는 담지 않으므로 히트가 죽은 토큰을 최대 한
     TTL 가린다 — 정해진 지연 예산이지 결함이 아니다 (설계문 §6.4.1).
     """
+    # 캐시보다 먼저 현재 refresh token 을 견준다. 앱과 공유되기 전에 쌓인 안전해 보이는
+    # 캐시가 남아 있으면, 뒤에서 probe 만 막아도 자동 정책이 그 슬롯을 후보로 고른다.
+    if credentials.shares_app_login(home):
+        return ProbeResult.unknown()
     cached = cache.read(settings, label, now=now)
     if cached is not None:
         with contextlib.suppress(Exception):
@@ -276,5 +280,14 @@ def _execute(settings: Settings, decision: Decision, *, dry_run: bool) -> Decisi
     if not isinstance(decision, Switched) or dry_run:
         return decision
     with store.switch_lock(settings):
+        # 프로브는 느리고 락 밖에서 돈다. 그 사이 수동 login/use 가 활성을 바꿨다면 이
+        # 결정의 스냅숏은 폐기해야 한다. 특히 등록되지 않은 새 로그인을 덮어쓰면 sync-back
+        # 할 슬롯도 없어 자격증명을 잃는다.
+        if decision.from_label is None:
+            stale = store.active_auth(settings).is_file()
+        else:
+            stale = store.active_label(settings) != decision.from_label
+        if stale:
+            return NoOp("active account changed while deciding")
         store.switch(settings, decision.to_label, decision.reason)
     return decision

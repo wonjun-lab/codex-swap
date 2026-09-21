@@ -12,8 +12,8 @@
 # 아무것도 없는 빈 HOME 에서 시작한다.
 #
 # 실제 홈·실제 설치본·실제 계정은 건드리지 않는다. 토큰은 전부 가짜이고, codex 는
-# `login status` 만 부른다 — wrapper 가 그 서브커맨드 앞에서는 전환을 부르지 않으므로
-# 네트워크도 프로브도 타지 않는다.
+# `login status`와 app-server의 로컬 `account/read`만 부른다. 수동 소비자 검증은 전환을
+# 끄고, 자동 검증은 신선한 로컬 cache만 써서 모델·rate-limit·usage probe 요청을 만들지 않는다.
 #
 #   bash tests/e2e-install.sh [설치 소스]     기본값: 이 저장소
 set -uo pipefail
@@ -63,9 +63,11 @@ ROOT="$(mktemp -d)" && [ -d "$ROOT" ] || { echo "mktemp 실패 — 격리 자리
 trap 'rm -rf "$ROOT"' EXIT
 
 H=""
+ACTIVE_HOME=""
 sandbox() { # $1=이름 → 아무것도 없는 새 HOME
   H="$ROOT/$1"
   mkdir -p "$H"
+  ACTIVE_HOME="$H/.codex"
 }
 run() { # 격리 HOME·격리 PATH·격리 uv 로 실행. 호출자의 CODEX_* 는 하나도 넘기지 않는다.
   # `tmo` 는 셸 함수라 `env -i` 가 실행할 수 없다 — 시간 제한이 바깥에 와야 한다.
@@ -74,6 +76,7 @@ run() { # 격리 HOME·격리 PATH·격리 uv 로 실행. 호출자의 CODEX_* �
     UV_TOOL_DIR="$H/tool" UV_TOOL_BIN_DIR="$H/tool-bin" \
     UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$REAL_HOME/.local/share/uv/python}" \
     UV_CACHE_DIR="${UV_CACHE_DIR:-$REAL_HOME/.cache/uv}" \
+    CODEX_ACCOUNT_DEFAULT_HOME="$ACTIVE_HOME" CODEX_ACCOUNTS_DIR="$H/.codex/accounts" \
     "$@"
 }
 
@@ -136,12 +139,17 @@ home_is() { # $1=시나리오 $2=기대 홈
   [ -d "$2" ] && ok "$1: 그 홈 디렉토리가 실제로 있다" || no "$1: 그 홈 디렉토리가 없다 ($2)"
 }
 codex_starts() { # $1=시나리오 — wrapper 를 거친 진짜 codex 가 뜨는가
-  local out
+  local out rc last
   out="$(cd "$H" && run codex login status < /dev/null 2>&1)"
-  if printf '%s' "$out" | grep -qE "CODEX_HOME points to|Error finding codex home"; then
-    no "$1: codex 가 뜨지 않는다 — $(printf '%s' "$out" | grep -m1 -E 'Error|CODEX_HOME')"
+  rc=$?
+  # Codex가 temp-helper 관련 경고를 앞에 더할 수 있다. 그 경고를 인증 성공으로 오인하지
+  # 않되, 최종 상태 한 줄과 exit code는 실제 CLI 계약대로 모두 확인한다.
+  last="$(printf '%s\n' "$out" | tail -n 1)"
+  if { [ "$rc" -eq 1 ] && [ "$last" = "Not logged in" ]; } \
+    || { [ "$rc" -eq 0 ] && [ "$last" = "Logged in using ChatGPT" ]; }; then
+    ok "$1: wrapper 를 거친 codex 가 뜬다 ($last)"
   else
-    ok "$1: wrapper 를 거친 codex 가 뜬다 ($(printf '%s' "$out" | tail -1))"
+    no "$1: codex login status 가 예상 밖이다 (rc=$rc, 마지막=$last)"
   fi
 }
 seed_slots() { # 두 계정을 등록해 둔 상태를 만든다 (로그인은 사람이 하는 일이라 파일로 대신한다)
@@ -156,6 +164,134 @@ use_lands() { # $1=시나리오 $2=라벨 $3=기대 email $4=활성 auth 경로
   fi
 }
 
+# 실제 Codex가 다음 프로세스에서 읽는 계정을 확인한다. `login status`는 단지 인증 종류를
+# 말할 뿐이라 auth.json A→B→A 교체가 소비자에게 전달됐다는 증거가 아니다. 여기서는 모델,
+# rate-limit, probe 요청 없이 app-server의 로컬 `account/read`까지만 보낸다. `codex`라는
+# 이름으로 띄우므로 설치한 wrapper와 codex-swap exec 경로를 모두 지난다.
+consumer_is() { # $1=시나리오 $2=기대 email $3=auto 이면 캐시만으로 실제 회전까지
+  local out
+  out="$(run env EXPECTED_EMAIL="$2" AUTO_ROTATE="${3:-}" python3 - <<'PY'
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+
+
+def reply_for(proc, request_id):
+    deadline = time.monotonic() + 15
+    buffer = bytearray()
+    while time.monotonic() < deadline:
+        newline = buffer.find(b"\n")
+        if newline >= 0:
+            line = bytes(buffer[:newline])
+            del buffer[: newline + 1]
+            try:
+                message = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if message.get("id") == request_id:
+                return message
+            continue
+        remaining = deadline - time.monotonic()
+        ready, _, _ = select.select([proc.stdout.fileno()], [], [], remaining)
+        if not ready:
+            break
+        chunk = os.read(proc.stdout.fileno(), 4096)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+    return None
+
+
+child_env = os.environ.copy()
+if os.environ.get("AUTO_ROTATE") == "auto":
+    # 캐시가 두 슬롯 모두의 사용량을 주므로 실제 rate-limit 프로브는 일어나지 않는다.
+    child_env.update({
+        "CODEX_ROTATE_CHECK_INTERVAL": "0",
+        "CODEX_ROTATE_COOLDOWN": "0",
+        "CODEX_ROTATE_BUSY_WINDOW": "0",
+    })
+else:
+    # 수동 A→B→A 소비자 검증은 회전 자체를 막아 파일 교체만 관찰한다.
+    child_env["CODEX_ROTATE_SKIP"] = "1"
+
+proc = subprocess.Popen(
+    ["codex", "app-server"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    # wrapper/daemon 진단이 토큰을 싣더라도 e2e 출력에 새지 않게 한다.
+    stderr=subprocess.DEVNULL,
+    env=child_env,
+)
+try:
+    assert proc.stdin is not None and proc.stdout is not None
+    proc.stdin.write((json.dumps({
+        "id": 1,
+        "method": "initialize",
+        "params": {"clientInfo": {"name": "codex-swap-e2e", "version": "1.0.0"}},
+    }) + "\n").encode())
+    proc.stdin.flush()
+    if reply_for(proc, 1) is None:
+        print("no-initialize")
+        sys.exit(0)
+    proc.stdin.write((json.dumps({"method": "initialized", "params": {}}) + "\n").encode())
+    proc.stdin.write((json.dumps({"id": 2, "method": "account/read", "params": {}}) + "\n").encode())
+    proc.stdin.flush()
+    response = reply_for(proc, 2)
+    account = (response or {}).get("result", {}).get("account")
+    if isinstance(account, dict) and account.get("email") == os.environ["EXPECTED_EMAIL"]:
+        print("matched")
+    elif response is None:
+        print("no-account-read")
+    elif isinstance(account, dict):
+        print("different-account")
+    else:
+        print("no-account")
+finally:
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+PY
+)"
+  if [ "$out" = "matched" ]; then
+    ok "$1: 다음 wrapper codex app-server 가 기대 계정을 account/read로 읽는다"
+  else
+    no "$1: 다음 wrapper codex app-server 계정이 틀리다 ($out)"
+  fi
+}
+
+keyring_store() { # $1=활성 Codex 홈
+  # 이 설정이면 최신 Codex는 auth.json 파일을 소비하지 않는다. 제품 exec가 파일 슬롯을
+  # 쓸 때는 자식에 일회성 file-store override를 더해야 하며, 이 테스트가 그 계약을 잡는다.
+  printf 'cli_auth_credentials_store = "keyring"\n' > "$1/config.toml"
+  chmod 600 "$1/config.toml"
+}
+
+seed_usage_cache() { # $1=accounts dir — 자동 전환용 신선한 A=90, B=10 cache
+  # 캐시는 Codex가 아닌 swap의 상태다. ts를 지금으로 찍고 TTL 안에 두므로 자동 경로가
+  # app-server rate-limit 요청을 만들 수 없다. account/read 하나만 아래 consumer_is가 보낸다.
+  python3 - "$1/.usage-cache.json" <<'PY'
+import json
+import sys
+import time
+
+path = sys.argv[1]
+now = int(time.time())
+payload = {
+    "work": {"usedPercent": 90, "email": "work@example.com", "reached": False, "ts": now},
+    "personal": {"usedPercent": 10, "email": "personal@example.com", "reached": False, "ts": now},
+}
+with open(path, "w") as fh:
+    json.dump(payload, fh)
+PY
+  chmod 600 "$1/.usage-cache.json"
+}
+
 printf '\n== S1 앱 없는 새 기기 ==\n'
 sandbox s1
 if install_swap S1; then
@@ -164,18 +300,34 @@ if install_swap S1; then
   codex_starts S1
   seed_slots
   use_lands S1 work work@example.com "$H/.codex/auth.json"
+  consumer_is S1 work@example.com
   codex_starts S1
 fi
 
 printf '\n== S2 앱이 먼저 깔린 새 기기 ==\n'
 sandbox s2
 mkdir -p "$H/Applications/ChatGPT.app"
+ACTIVE_HOME="$H/.codex-cli"
 if install_swap S2; then
   init_places_wrapper S2
   home_is S2 "$H/.codex-cli"
   codex_starts S2
   seed_slots
+  keyring_store "$ACTIVE_HOME"
   use_lands S2 work work@example.com "$H/.codex-cli/auth.json"
+  consumer_is S2 work@example.com
+  use_lands S2 personal personal@example.com "$H/.codex-cli/auth.json"
+  consumer_is S2 personal@example.com
+  use_lands S2 work work@example.com "$H/.codex-cli/auth.json"
+  consumer_is S2 work@example.com
+  seed_usage_cache "$H/.codex/accounts"
+  consumer_is S2 personal@example.com auto
+  [ "$(email_of "$H/.codex-cli/auth.json")" = personal@example.com ] \
+    && ok "S2: cache A=90 B=10 자동 전환이 active auth를 personal로 바꾼다" \
+    || no "S2: 자동 전환 뒤 active auth가 personal이 아니다"
+  tail -n 1 "$H/.codex/accounts/rotate.log" | grep -q 'work -> personal.*rung(' \
+    && ok "S2: 자동 전환 원장이 personal 전환을 남긴다" \
+    || no "S2: 자동 전환 원장에 personal 전환이 없다"
   [ ! -e "$H/.codex/auth.json" ] && ok "S2: 앱의 ~/.codex/auth.json 은 만들지 않는다" \
     || no "S2: 앱 자리에 auth.json 을 썼다"
   codex_starts S2
@@ -188,6 +340,7 @@ if install_swap S3; then
   seed_slots
   use_lands S3 work work@example.com "$H/.codex/auth.json"
   mkdir -p "$H/Applications/ChatGPT.app"
+  ACTIVE_HOME="$H/.codex-cli"
   home_is S3 "$H/.codex-cli"
   codex_starts S3
   use_lands S3 personal personal@example.com "$H/.codex-cli/auth.json"

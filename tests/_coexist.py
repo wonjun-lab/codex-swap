@@ -43,7 +43,14 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(wiring, "DEFAULT_HOME", home / ".codex")
     monkeypatch.setattr(wiring, "ISOLATED_PATH", home / ".codex-cli")
     monkeypatch.setattr(wiring, "WRAPPER", home / ".local/bin/codex")
-    monkeypatch.setattr(wiring.shutil, "which", lambda _: None)
+
+    # init 이 wrapper 를 놓기 전에는 없고, 놓은 뒤에는 PATH 첫 자리에서 보인다. 고정 None
+    # 이면 설치 후의 실제 command resolution 을 검증하는 코드가 가짜 실패를 낸다.
+    def local_wrapper(_name: str) -> str | None:
+        candidate = home / ".local/bin/codex"
+        return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+    monkeypatch.setattr(wiring.shutil, "which", local_wrapper)
     monkeypatch.setattr(discovery, "resolve_codex_bin", lambda: Path("/bin/true"))
     monkeypatch.setattr(cli.discovery, "resolve_codex_bin", lambda: Path("/bin/true"))
 

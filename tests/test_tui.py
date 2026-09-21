@@ -125,6 +125,20 @@ def test_toggling_auto_rotation_uses_the_same_file_as_bash(env) -> None:
     assert "Automatic switching: on" in text(on)
 
 
+def test_skip_environment_is_shown_as_automatic_switching_off(env) -> None:
+    """환경이 모든 판단을 막으면 off-switch 파일이 없어도 실효 상태는 off 다."""
+    blocked = tui.replace(env, skip=True)
+    assert "Automatic switching: off" in text(tui.build_view(blocked))
+
+
+def test_skip_environment_cannot_be_toggled_into_a_fake_on_state(env) -> None:
+    blocked = tui.build_view(tui.replace(env, skip=True))
+    after = tui.do_toggle_auto(blocked)
+    assert not env.off_switch.exists(), "환경 가드를 파일 off-switch 로 잘못 뒤집었다"
+    assert "Automatic switching: off" in text(after)
+    assert "CODEX_ROTATE_SKIP" in after.message
+
+
 # ── 정책 화면 ────────────────────────────────────────────────────────────────
 
 

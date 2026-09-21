@@ -78,6 +78,10 @@ def _best(candidates: dict[str, ProbeResult]) -> tuple[str | None, int]:
     for label, probe in candidates.items():
         if not probe.ok or probe.usage is None:
             continue
+        # `rateLimitReachedType` 는 퍼센트와 별개의 서버 판정이다. 이미 소진된 슬롯이
+        # 더 낮은 숫자를 보고해도 새 요청을 처리할 수 없으므로 대체 후보가 아니다.
+        if probe.usage.reached:
+            continue
         pct = probe.usage.used_percent
         if pct < best_pct:
             best_label, best_pct = label, pct

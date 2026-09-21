@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
@@ -31,6 +32,7 @@ from codex_swap.core import (
     account_slots,
     cache,
     config,
+    credentials,
     discovery,
     doctor,
     identity,
@@ -173,6 +175,8 @@ def cmd_adopt(settings: config.Settings, label: str) -> int:
 
     paths.ensure_root(settings)
     slot = store.slot_dir(settings, label)
+    if not store.slot_is_admissible(settings, label):
+        raise CliError(f"not a usable label: {label}")
     slot.mkdir(mode=0o700, parents=True, exist_ok=True)
     slot.chmod(0o700)
     dest = store.slot_auth(settings, label)
@@ -200,7 +204,10 @@ def cmd_add(
     """
     if not store.label_syntax_ok(label):
         raise CliError(f"not a usable label: {label}")
+    if not store.slot_is_admissible(settings, label):
+        raise CliError(f"not a usable label: {label}")
     existing = store.slot_auth(settings, label)
+    existed = existing.exists()
     if existing.exists() and not force:
         # 오래 안 쓴 슬롯은 토큰이 갱신 한계를 넘어 썩는다. 그것을 고치려면 `remove` 를
         # **먼저** 해야 했다 — 되돌릴 수 없는 삭제를 하고 나서, 실패할 수 있는 브라우저
@@ -222,30 +229,78 @@ def cmd_add(
 
     paths.ensure_root(settings)
     slot = store.slot_dir(settings, label)
-    slot.mkdir(mode=0o700, parents=True, exist_ok=True)
-    slot.chmod(0o700)
 
     if existing.exists():
         # 무엇을 대신하는지 말하고 시작한다. 로그인 화면에서 계정을 고르는 것은 사용자라,
         # 여기서 이름을 보여 주지 않으면 엉뚱한 계정으로 덮고도 모른다.
         print(f"Replacing '{label}' ({identity.email_of(existing) or 'email unknown'}).")
-    print(f"Logging in to slot '{label}'. Use an account **different** from the active one.")
+    replacing_active = store.active_label(settings) == label
+    if replacing_active:
+        print(f"Logging in to active slot '{label}'. Use the **same** account to refresh it.")
+    else:
+        print(f"Logging in to slot '{label}'. Use an account **different** from the active one.")
 
     # `CODEX_ROTATE_SKIP=1` 이 없으면 이 로그인이 띄우는 codex 가 wrapper 를 거쳐 다시
     # rotate 를 부르고, 그 rotate 가 지금 만들고 있는 슬롯을 후보로 본다. `CODEX_HOME` 이
     # 슬롯을 가리키므로 rotate 의 홈 가드에도 걸리지만, 두 겹으로 막는다.
-    env = discovery.env_with_bin_dir(codex_bin)
-    env["CODEX_ROTATE_SKIP"] = "1"
-    env["CODEX_HOME"] = str(slot)
+    # `--force` 도 기존 슬롯에서 직접 로그인하지 않는다. 로그인 실패나 keyring backend 가
+    # 기존 auth.json 을 새 결과처럼 보이게 해서는 안 되고, 실패가 마지막 정상 토큰을
+    # 덮어서도 안 된다. 같은 0700 루트의 빈 staging home 에 로그인한 뒤 성공한 파일만
+    # 원자적으로 설치한다.
+    stage = Path(tempfile.mkdtemp(prefix=f".{label}.login.", dir=settings.accounts_dir))
+    stage.chmod(0o700)
+    try:
+        # 기존 슬롯의 로그인 설정은 유지한다. auth.json 은 복사하지 않아야 이번 로그인이
+        # 실제로 새 파일을 만들었는지 판별할 수 있다.
+        config_file = slot / "config.toml"
+        if config_file.is_file() and not config_file.is_symlink():
+            shutil.copy2(config_file, stage / "config.toml")
 
-    run = runner or _run_login
-    if run([str(codex_bin), "login"], env) != 0:
-        raise CliError("login failed")
+        env = discovery.env_with_bin_dir(codex_bin)
+        env["CODEX_ROTATE_SKIP"] = "1"
+        env["CODEX_HOME"] = str(stage)
 
-    dest = store.slot_auth(settings, label)
-    if not dest.is_file():
-        raise CliError("login finished but no auth.json appeared")
-    dest.chmod(0o600)
+        run = runner or _run_login
+        argv = credentials.managed_argv(codex_bin, ("login",))
+        if run(list(argv), env) != 0:
+            raise CliError("login failed")
+
+        staged_auth = stage / "auth.json"
+        if not staged_auth.is_file() or staged_auth.is_symlink():
+            raise CliError("login finished but no auth.json appeared")
+        staged_email = identity.email_of(staged_auth)
+        if staged_email is None:
+            raise CliError("login finished but auth.json has no usable identity")
+
+        # Login is interactive and therefore cannot hold the switch lock. Re-check the path at
+        # commit time so a concurrent writer cannot replace the slot with a symlink while the
+        # browser flow is open.
+        with store.switch_lock(settings):
+            if not store.slot_is_admissible(settings, label):
+                raise CliError(f"not a usable label: {label}")
+            slot.mkdir(mode=0o700, parents=True, exist_ok=True)
+            slot.chmod(0o700)
+            dest = store.slot_auth(settings, label)
+            if not force and dest.exists():
+                raise CliError(f"label already exists: {label}")
+
+            # If this slot is active, leaving the old live file in place would undo this login:
+            # the next switch syncs live back to the slot before departing. Install live first;
+            # then a later sync-back can only preserve the newly authenticated credentials.
+            if store.active_label(settings) == label:
+                live = store.active_auth(settings)
+                if identity.email_of(live) != staged_email:
+                    raise CliError(
+                        f"'{label}' is the active slot; log in to the same account to refresh it. "
+                        "Switch to another slot before replacing it with a different account"
+                    )
+                store._install(staged_auth, live, keep_mtime=False)
+            store._install(staged_auth, dest, keep_mtime=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+    if existed:
+        cache.clear(settings)
     print(f"adopted {label} ({identity.email_of(dest) or 'email unknown'})")
     return 0
 
@@ -1106,24 +1161,13 @@ def cmd_use(settings: config.Settings, label: str, *, force: bool = False) -> in
     if not store.label_syntax_ok(label):
         raise CliError(f"not a usable label: {label}")
 
-    # 전환은 활성 자격증명을 슬롯으로 되돌려 놓고(sync-back) 바꾼다. 그런데 활성이 어느
-    # 슬롯과도 안 맞으면 되돌려 놓을 자리가 없어 **그냥 사라진다** (`store.switch` 가
-    # `active_label is None` 이면 sync-back 을 건너뛴다). 사용자가 손으로 `codex login`
-    # 한 계정이 그 경우이고, 잃으면 브라우저 재로그인 말고는 복구가 없다.
-    #
-    # TUI 는 이 상태에 전용 경고줄을 띄운다 — 대화형이라 사용자가 그것을 보고 enter 를
-    # 누르면 동의한 것이다. CLI 는 볼 기회 없이 실행되므로 거부하는 편이 맞다. 버리는
-    # 것이 뜻인 경우(임시 로그인)를 위해 `--force` 를 둔다.
-    live = store.active_auth(settings)
-    if not force and live.is_file() and store.active_label(settings) is None:
-        who = identity.email_of(live) or "unknown account"
-        raise CliError(
-            f"the active account ({who}) is not in any slot; switching will not keep it. "
-            "Adopt it first (codex-swap adopt <label>), or pass --force to discard it"
-        )
-
     with store.switch_lock(settings):
-        store.switch(settings, label, "manual")
+        # 락을 기다리는 사이 `codex login` 이 활성 자격증명을 바꿀 수 있다. 유실 가드는
+        # 실제 교체 바로 앞에서, 같은 락 안의 디스크 상태를 기준으로 판단한다.
+        try:
+            store.switch(settings, label, "manual", allow_discard=force)
+        except store.UnregisteredActive as exc:
+            raise CliError(str(exc)) from exc
     print(
         f"switched to {label}. "
         "A codex session that is already running keeps the old token until you restart it."
@@ -1234,6 +1278,95 @@ NO_ROTATE_BEFORE = frozenset({"login", "logout", "mcp-server"})
   토큰으로 남는다.
 """
 
+# 보호할 서브커맨드는 첫 argv 가 아니라 Codex 의 전역 옵션 **뒤**에 온다. 옵션 문법을
+# 추측해 넓게 넘기면 새 옵션의 값을 서브커맨드로 오인할 수 있으므로, 알고 있는 문법만
+# 걷어내고 모르는 옵션에서는 보수적으로 전환을 건너뛴다.
+_CODEX_GLOBAL_VALUE_OPTIONS = frozenset(
+    {
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "-c",
+        "--config",
+        "--add-dir",
+        "--disable",
+        "--enable",
+        "--local-provider",
+        "-m",
+        "--model",
+        "-p",
+        "--profile",
+        "--remote-auth-token-env",
+        "-s",
+        "--sandbox",
+    }
+)
+_CODEX_GLOBAL_FLAGS = frozenset(
+    {
+        "--approve-for-me",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "-h",
+        "--help",
+        "--no-alt-screen",
+        "--oss",
+        "--search",
+        "--strict-config",
+        "-V",
+        "--version",
+    }
+)
+_CODEX_GLOBAL_VARIADIC_OPTIONS = frozenset({"-i", "--image"})
+
+
+def _remote_invocation(argv: Sequence[str]) -> bool:
+    """``--`` 앞에서 외부 endpoint 를 고른 호출인가."""
+    for word in argv:
+        if word == "--":
+            return False
+        if word == "--remote" or word.startswith("--remote="):
+            return True
+    return False
+
+
+def _rotate_before_codex(argv: Sequence[str]) -> bool:
+    """Codex 가 실제로 실행할 서브커맨드 앞에서 전환해도 되는가."""
+    if _remote_invocation(argv):
+        return False
+    i = 0
+    while i < len(argv):
+        word = argv[i]
+        if word == "--":
+            # 이후 단어는 서브커맨드가 아니라 기본 대화의 위치 인자다.
+            return True
+        if not word.startswith("-"):
+            return word not in NO_ROTATE_BEFORE
+
+        option = word.split("=", 1)[0]
+        if option in _CODEX_GLOBAL_FLAGS:
+            if "=" in word:
+                return False
+            i += 1
+            continue
+        if option in _CODEX_GLOBAL_VALUE_OPTIONS:
+            if "=" in word:
+                i += 1
+            elif i + 1 < len(argv):
+                i += 2
+            else:
+                return False
+            continue
+        if option in _CODEX_GLOBAL_VARIADIC_OPTIONS:
+            # `--image <FILE>...` 는 bare word 를 몇 개 먹는지 argv 만으로 확정할 수 없다.
+            # 불완전한 서브커맨드 목록으로 경계를 추측하지 않는다.
+            return False
+
+        # Codex 가 새 전역 옵션을 얻었을 때 그 값이나 효과를 모르는 채 자격증명을
+        # 갈아끼우는 것보다 이번 한 번을 건너뛰는 쪽이 안전하다.
+        return False
+    return True
+
 
 @dataclass(frozen=True)
 class ExecPlan:
@@ -1274,7 +1407,6 @@ def exec_plan(
     real: str | os.PathLike[str],
     environ: Mapping[str, str],
 ) -> ExecPlan:
-    first = argv[0] if argv else ""
     home = exec_home(settings, environ)
     env = dict(environ)
     # 공식 앱이 `~/.codex` 를 자기 것으로 쓰는 기기에서는 우리 자리를 따로 둔다. 그
@@ -1290,10 +1422,17 @@ def exec_plan(
     binary = os.fspath(real)
     # 호출자가 고른 다른 홈으로 뜨면 전환하지 않는다. 그 홈의 자격증명은 우리 것이 아니다.
     ours = os.path.realpath(home) == os.path.realpath(settings.default_home)
+    # 관리 홈은 store 가 교체하는 auth.json 을 Codex 도 실제로 읽도록 file backend 를
+    # 명시한다. 이 CLI override 는 Codex 의 implicit local daemon 재사용도 끊으므로, 이미
+    # 떠 있는 daemon 이 예전 토큰을 계속 쓰는 경로까지 함께 막는다. 반대로 명시적으로
+    # keyring/ephemeral 을 고른 호출은 그대로 보내되 파일 전환은 하지 않는다.
+    remote = _remote_invocation(argv)
+    uses_managed_credentials = ours and not remote and credentials.uses_file_store(argv)
+    command = credentials.managed_argv(binary, argv) if ours and not remote else (binary, *argv)
     return ExecPlan(
-        rotate=first not in NO_ROTATE_BEFORE and ours,
+        rotate=_rotate_before_codex(argv) and uses_managed_credentials,
         binary=binary,
-        argv=(binary, *argv),
+        argv=command,
         env=env,
         home=str(home),
     )
@@ -1433,7 +1572,18 @@ def cmd_init(settings: config.Settings) -> int:
     if state.kind == wiring.OURS:
         print(f"  ok    wired: {state.path}")
     elif state.complete(apart):
-        print(f"  ok    codex is already wired through {state.path}")
+        configured_store = credentials.configured_store(settings.default_home)
+        if configured_store in credentials.NON_FILE_STORES and not state.managed_exec:
+            ok = False
+            print(
+                f"  FIX   {state.path} rotates auth.json but Codex is configured for "
+                f"{configured_store}"
+            )
+            print("        so the direct Codex launch can read different credentials.")
+            print("        Delegate the final launch so both use the managed file backend:")
+            print('          exec env CODEX_ACCOUNT_BIN="$real_codex" codex-swap exec "$@"')
+        else:
+            print(f"  ok    codex is already wired through {state.path}")
     elif state.kind in (wiring.EXTERNAL, wiring.PROFILE):
         ok = False
         print(f"  FIX   {state.path} runs codex-swap but does not hand codex our home")
@@ -1459,11 +1609,24 @@ def cmd_init(settings: config.Settings) -> int:
     else:
         try:
             placed = wiring.install_wrapper()
-            print(f"  ok    wired: {placed}")
             if not wiring.on_path():
                 ok = False
+                print(f"  FIX   wrapper installed: {placed}")
                 print(f"        but {placed.parent} is not on your PATH — add it:")
                 print(f'          export PATH="{placed.parent}:$PATH"')
+            else:
+                selected = shutil.which("codex")
+                if selected is None or os.path.realpath(selected) != os.path.realpath(placed):
+                    ok = False
+                    print(f"  FIX   wrapper installed: {placed}")
+                    print(f"        but command -v codex resolves to {selected or 'nothing'}")
+                    print(
+                        f"        {placed.parent} must come before the other codex "
+                        "directory on PATH:"
+                    )
+                    print(f'          export PATH="{placed.parent}:$PATH"')
+                else:
+                    print(f"  ok    wired: {placed}")
         except OSError as exc:
             ok = False
             print(f"  FAIL  could not write {wiring.WRAPPER}: {exc}")

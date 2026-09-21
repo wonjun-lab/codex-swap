@@ -99,6 +99,14 @@ the package and the behaviour follows.
 If something already occupies `~/.local/bin/codex`, `init` leaves it alone and says so.
 A wrapper of your own that calls `codex-swap` counts as wired.
 
+On a Homebrew Mac, being somewhere on `PATH` is not enough: the wrapper has to win command
+lookup. Check `command -v codex`; it should print `~/.local/bin/codex`, not
+`/opt/homebrew/bin/codex`. If Homebrew wins, put the local directory first and rerun `init`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 ### Sharing a machine with the ChatGPT desktop app
 
 The desktop app runs its own codex with `CODEX_HOME=~/.codex` and keeps its account in
@@ -114,18 +122,18 @@ change: it is decided each time codex-swap runs, so installing the app later is 
 the app never touches, so there is nothing to migrate and nothing to lose. The first switch
 after the split fills the new home; `codex-swap init` says so if you have not made it yet.
 
-**If your own `codex` wrapper is on PATH** — from a dotfiles repo, say — it has to start codex
-in that home too. Otherwise switching changes codex-swap's credentials while codex keeps
-reading the app's, and nothing reports an error. Put this before it runs `codex-swap rotate`:
+**If your own `codex` wrapper is on PATH** — from a dotfiles repo, say — delegate the final
+launch to `codex-swap exec`. That keeps the home, credential backend, daemon freshness and
+rotation decision together. If the wrapper already resolved the upstream binary, pass it in:
 
 ```bash
-export CODEX_HOME="$(codex-swap home)"
+exec env CODEX_ACCOUNT_BIN="$real_codex" codex-swap exec "$@"
 ```
 
-It answers with the home `codex-swap exec` would pick, so the wrapper needs no conditions of
-its own: a `CODEX_HOME` you set on purpose comes back unchanged, and one inherited from the app
-(`~/.codex`) is replaced. `codex-swap init` looks for this and says so when it is missing, or
-when the wrapper still calls the old bash switcher.
+The older `export CODEX_HOME=...; codex-swap rotate; exec "$real_codex" ...` form can bypass
+the managed file credential backend or reuse a process that still holds the previous login.
+When the active Codex config explicitly selects `keyring`, `auto`, or `ephemeral`,
+`codex-swap init` detects that direct-launch mismatch and points to the delegation above.
 
 **Accounts registered before the split may share a login with the app.** A refresh token is
 replaced every time it is used, so two copies of one login cannot both stay valid. `doctor`
@@ -223,36 +231,22 @@ the policy on some invocations and not others — a shell function does the same
 
 ```bash
 codex() {
-  command codex-swap rotate >/dev/null || true   # see the two notes below
-  command codex "$@"
+  command codex-swap exec "$@"
 }
 ```
 
 ```fish
 function codex
-    command codex-swap rotate >/dev/null; or true
-    command codex $argv
+    command codex-swap exec $argv
 end
 ```
 
-`init` recognises any wrapper or function that calls `codex-swap` and leaves it alone,
-so it will not tell you something is missing that is not.
+`init` recognises this delegation and leaves it alone.
 </details>
 
-Two things about that line.
-
-**`|| true`.** `rotate` exits non-zero whenever it did *not* switch, which is the normal
-case. That is a deliberate contract — a caller can test the exit code to find out whether
-the account changed — but it means the command "fails" almost every time. Inside a script
-running under `set -e`, that aborts before codex ever starts.
-
-**`>/dev/null`, not `2>&1`.** `rotate` keeps a strict output discipline for exactly this
-spot: normally it writes nothing at all, to either stream, and only when a switch
-actually happened does it put one line on stderr. Swallowing stderr too means you never
-see that your account changed under you. If the configuration is broken it exits quietly without doing anything
-(fail-open) — the switcher will not be the reason codex fails to start.
-
-A codex session that is already running keeps the old token. The new account takes
+Automatic switching is checked only when a new `codex` process starts; there is no background
+timer. `CODEX_ROTATE_CHECK_INTERVAL` throttles those launch-time decisions rather than
+scheduling them. A session that is already running keeps the old token, so a change takes
 effect from the next codex invocation.
 
 ### Turning it off

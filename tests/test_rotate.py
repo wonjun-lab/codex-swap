@@ -16,14 +16,17 @@ from pathlib import Path
 
 import pytest
 
-from codex_swap.core import config, identity, paths, rotate, store
+from codex_swap.core import cache, config, identity, paths, rotate, store
 from codex_swap.core.types import Failed, Indeterminate, NoOp, ProbeResult, Switched, Usage
 
 
-def _write_auth(path: Path, email: str) -> None:
+def _write_auth(path: Path, email: str, *, refresh: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = base64.urlsafe_b64encode(json.dumps({"email": email}).encode()).decode().rstrip("=")
-    path.write_text(json.dumps({"tokens": {"id_token": f"h.{payload}.s"}}))
+    tokens = {"id_token": f"h.{payload}.s"}
+    if refresh is not None:
+        tokens["refresh_token"] = refresh
+    path.write_text(json.dumps({"tokens": tokens}))
     os.chmod(path, 0o600)
 
 
@@ -159,6 +162,37 @@ def test_throttle_blocks_a_second_call(env) -> None:
 # ── 지름길 ───────────────────────────────────────────────────────────────────
 
 
+def test_cached_app_shared_candidate_is_not_selected(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A safe old cache entry must not bypass the live shared-token guard."""
+    monkeypatch.setenv("CODEX_ACCOUNT_DEFAULT_HOME", str(env / ".codex-cli"))
+    (env / "Applications/ChatGPT.app").mkdir(parents=True)
+    s = settings()
+    _write_auth(store.active_auth(s), "a@example.com", refresh="active-refresh")
+    _write_auth(store.slot_auth(s, "a"), "a@example.com", refresh="active-refresh")
+    _write_auth(store.slot_auth(s, "b"), "b@example.com", refresh="shared-refresh")
+    _write_auth(env / ".codex/auth.json", "b@example.com", refresh="shared-refresh")
+    cache.write(
+        s,
+        "b",
+        {"usedPercent": 1, "email": "b@example.com", "reached": False},
+        now=1000.0,
+    )
+    probed: list[str] = []
+
+    def fake_probe(_codex_bin: str, home: str | None) -> ProbeResult:
+        name = Path(home).name if home else ""
+        probed.append(name)
+        return ok(95) if name == ".codex-cli" else pytest.fail(f"probed shared slot: {name}")
+
+    decision = rotate.rotate(s, probe_fn=fake_probe, now=1000.0)
+
+    assert not isinstance(decision, Switched)
+    assert identity.email_of(store.active_auth(s)) == "a@example.com"
+    assert probed == [".codex-cli"]
+
+
 def test_below_first_rung_does_not_probe_candidates(env) -> None:
     """주중 대부분의 호출이 여기서 끝난다. 후보를 프로브하면 비용이 헛나간다."""
     probed: list[str] = []
@@ -253,6 +287,37 @@ def test_a_switch_invalidates_the_cache(env) -> None:
     d = rotate.rotate(s, probe_fn=probe_map({".codex": ok(95), "b": ok(1)}))
     assert isinstance(d, Switched)
     assert not paths.cache_path(s).exists()
+
+
+def test_auto_switch_does_not_overwrite_a_login_that_changed_while_probing(env) -> None:
+    """느린 프로브 뒤 락을 잡기 전에 사람이 로그인한 계정은 보존한다."""
+    s = two_accounts(env, 95, 1)
+
+    def changes_active(codex_bin: str, home: str | None) -> ProbeResult:
+        if Path(home).name == "b":
+            _write_auth(store.active_auth(s), "manual@example.com")
+            return ok(1)
+        return ok(95)
+
+    d = rotate.rotate(s, probe_fn=changes_active)
+
+    assert isinstance(d, NoOp) and "changed while deciding" in d.reason
+    assert identity.email_of(store.active_auth(s)) == "manual@example.com"
+
+
+def test_logged_out_recovery_does_not_overwrite_a_login_that_arrived_while_probing(env) -> None:
+    """로그아웃 스냅숏도 집행 시점까지 auth.json 이 없을 때만 유효하다."""
+    s = settings()
+    _write_auth(store.slot_auth(s, "only"), "only@example.com")
+
+    def logs_in(codex_bin: str, home: str | None) -> ProbeResult:
+        _write_auth(store.active_auth(s), "manual@example.com")
+        return ok(1)
+
+    d = rotate.rotate(s, probe_fn=logs_in)
+
+    assert isinstance(d, NoOp) and "changed while deciding" in d.reason
+    assert identity.email_of(store.active_auth(s)) == "manual@example.com"
 
 
 @pytest.mark.parametrize(
