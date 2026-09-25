@@ -50,6 +50,10 @@ _OTHER_ESC = re.compile(r"\x1b[()][B0]|\x1b[=>]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\
 _ZERO_WIDTH = frozenset("\x0e\x0f\x07\x00")
 """칸을 차지하지 않는 제어 문자. SO/SI 는 ncurses 가 속성 전환에 쓴다."""
 
+_BLANK_SCREEN_GRACE = 1.5
+"""화면이 끝내 비어 있어도 이만큼 조용하면 첫 키를 보낸다(초). 배경색 질의의 대기(0.12 초)보다
+한참 길고, 테스트 하나를 눈에 띄게 늦추지 않을 만큼 짧다."""
+
 DEFAULT_COLS = 140
 DEFAULT_ROWS = 24
 
@@ -438,8 +442,12 @@ class Session:
                     if ready is not None
                     else any(line.strip() for line in lines)
                 )
-                if not shown:
+                # 끝내 아무 글자도 안 그리는 터미널이 있다 — macOS 의 `TERM=dumb` 는 에뮬레이터가
+                # 읽을 글자를 하나도 내지 않아, 기다림만 있던 때는 키를 영영 안 보내고 시간이
+                # 다 됐다. 질의의 대기는 0.12 초라 그보다 한참 오래 조용하면 시작은 끝난 것이다.
+                if not shown and idle < max(settle, _BLANK_SCREEN_GRACE):
                     continue
+                shown = True
             if index < len(keys) and idle > settle:
                 os.write(fd, keys[index])
                 index += 1

@@ -405,3 +405,19 @@ def test_q_sent_the_moment_the_screen_appears_still_quits(session: Session) -> N
     for _ in range(3):
         screen = session.run([b"q"], settle=0.0, total=10.0)
         assert screen.exit_code == 0, screen.text
+
+
+@_needs_pty
+def test_keys_still_go_out_when_the_screen_never_shows_a_letter(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS 의 `TERM=dumb` 는 에뮬레이터가 읽을 글자를 하나도 내지 않는다. "글자가 보이면
+    보낸다" 만 있던 때는 `q` 를 영영 안 보내고 시간이 다 돼 `-1` 로 끝났다(#33 의 CI)."""
+    import terminal
+
+    real = terminal.render
+    monkeypatch.setattr(
+        terminal, "render", lambda raw, cols, rows: ([""] * rows, real("", cols, rows)[1])
+    )
+    screen = session.run([b"q"], total=15.0)
+    assert screen.exit_code == 0
