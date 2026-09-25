@@ -65,3 +65,30 @@ def test_the_environment_table_matches_the_code() -> None:
         source |= set(re.findall(r'"(CODEX_[A-Z_]+)"', path.read_text(encoding="utf-8")))
     missing = documented - source
     assert not missing, f"README 가 코드에 없는 환경변수를 적고 있다: {sorted(missing)}"
+
+
+def test_keys_named_in_the_prose_are_keys_the_screen_has() -> None:
+    """키를 두 번 옮기는 동안 본문에 옛 키가 남았다 — `o` 키, `p` 화면, `r` 로 새로고침.
+
+    샘플·메뉴 목록만 재던 검사는 그 문장들을 못 봤다. 여기서는 본문이 키를 부르는 두 모양을
+    다 잰다: "`x` key/screen" 은 실제로 있는 키여야 하고, "`메뉴 이름` … (`x`)" 는 그 항목의
+    키여야 한다.
+    """
+    screen_keys = (
+        set(tui.MENU_KEYS.values())
+        | set(tui.MANAGE_KEYS.values())
+        | {key for key, _ in (*tui.POLICY_KEYS, *tui.CREDIT_KEYS, *tui.DOCTOR_KEYS)}
+        | {"b", "h", "?"}
+    )
+    for key in re.findall(r"`([a-z])` (?:key|screen)", README):
+        assert key in screen_keys, f"README 가 없는 키를 부른다: `{key}`"
+
+    titles = {
+        **{title: tui.MENU_KEYS[action] for action, title in tui.MENU},
+        **{title: tui.MANAGE_KEYS[action] for action, title in tui.MANAGE_ITEMS},
+    }
+    pairs = re.findall(r"`([A-Z][A-Za-z ]+)`[^`\n]{0,24}\(`([a-z])`\)", README)
+    checked = [(name, key) for name, key in pairs if name in titles]
+    assert checked, "검사할 짝을 하나도 못 찾았다 — 정규식이 README 와 어긋났다"
+    for name, key in checked:
+        assert key == titles[name], f"README: `{name}` 의 키를 `{key}` 로 적었다({titles[name]})"

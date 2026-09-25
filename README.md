@@ -288,7 +288,7 @@ codex-swap auto off
 codex-swap auto on
 ```
 
-The `o` key in the TUI toggles the same file. To skip a single run, set
+`Mode` in the TUI (`m`) toggles the same file. To skip a single run, set
 `CODEX_ROTATE_SKIP=1`.
 
 > The path sits under `~/.claude` because an earlier implementation used that directory
@@ -308,7 +308,7 @@ Answers you will see most:
 
 | Output | Meaning | What to do |
 | --- | --- | --- |
-| `active N% below first rung M%` | There is still headroom | Nothing. Lower the first rung on the `p` screen if you want |
+| `active N% below first rung M%` | There is still headroom | Nothing. Lower the first rung under `Swap strategy` (`s`) if you want |
 | `active usage unreadable` | Could not read the usage | See "When usage shows `?`" below |
 | `no candidate answered a probe` | Could not read any of the other accounts | Same |
 | `only one account registered` | Nothing to switch to | `codex-swap add <label>` |
@@ -344,7 +344,7 @@ If discovery is the problem, point `CODEX_ACCOUNT_BIN` straight at the binary.
 
 `list` **never touches the network** — it only reads the cache. `codex-swap list --fresh`
 probes every slot and stores what it reads; `status --fresh` only reads the active account,
-and `r` in the TUI reads them all.
+and `Fetch latest usage` in the TUI (`f`) reads them all.
 
 Watch the age next to `~`. Nothing refreshes an idle account on its own: `rotate` stops
 early while the active account is below the first rung, which is most of the time, so a
@@ -407,14 +407,14 @@ alternating would never happen. The candidate has to be at least the margin (5%p
 default) lower before anything changes, and there is a cooldown (15 min) between
 switches.
 
-Edit it on the `p` screen of the TUI or override it with environment variables. Values
+Edit it under `Swap strategy` in the TUI (`s`) or override it with environment variables. Values
 live in `~/.codex/accounts/config.json`, and **environment variables win.**
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `codex-swap` (no arguments) | TUI: list, usage bars and policy editor on one screen |
+| `codex-swap` (no arguments) | TUI: accounts, usage bars, swap strategy and account settings |
 | `codex-swap adopt <label>` | Store the account you are logged in as under `<label>` |
 | `codex-swap add <label>` | Log in to a new slot (opens a browser) |
 | `codex-swap list [--fresh]` | Stored accounts and cached usage. `--fresh` probes every slot |
@@ -539,7 +539,7 @@ This tool moves OAuth tokens around, so here is what it does and does not do.
 ```
 ~/.codex/auth.json                    active account (the email inside it *is* "which account am I on")
 ~/.codex/accounts/<label>/auth.json   per-slot credentials (mode 600, directory 700)
-~/.codex/accounts/config.json         policy (written by the `p` screen)
+~/.codex/accounts/config.json         policy (written by the Swap strategy screen)
 ~/.codex/accounts/.usage-cache.json   per-label usage cache (TTL)
 ~/.codex/accounts/.last-rotate        last automatic switch (cooldown)
 ~/.codex/accounts/.last-check         last decision (throttle)
