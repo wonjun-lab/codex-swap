@@ -1,6 +1,6 @@
 [project]
 name = "codex-swap"
-version = "0.3.1"
+version = "0.3.2"
 description = "Multi-account switcher for the Codex CLI — stores, probes, and rotates ChatGPT accounts"
 readme = "README.md"
 license = "MIT"

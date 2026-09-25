@@ -199,7 +199,7 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
 MENU: tuple[tuple[str, str], ...] = (
-    ("policy", "Switching policy"),
+    ("policy", "Settings"),
     ("refresh", "Fetch latest usage"),
     ("credits", "Reset usage"),
     ("adopt", "Add current login"),
@@ -244,9 +244,11 @@ MENU_KEYS: dict[str, str] = {
 - 자동 전환 켜고 끄기는 `Mode: auto` / `Mode: manual`(`m`) 이다. `Automatic switching: on`
   이던 때는 `a` 를 `Add` 가 먼저 가져 유일하게 가운데 글자(`o`)가 키였다. "자동이냐 수동이냐"
   는 설명 없이 읽히는 구분이고, 상태가 이름 안에 들어가 있어 on/off 를 따로 적지 않는다.
-- `Switching policy`(`s`) 는 `Policy settings` 였다. 무엇의 정책인지 이름이 말하지 않았다.
-  `s` 는 원래 계정 줄의 전환 키였는데, `enter` 와 같은 일을 하는 두 번째 키라 비웠다 —
-  옛 손버릇으로 눌러도 정책 화면이 열릴 뿐 되돌릴 수 없는 일은 안 일어난다.
+- `Settings`(`s`) 는 `Policy settings` → `Switching policy` 를 거쳐 한 낱말이 됐다. 이 화면에서
+  고칠 수 있는 것은 전환의 문턱·간격뿐이라 "설정" 이면 충분하고, 두 낱말이던 동안은 접힌
+  메뉴에서 혼자 길어 옆 `Auto` 와 같은 말(`Switching`)로 읽혔다. `s` 는 원래 계정 줄의 전환
+  키였는데, `enter` 와 같은 일을 하는 두 번째 키라 비웠다 — 옛 손버릇으로 눌러도 설정 화면이
+  열릴 뿐 되돌릴 수 없는 일은 안 일어난다.
 - `Add current login`(`a`) 은 `Adopt the account in use` 였다. `Add` 만 두면 CLI 의 `add`
   (브라우저로 **새** 계정에 로그인) 로 읽히는데, 이 항목은 **지금 로그인된 것**을 목록에
   넣을 뿐이다. `current login` 이 그 차이를 말한다. CLI 이름은 그대로 `adopt` 다.
@@ -307,7 +309,7 @@ BACK_KEYS = (27, ord("b"), ord("B"))
 """
 
 
-def account_keys(view: View) -> tuple[tuple[str, str], ...]:
+def account_keys(view: View, *, folded: bool = False) -> tuple[tuple[str, str], ...]:
     """계정 화면의 조작법. `enter` 의 설명만 커서 자리를 따라간다.
 
     계정 줄에서는 전환이고 메뉴 줄에서는 그 항목을 여는데, 한 낱말로 둘을 다 말하려던
@@ -315,7 +317,12 @@ def account_keys(view: View) -> tuple[tuple[str, str], ...]:
     """
     if selected_menu(view) is None:
         return ACCOUNT_KEYS
-    return tuple((key, "open" if key == "enter" else label) for key, label in ACCOUNT_KEYS)
+    # 접힌 메뉴 위에서는 `←→` 가 움직인다. 글자 폭이 `↑↓` 와 같아 줄 나눔이 흔들리지 않는다.
+    arrows = "←→" if folded else "↑↓"
+    return tuple(
+        (arrows if key == "↑↓" else key, "open" if key == "enter" else label)
+        for key, label in ACCOUNT_KEYS
+    )
 
 
 EMPTY_KEYS = (("a", "add current login"), ("?", "help"), ("q", "quit"))
@@ -1052,9 +1059,69 @@ def _menu_word(action: str, view: View) -> str:
     """접힌 메뉴에 쓸 짧은 이름. 단축키 글자가 반드시 들어 있다(테스트가 지킨다)."""
     if action == "auto":
         return f"Mode: {'manual' if view.auto_off else 'auto'}"
-    title = menu_title(action, view)
-    # 정책만 이름 전체다. 첫 낱말 `Switching` 만 남기면 무엇의 정책인지 사라진다.
-    return title if action == "policy" else title.split()[0]
+    return menu_title(action, view).split()[0]
+
+
+def _folded_layout(view: View, width: int | None) -> list[list[tuple[str, str, int]]]:
+    """접힌 메뉴의 줄 나눔. 줄마다 `(동작, 낱말, 시작 칸)`.
+
+    그리는 쪽(`compact_menu`)과 움직이는 쪽(`next_cursor`)이 같은 나눔을 봐야 한다 — `↓` 가
+    화면에 보이는 바로 아래 항목으로 가려면 칸 위치까지 같아야 한다.
+    """
+    words = [(action, _menu_word(action, view)) for action, _ in MENU]
+
+    def draw(chunk: list[tuple[str, str]]) -> str:
+        return _INDENT + "  ".join(word for _, word in chunk)
+
+    chunks = [words] if width is None else _balanced(words, width, draw)
+    layout: list[list[tuple[str, str, int]]] = []
+    for chunk in chunks:
+        at = len(_INDENT)
+        line = []
+        for action, word in chunk:
+            line.append((action, word, at))
+            at += _width(word) + 2
+        layout.append(line)
+    return layout
+
+
+def next_cursor(view: View, direction: str, *, height: int | None, width: int | None) -> int:
+    """방향키 하나가 커서를 어디로 옮기나. `up` · `down` · `left` · `right`.
+
+    **접힌 메뉴는 옆으로 늘어선 줄이라 옆으로 움직인다.** 한동안 거기서도 `↑↓` 가 다음 항목으로
+    갔는데, 가로로 놓인 것을 세로 키로 넘기는 셈이라 누를 때마다 커서가 엉뚱한 방향으로 튀었다.
+
+    - 계정 줄과 세로 메뉴: `↑↓` 로 한 칸씩. `←→` 는 아무것도 안 한다.
+    - 접힌 메뉴: `←→` 로 앞뒤 항목. `↑` 은 윗줄의 바로 위 항목, 첫 줄이면 마지막 계정으로.
+      `↓` 은 아랫줄의 바로 아래 항목(휴대폰에서 두 줄로 접혔을 때), 마지막 줄이면 그대로.
+    """
+    n = len(view.rows)
+    last = cursor_limit(view)
+    at = view.cursor
+    folded = menu_shape(view, height=height, width=width) == "folded"
+    if not folded or at < n:
+        if direction == "up":
+            return max(at - 1, 0)
+        if direction == "down":
+            return min(at + 1, last)
+        return at
+
+    order = [action for action, _ in MENU]
+    layout = _folded_layout(view, width)
+    here = order[at - n]
+    row = next(i for i, line in enumerate(layout) if any(a == here for a, _, _ in line))
+    col = next(c for a, _, c in layout[row] if a == here)
+    if direction == "left":
+        return max(at - 1, n)
+    if direction == "right":
+        return min(at + 1, last)
+    target = row - 1 if direction == "up" else row + 1
+    if target < 0:
+        return n - 1 if n else at
+    if target >= len(layout):
+        return at
+    nearest = min(layout[target], key=lambda item: abs(item[2] - col))[0]
+    return n + order.index(nearest)
 
 
 def compact_menu(view: View, width: int | None) -> list[tuple[str, Style]]:
@@ -1067,13 +1134,8 @@ def compact_menu(view: View, width: int | None) -> list[tuple[str, Style]]:
     단계에서 메뉴 아래쪽이 잘려 나갔고, 잘린 항목의 단축키는 화면 어디에도 없었다 —
     조작법 줄은 메뉴에 있는 키를 다시 적지 않는다. 키가 **어딘가에는** 보여야 한다.
     """
-    words = [(action, _menu_word(action, view)) for action, _ in MENU]
     picked = selected_menu(view)
-
-    def draw(chunk: list[tuple[str, str]]) -> str:
-        return _INDENT + "  ".join(word for _, word in chunk)
-
-    chunks = [words] if width is None else _balanced(words, width, draw)
+    chunks = [[(action, word) for action, word, _ in line] for line in _folded_layout(view, width)]
     out: list[tuple[str, Style]] = []
     for chunk in chunks:
         text = _INDENT
@@ -1205,7 +1267,22 @@ def render_screen(
         return _render_doctor(view, height=height, width=width)
     if view.mode == "help":
         return _render_help(view, height=height, width=width)
+    return _render_accounts(view, height=height, width=width)[0]
 
+
+def menu_shape(view: View, *, height: int | None, width: int | None) -> str:
+    """이 크기에서 계정 화면의 메뉴 모양. `full` · `folded` · `none`.
+
+    키 처리가 이것을 본다 — 접힌 메뉴는 한 줄에 항목이 옆으로 늘어서므로 `←→` 로 움직인다.
+    그리는 것과 같은 판단을 따로 흉내 내면 둘이 갈리는 날이 오므로, 그리는 함수에게 묻는다.
+    """
+    return _render_accounts(view, height=height, width=width)[1]
+
+
+def _render_accounts(
+    view: View, *, height: int | None, width: int | None
+) -> tuple[list[tuple[str, Style]], str]:
+    """계정 화면과 **그때 고른 메뉴 모양**."""
     s = view.settings
     # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
     # 바보다 먼저 필요한 정보다.
@@ -1263,7 +1340,7 @@ def render_screen(
         ]
         if view.message:
             empty += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
-        return head + empty
+        return head + empty, "none"
 
     columns = (
         f"{_INDENT}{_cell('LABEL', label_cols)}{_GUTTER}"
@@ -1314,25 +1391,31 @@ def render_screen(
         folded_n = 1 + len(compact_menu(view, width))
         minimal = _keys_block(MINIMAL_KEYS, width)
         #
-        # 그래도 안 들어가면 **빈 줄부터** 뺀다(`tight`). 제목 아래·메뉴 앞·조작법 앞·메시지
-        # 앞의 빈 줄은 읽기 좋게 하려는 것이지 정보가 아니다 — 플립 커버에서는 그 넷이
-        # 메뉴 한 줄보다 비쌌다.
+        # 그래도 안 들어가면 **빈 줄부터** 뺀다. 제목 아래·조작법 앞·메시지 앞의 빈 줄은 읽기
+        # 좋게 하려는 것이지 정보가 아니다(`tight=1`). 메뉴 앞 빈 줄은 목록과 메뉴를 가르는
+        # 자리라 마지막에 뺀다(`tight=2`) — 플립 커버에서는 그 넷이 메뉴 한 줄보다 비쌌다.
+        #
+        # **세로 메뉴는 범례·축·빈 줄보다 먼저다.** 한때 세로 메뉴를 범례·축과 함께만 시도하고
+        # 안 되면 곧장 접었는데, 그러면 16 줄짜리 노트북 창(분할 창)에서도 메뉴가 한 줄로 접혀
+        # 낯선 가로 메뉴를 봐야 했다. 접힌 메뉴는 정말 좁은 화면을 위한 것이다.
         candidates = (
-            ("full", keys, legend, True, False),
-            ("full", keys, [], True, False),
-            ("folded", keys, legend, True, False),
-            ("folded", keys, [], False, False),
-            ("folded", keys, [], False, True),
-            ("folded", minimal, [], False, False),
-            ("folded", minimal, [], False, True),
-            ("none", minimal, [], False, True),
-            ("none", [], [], False, True),
+            ("full", keys, legend, True, 0),
+            ("full", keys, [], True, 0),
+            ("full", keys, [], True, 1),
+            ("full", keys, [], True, 2),
+            ("folded", keys, legend, True, 0),
+            ("folded", keys, [], False, 0),
+            ("folded", keys, [], False, 2),
+            ("folded", minimal, [], False, 0),
+            ("folded", minimal, [], False, 2),
+            ("none", minimal, [], False, 2),
+            ("none", [], [], False, 2),
         )
         for shape, foot, note, all_rows, tight in candidates:
             gap = [] if tight else [("", _PLAIN)]
             top = [header[0], header[-1]] if tight else header
             tail = ([*gap, *foot, *note] if foot or note else []) + ([*gap, *keep] if keep else [])
-            menu_n = {"full": 1 + len(MENU), "folded": folded_n, "none": 1}[shape] - bool(tight)
+            menu_n = {"full": 1 + len(MENU), "folded": folded_n, "none": 1}[shape] - (tight == 2)
             for axis in (axis_lines, []):
                 room = height - len(top) - len(tail) - menu_n - len(axis)
                 # 전부 들어가거나, 창으로 볼 수 있으면(행 1 + 스크롤 표시 2) 된다.
@@ -1342,13 +1425,18 @@ def render_screen(
                 continue
             break
         menu_shape, axis_lines, header = shape, axis, top
-        spaced = not tight
+        spaced = tight < 2
         if menu_shape == "none" and selected_menu(view) is not None:
             # 메뉴를 뺄 만큼 짧은 화면(대략 7 줄 이하)에서 커서가 메뉴에 있으면 그 항목이
             # 안 보인다. 이때만 접힌 메뉴를 되살린다 — 넘치는 것은 아래 클램프가 본문에서
             # 덜어 내고, 커서 줄은 지킨다. 이 높이에서는 모양이 흔들리는 것보다 커서를
             # 잃는 것이 나쁘다.
             menu_shape = "folded"
+        if foot is keys and menu_shape == "folded":
+            # 접힌 메뉴 위의 커서는 `←→` 로 움직인다 — 조작법도 그렇게 말해야 한다. 줄 나눔은
+            # `ACCOUNT_KEYS` 모양을 따르므로 줄 수는 그대로다.
+            foot = _keys_block(account_keys(view, folded=True), width, shape=ACCOUNT_KEYS)
+            tail = ([*gap, *foot, *note] if foot or note else []) + ([*gap, *keep] if keep else [])
         if len(rows) > room:
             # 창으로 볼 때는 스크롤 표시 **두 줄을 늘** 쓴다. 표시가 필요할 때만 넣으면
             # 커서가 맨 위·아래에 닿을 때마다 줄 수가 하나씩 바뀌어 조작법이 오르내렸다.
@@ -1476,7 +1564,7 @@ def render_screen(
         if len(header) + len(body) + len(tail) > height and tail and tail[0][0] == "":
             tail = tail[1:]
 
-    return header + body + tail
+    return header + body + tail, menu_shape
 
 
 def credit_rows(
@@ -1552,6 +1640,7 @@ def _help_entries(view: View) -> list[tuple[str, str, str | None]]:
         ("", "", None),
         ("", "Everywhere", None),
         ("↑↓", "move", None),
+        ("←→", "move along the menu when it is folded into one line", None),
         ("b", "back to the accounts (esc too; ← too, except in Policy)", None),
         ("?", "this help (h too)", None),
         ("q", "quit", None),
@@ -1763,7 +1852,7 @@ def _render_policy(
     # 하필 조작법(`b cancel`·`s save`)이 먼저 잘려, 휴대폰에서 이 화면을 나가는 법이
     # 보이지 않았다.
     tagged: list[tuple[str, tuple[str, Style]]] = [
-        ("head", ("codex-swap · policy", _PLAIN)),
+        ("head", ("codex-swap · settings", _PLAIN)),
         ("gap", ("", _PLAIN)),
     ]
     for i, (key, title, why) in enumerate(POLICY_FIELDS):
@@ -2886,6 +2975,14 @@ def probing_note(view: View, labels: Sequence[str]) -> View:
     return replace(view, message=f"{view.message}   {note}" if view.message else note)
 
 
+_ARROWS = {
+    curses.KEY_UP: "up",
+    curses.KEY_DOWN: "down",
+    curses.KEY_LEFT: "left",
+    curses.KEY_RIGHT: "right",
+}
+
+
 def _loop(
     stdscr, settings: config.Settings, want: str = theme.DARK
 ) -> str | None:  # pragma: no cover - 터미널 필요
@@ -3050,16 +3147,14 @@ def _loop(
 
         if key in HELP_KEYS:
             view = open_help(view)
-        elif key == curses.KEY_UP:
+        elif key in _ARROWS:
+            # 어디로 갈지는 `next_cursor` 가 정한다 — 접힌 메뉴에서는 `←→` 가 옆 항목으로 간다.
+            # 판단에는 **그리는 것과 같은 크기**를 준다(`_paint` 가 마지막 줄·칸을 비워 둔다).
+            rows, cols = stdscr.getmaxyx()
+            moved = next_cursor(view, _ARROWS[key], height=max(rows - 1, 0), width=max(cols - 1, 0))
             # 커서를 움직일 때마다 디스크를 다시 읽는다. 배경에서 rotate 가 돌면 `*` 가
             # 낡는데, 이 화면의 존재 이유가 바로 그 회전이다.
-            view = build_view(settings, cursor=max(0, view.cursor - 1), carry=_carry(view))
-        elif key == curses.KEY_DOWN:
-            view = build_view(
-                settings,
-                cursor=min(cursor_limit(view), view.cursor + 1),
-                carry=_carry(view),
-            )
+            view = build_view(settings, cursor=moved, carry=_carry(view))
         elif key in (curses.KEY_ENTER, 10, 13) or menu_action_for(key) is not None:
             # `enter` 는 **들어간다** 하나다. 순수하게 끝나는 것은 `activate` 가 하고,
             # 프로브·프롬프트·종료가 걸린 것만 여기서 가로챈다 — 분기를 두 벌로 두지

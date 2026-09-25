@@ -360,7 +360,7 @@ def test_a_sub_screen_goes_back_with_a_key_a_phone_has(session: Session, back: b
     screen = session.run([b"t", back, b"q"], settle=1.0, total=60.0)
     assert screen.exit_code == 0, screen.text
     assert "codex-swap · login test" not in screen.text, screen.text
-    assert "Switching policy" in screen.text, screen.text
+    assert "Settings" in screen.text, screen.text
 
 
 @_needs_pty
@@ -378,9 +378,9 @@ def test_a_folded_menu_marks_the_cursor_by_reversing_the_word(session: Session) 
     실제 터미널에서 고른 낱말이 뒤집혀(SGR 7) 그려져야 한다."""
     down = [b"\x1bOB"] * 2  # 계정 2 개를 지나 메뉴 첫 항목
     screen = session.run(down, cols=40, rows=14, settle=0.8)
-    assert "Switching policy" in screen.text, screen.text
+    assert "Settings" in screen.text, screen.text
     assert not any(line.startswith(" > ") for line in screen.lines), "세로 메뉴로 펼쳐졌다"
-    assert "7" in screen.attrs_of("Switching policy"), screen.attrs_of("Switching policy")
+    assert "7" in screen.attrs_of("Settings"), screen.attrs_of("Settings")
     assert "7" not in screen.attrs_of("Fetch"), "고르지 않은 항목까지 뒤집었다"
 
 
@@ -421,3 +421,12 @@ def test_keys_still_go_out_when_the_screen_never_shows_a_letter(
     )
     screen = session.run([b"q"], total=15.0)
     assert screen.exit_code == 0
+
+
+@_needs_pty
+def test_right_arrow_walks_a_folded_menu_in_a_real_terminal(session: Session) -> None:
+    """`_loop` 이 방향키를 `next_cursor` 에 넘기는지. 짧은 창에서 메뉴가 접히고, `↓↓` 로 첫
+    항목에 들어가 `→→` 로 세 번째(Reset usage)까지 간 뒤 `enter`."""
+    keys = [b"\x1bOB", b"\x1bOB", b"\x1bOC", b"\x1bOC", b"\n"]
+    screen = session.run(keys, cols=40, rows=12, settle=0.6, total=30.0)
+    assert "codex-swap · reset usage" in screen.text, screen.text

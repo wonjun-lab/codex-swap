@@ -21,7 +21,7 @@ codex-swap    gate 70% · margin 5%p
                                                               ┴    ┻  ┴  ┴
                                                               50   70 85 95    ┻ = current gate
 
-   Switching policy
+   Settings
    Fetch latest usage
    Reset usage
    Add current login
@@ -40,22 +40,23 @@ is an alternative to switching.
 
 The cursor runs past the accounts into the menu underneath, and `enter` does whatever the
 row it is on says: switches to that account, or opens that menu entry. Every menu entry also
-has a shortcut, the first letter of its name drawn in bold: **S**witching policy, **F**etch,
+has a shortcut, the first letter of its name drawn in bold: **S**ettings, **F**etch,
 **R**eset, **A**dd, **M**ode, **T**est, **U**pdate, **Q**uit. `Mode` turns automatic switching
 on and off: `auto` lets accounts switch on their own as usage climbs, `manual` switches only
 when you pick an account. `Add current login` keeps the login you are already in (`codex-swap adopt`); signing a
 new account in through the browser is `codex-swap add`. `Test all logins` really tries each
 one and says how to fix what fails (`codex-swap doctor`).
 
-On a screen too short for the whole menu, it folds into one or two lines with the same bold
-letters, and the cursor walks through that line instead of unfolding it, so the screen keeps
-its shape wherever the cursor is. On a narrow screen the key hints wrap onto more lines
+On a screen too short for the whole menu — after the stale legend, the usage axis and the
+blank lines have already made room — it folds into one or two lines with the same bold
+letters. There `←` and `→` walk along the line and `↑` goes back to the accounts, and the
+screen keeps its shape wherever the cursor is. On a narrow screen the key hints wrap onto more lines
 instead of losing their words. On an account row, `n` renames that slot and `d` removes it;
 those two stay row actions because the menu cursor no longer selects an account. `?` (or `h`)
 lists every key.
 
 Every screen you open from the menu goes back with `b` as well as `esc`, and with `←` outside
-the policy screen — phone and tablet SSH keyboards tend to hide `esc` and backspace.
+the settings screen — phone and tablet SSH keyboards tend to hide `esc` and backspace.
 
 Switching itself is reversible — you can always switch back. During a switch, the one
 consequence you cannot undo is discarding credentials that are not saved in any slot, and
@@ -242,8 +243,8 @@ codex-swap
 
 `enter` switches to the account under the cursor, `n` renames it, `d` removes it.
 Everything else is in the menu underneath: move down and press `enter`, or press the bold
-letter in the entry's name — `f` fetches the latest usage, `r` resets usage, `s` edits the
-switching policy, `t` tests every login.
+letter in the entry's name — `f` fetches the latest usage, `r` resets usage, `s` opens the
+settings (the switching policy), `t` tests every login.
 
 ## Wiring up automatic switching
 
