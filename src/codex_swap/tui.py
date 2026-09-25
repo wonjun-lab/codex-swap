@@ -161,6 +161,18 @@ class View:
     help_scroll: int = 0
     """도움말을 몇 줄 내려 봤나. 휴대폰 높이에는 도움말이 한 화면에 안 들어간다."""
 
+    manage_cursor: int = 0
+    """`Account settings` 화면의 커서. 계정 행 다음에 항목이 이어진다(메인과 같은 모양)."""
+
+    pick: str | None = None
+    """`Rename account`·`Delete account` 를 고른 뒤 **어느 계정인지 고르는 중**이면 그 동작.
+
+    계정에 커서를 두고 `r`·`d` 를 누르면 곧바로 되지만, 항목을 먼저 고른 사람에게는 대상을
+    되물어야 한다 — 커서는 계정과 항목에 동시에 있을 수 없다."""
+
+    back_to: str = "accounts"
+    """하위 화면에서 `b` 로 돌아갈 곳. 로그인 점검은 메인이 아니라 `Account settings` 에서 연다."""
+
 
 POLICY_FIELDS = (
     (
@@ -199,12 +211,11 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
 MENU: tuple[tuple[str, str], ...] = (
-    ("policy", "Settings"),
+    ("policy", "Swap strategy"),
+    ("auto", "Mode"),
     ("refresh", "Fetch latest usage"),
     ("credits", "Reset usage"),
-    ("adopt", "Add current login"),
-    ("auto", "Mode"),
-    ("doctor", "Test all logins"),
+    ("accounts", "Account settings"),
     ("update", "Update codex-swap"),
     ("quit", "Quit"),
 )
@@ -219,11 +230,10 @@ MENU: tuple[tuple[str, str], ...] = (
 
 MENU_KEYS: dict[str, str] = {
     "policy": "s",
+    "auto": "m",
     "refresh": "f",
     "credits": "r",
-    "adopt": "a",
-    "auto": "m",
-    "doctor": "t",
+    "accounts": "a",
     "update": "u",
     "quit": "q",
 }
@@ -244,20 +254,35 @@ MENU_KEYS: dict[str, str] = {
 - 자동 전환 켜고 끄기는 `Mode: auto` / `Mode: manual`(`m`) 이다. `Automatic switching: on`
   이던 때는 `a` 를 `Add` 가 먼저 가져 유일하게 가운데 글자(`o`)가 키였다. "자동이냐 수동이냐"
   는 설명 없이 읽히는 구분이고, 상태가 이름 안에 들어가 있어 on/off 를 따로 적지 않는다.
-- `Settings`(`s`) 는 `Policy settings` → `Switching policy` 를 거쳐 한 낱말이 됐다. 이 화면에서
-  고칠 수 있는 것은 전환의 문턱·간격뿐이라 "설정" 이면 충분하고, 두 낱말이던 동안은 접힌
-  메뉴에서 혼자 길어 옆 `Auto` 와 같은 말(`Switching`)로 읽혔다. `s` 는 원래 계정 줄의 전환
-  키였는데, `enter` 와 같은 일을 하는 두 번째 키라 비웠다 — 옛 손버릇으로 눌러도 설정 화면이
-  열릴 뿐 되돌릴 수 없는 일은 안 일어난다.
-- `Add current login`(`a`) 은 `Adopt the account in use` 였다. `Add` 만 두면 CLI 의 `add`
-  (브라우저로 **새** 계정에 로그인) 로 읽히는데, 이 항목은 **지금 로그인된 것**을 목록에
-  넣을 뿐이다. `current login` 이 그 차이를 말한다. CLI 이름은 그대로 `adopt` 다.
-- `Test all logins`(`t`) 는 `Check accounts` 였다. 무엇을 확인하는지가 없어서 사용량을 보는
-  것으로도 읽혔다. 실제로 하는 일은 각 로그인을 **정말로 써 보고** 안 되는 것과 고치는 법을
-  말하는 것이다(CLI `doctor`).
+- `Swap strategy`(`s`) 는 `Policy settings` → `Switching policy` → `Settings` 를 거쳤다. 이
+  화면에서 고치는 것은 **언제 갈아타는가**(문턱·간격)뿐이라 그것을 이름에 적는다. 접힌 한 줄
+  메뉴에서는 `Strategy` 로 줄인다 — `Swap` 만 남기면 "지금 갈아탄다" 는 버튼으로 읽힌다.
+  `s` 는 원래 계정 줄의 전환 키였는데, `enter` 와 같은 일을 하는 두 번째 키라 비웠다.
+- **계정을 다루는 일은 `Account settings`(`a`) 아래로 모았다** — 현재 로그인 추가·이름
+  바꾸기·지우기·전체 로그인 점검. 매일 쓰는 것(전환·사용량·전략·모드·리셋)만 메인에 남긴다.
+  한동안 이름 바꾸기(`n`)·지우기(`d`)가 메인 조작법 줄에 늘 떠 있었는데, 드물게 쓰는 되돌릴
+  수 없는 일이 가장 자주 보는 화면의 자리를 차지하는 셈이었다.
+- `Reset usage`(`r`) 는 메인에 둔다. 소진된 계정 앞에서 전환의 대안으로 바로 찾는 일이다.
 
-`n`·`d`·`h` 는 계정 행과 도움말이 쓰므로 여기 쓸 수 없다. 테스트가 겹침을 지킨다.
+`h` 는 도움말이 쓰므로 여기 쓸 수 없다. 테스트가 겹침을 지킨다.
 """
+
+MENU_SHORT: dict[str, str] = {"policy": "Strategy", "accounts": "Accounts"}
+"""접힌 한 줄 메뉴에서 쓸 짧은 이름. 없으면 첫 낱말을 쓴다. 단축키 글자가 반드시 들어 있다."""
+
+MANAGE_ITEMS: tuple[tuple[str, str], ...] = (
+    ("adopt", "Add current login"),
+    ("rename", "Rename account"),
+    ("remove", "Delete account"),
+    ("doctor", "Test all logins"),
+)
+"""`Account settings` 화면의 항목. 키는 첫 글자다 — 하위 화면이라 메인의 키와 겹쳐도 된다.
+
+`Delete account` 가 `d` 인 것은 예전 메인의 지우기 키와 같게 하려는 것이다. 되돌릴 수 없는
+일이라 손버릇이 이어지는 편이 낫다(그래도 y/N 을 한 번 묻는다).
+"""
+
+MANAGE_KEYS: dict[str, str] = {"adopt": "a", "rename": "r", "remove": "d", "doctor": "t"}
 
 
 _UPDATE_ASK = "  Leave the screen and update codex-swap? [y/N] "
@@ -267,12 +292,8 @@ _UPDATE_ASK = "  Leave the screen and update codex-swap? [y/N] "
 """
 
 
-ACCOUNT_COMMAND_KEYS = (("n", "rename"), ("d", "remove"))
-"""메뉴가 선택한 계정을 잃는 행 전용 명령과 실제 키의 대응."""
-
 ACCOUNT_KEYS = (
     ("enter", "switch"),
-    *ACCOUNT_COMMAND_KEYS,
     ("?", "help"),
     ("q", "quit"),
     ("↑↓", "move"),
@@ -284,8 +305,9 @@ usage`, 여기는 `r usage`. 그 넷은 이제 메뉴 이름 안의 굵은 글�
 만큼 좁은 화면에서 설명을 버려야 하는 폭도 내려간다.
 
 `enter select` 와 `s switch` 가 따로 있던 때는 계정 줄에서 같은 일을 하는 키가 두 칸을
-썼다. 이제 `enter` 하나다 — `s` 는 `Switching policy` 가 가졌다. 커서가 메뉴에 있으면
-`enter` 의 설명이 `open` 으로 바뀐다(`account_keys`).
+썼다. 이제 `enter` 하나다 — `s` 는 `Swap strategy` 가 가졌다. 커서가 메뉴에 있으면
+`enter` 의 설명이 `open` 으로 바뀐다(`account_keys`). 이름 바꾸기·지우기(`n`·`d`)는
+`Account settings` 로 옮겼다.
 
 `q` 는 메뉴에도 있지만 남긴다. 계정이 많아 메뉴가 화면 밖으로 밀려도 나가는 법은 보여야
 한다.
@@ -325,8 +347,22 @@ def account_keys(view: View, *, folded: bool = False) -> tuple[tuple[str, str], 
     )
 
 
-EMPTY_KEYS = (("a", "add current login"), ("?", "help"), ("q", "quit"))
-"""계정이 하나도 없을 때의 조작법. 메뉴를 그리지 않는 화면이라 이 둘만 적는다."""
+EMPTY_KEYS = (("a", "account settings"), ("?", "help"), ("q", "quit"))
+"""계정이 하나도 없을 때의 조작법. 메뉴를 그리지 않는 화면이라 이것만 적는다 — 첫 계정은
+`Account settings` 의 `Add current login` 으로 넣는다."""
+
+MANAGE_FOOTER = (
+    ("enter", "select"),
+    ("a", "add"),
+    ("r", "rename"),
+    ("d", "delete"),
+    ("t", "test"),
+    ("b", "back"),
+    ("q", "quit"),
+    ("↑↓", "move"),
+)
+PICK_FOOTER = (("enter", "pick"), ("b", "cancel"), ("↑↓", "move"))
+"""`Rename account`·`Delete account` 를 골랐을 때 — 어느 계정인지 되묻는 동안의 조작법."""
 STALE_LEGENDS = (
     "~ marks a stale cached value (f to fetch)",
     "~ = stale (f to fetch)",
@@ -352,9 +388,9 @@ CREDIT_KEYS = (
 """
 
 POLICY_KEYS = (
-    ("e", "type"),
+    ("e", "edit"),
     ("s", "save"),
-    ("b", "cancel"),
+    ("b", "back"),
     ("q", "quit"),
     ("↑↓", "move"),
     ("←→", "adjust"),
@@ -1059,7 +1095,7 @@ def _menu_word(action: str, view: View) -> str:
     """접힌 메뉴에 쓸 짧은 이름. 단축키 글자가 반드시 들어 있다(테스트가 지킨다)."""
     if action == "auto":
         return f"Mode: {'manual' if view.auto_off else 'auto'}"
-    return menu_title(action, view).split()[0]
+    return MENU_SHORT.get(action) or menu_title(action, view).split()[0]
 
 
 def _folded_layout(view: View, width: int | None) -> list[list[tuple[str, str, int]]]:
@@ -1267,6 +1303,8 @@ def render_screen(
         return _render_doctor(view, height=height, width=width)
     if view.mode == "help":
         return _render_help(view, height=height, width=width)
+    if view.mode == "manage":
+        return _render_manage(view, height=height, width=width)
     return _render_accounts(view, height=height, width=width)[0]
 
 
@@ -1408,8 +1446,7 @@ def _render_accounts(
             ("folded", keys, [], False, 2),
             ("folded", minimal, [], False, 0),
             ("folded", minimal, [], False, 2),
-            ("none", minimal, [], False, 2),
-            ("none", [], [], False, 2),
+            ("folded", [], [], False, 2),
         )
         for shape, foot, note, all_rows, tight in candidates:
             gap = [] if tight else [("", _PLAIN)]
@@ -1426,12 +1463,10 @@ def _render_accounts(
             break
         menu_shape, axis_lines, header = shape, axis, top
         spaced = tight < 2
-        if menu_shape == "none" and selected_menu(view) is not None:
-            # 메뉴를 뺄 만큼 짧은 화면(대략 7 줄 이하)에서 커서가 메뉴에 있으면 그 항목이
-            # 안 보인다. 이때만 접힌 메뉴를 되살린다 — 넘치는 것은 아래 클램프가 본문에서
-            # 덜어 내고, 커서 줄은 지킨다. 이 높이에서는 모양이 흔들리는 것보다 커서를
-            # 잃는 것이 나쁘다.
-            menu_shape = "folded"
+        # 메뉴는 **통째로 빼지 않는다.** 한때 아주 짧은 화면에서 메뉴를 뺐다가 커서가 메뉴로
+        # 들어가면 접힌 메뉴를 되살렸는데, 그 한 번의 `↓` 에 빈 줄과 메뉴 줄이 **갑자기**
+        # 생겼다. 모양이 커서를 따라 바뀌지 않게, 접힌 메뉴가 바닥이다. 넘치는 것은 아래
+        # 클램프가 본문에서 덜어 내고 커서 줄은 지킨다.
         if foot is keys and menu_shape == "folded":
             # 접힌 메뉴 위의 커서는 `←→` 로 움직인다 — 조작법도 그렇게 말해야 한다. 줄 나눔은
             # `ACCOUNT_KEYS` 모양을 따르므로 줄 수는 그대로다.
@@ -1633,15 +1668,16 @@ def _help_entries(view: View) -> list[tuple[str, str, str | None]]:
     """
     out: list[tuple[str, str, str | None]] = [("", "On an account row", None)]
     out.append(("enter", "switch to that account", None))
-    out += [(key, f"{label} the slot", None) for key, label in ACCOUNT_COMMAND_KEYS]
     out += [("", "", None), ("", "Menu — the bold letter in each entry", None)]
     out += [(MENU_KEYS[action], menu_title(action, view), MENU_KEYS[action]) for action, _ in MENU]
+    out += [("", "", None), ("", "In Account settings", None)]
+    out += [(MANAGE_KEYS[action], title, MANAGE_KEYS[action]) for action, title in MANAGE_ITEMS]
     out += [
         ("", "", None),
         ("", "Everywhere", None),
         ("↑↓", "move", None),
         ("←→", "move along the menu when it is folded into one line", None),
-        ("b", "back to the accounts (esc too; ← too, except in Policy)", None),
+        ("b", "back (esc too; ← too, except in Swap strategy)", None),
         ("?", "this help (h too)", None),
         ("q", "quit", None),
     ]
@@ -1852,7 +1888,7 @@ def _render_policy(
     # 하필 조작법(`b cancel`·`s save`)이 먼저 잘려, 휴대폰에서 이 화면을 나가는 법이
     # 보이지 않았다.
     tagged: list[tuple[str, tuple[str, Style]]] = [
-        ("head", ("codex-swap · settings", _PLAIN)),
+        ("head", ("codex-swap · swap strategy", _PLAIN)),
         ("gap", ("", _PLAIN)),
     ]
     for i, (key, title, why) in enumerate(POLICY_FIELDS):
@@ -1913,12 +1949,156 @@ def _carry(view: View) -> dict[str, Row]:
     return {r.label: r for r in view.rows}
 
 
-def account_command_for(key: int) -> str | None:
-    """대소문자를 같은 행 전용 명령으로 접는다."""
+def manage_action_for(key: int) -> str | None:
+    """`Account settings` 에서 눌린 키가 어느 항목의 단축키인가. 대소문자를 접는다."""
     if not 0 <= key <= 255:
         return None
     typed = chr(key).lower()
-    return next((action for glyph, action in ACCOUNT_COMMAND_KEYS if glyph == typed), None)
+    return next((action for action, glyph in MANAGE_KEYS.items() if glyph == typed), None)
+
+
+# ── Account settings ─────────────────────────────────────────────────────────
+
+
+def open_manage(view: View) -> View:
+    """`Account settings` 로 들어간다. 계정이 없으면 커서는 첫 항목(현재 로그인 추가)에 둔다."""
+    return replace(view, mode="manage", manage_cursor=0, pick=None, message="", confirmation="")
+
+
+def manage_limit(view: View) -> int:
+    """`Account settings` 의 커서가 갈 수 있는 마지막 자리. 고르는 중이면 계정 행까지만."""
+    if view.pick is not None:
+        return max(len(view.rows) - 1, 0)
+    return len(view.rows) + len(MANAGE_ITEMS) - 1
+
+
+def move_manage(view: View, delta: int) -> View:
+    at = min(max(view.manage_cursor + delta, 0), manage_limit(view))
+    return replace(view, manage_cursor=at, message="")
+
+
+def manage_press(view: View, key: str) -> tuple[View, str | None, str | None]:
+    """`Account settings` 에서 `enter` 나 항목 키를 눌렀다. `(새 화면, 할 일, 대상 라벨)`.
+
+    **할 일은 여기서 하지 않는다.** 이름·확인을 묻는 입력줄은 터미널이 있어야 하므로, 무엇을
+    어느 계정에 할지만 정해 돌려주고 실행은 `_loop` 이 한다 — 그래서 이 판단은 터미널 없이
+    잰다.
+
+    - 계정 행에서 `r`·`d`: 그 계정에 곧바로.
+    - 항목 `Rename account`·`Delete account` 를 고르면: 어느 계정인지 되묻는다(`pick`) —
+      커서가 계정 목록으로 올라간다. 거기서 `enter` 로 고른다.
+    - `a`·`t`: 계정과 상관없이 곧바로.
+    """
+    n = len(view.rows)
+    at = view.manage_cursor
+    label = view.rows[at].label if at < n else None
+    if view.pick is not None:
+        if key == "enter" and label is not None:
+            return replace(view, pick=None, message=""), view.pick, label
+        return view, None, None
+    if key == "enter":
+        if label is not None:
+            return replace(view, message="r renames this account, d deletes it"), None, None
+        key = MANAGE_KEYS[MANAGE_ITEMS[at - n][0]]
+    action = next((a for a, glyph in MANAGE_KEYS.items() if glyph == key), None)
+    if action in ("adopt", "doctor"):
+        return view, action, None
+    if action in ("rename", "remove"):
+        if label is not None:
+            return view, action, label
+        if not n:
+            return replace(view, message="No accounts yet"), None, None
+        return replace(view, pick=action, manage_cursor=0, message=""), None, None
+    return view, None, None
+
+
+def as_manage(view: View, cursor: int) -> View:
+    """동작이 끝난 뒤 `Account settings` 로 돌아온다. 동작들은 메인 화면을 새로 읽어 돌려주므로
+    (`build_view`) 모드를 여기서 되돌린다 — 이름을 바꿨는데 메인으로 튕겨 나가면 이어서 다른
+    계정을 고치러 다시 들어와야 한다."""
+    back = replace(view, mode="manage", pick=None)
+    return replace(back, manage_cursor=min(max(cursor, 0), manage_limit(back)))
+
+
+def _render_manage(
+    view: View, *, height: int | None = None, width: int | None = None
+) -> list[tuple[str, Style]]:
+    """`Account settings`. 계정 표, 그 아래 네 항목, 조작법 — 메인과 같은 모양이다."""
+    n = len(view.rows)
+    at = view.manage_cursor
+    label_cols = _content_cols([r.label for r in view.rows], "LABEL", _LABEL_MIN, _LABEL_COLS)
+    email_room = (width or 120) - len(_INDENT) - label_cols - len(_GUTTER)
+    email_cols = max(
+        min(_content_cols([r.email for r in view.rows], "EMAIL", 5, 40), email_room), 5
+    )
+
+    # 좁으면 앞의 `codex-swap · ` 를 뗀다. 끝을 자르면 `account settin` 이 된다.
+    name = "codex-swap · account settings"
+    title = [(name if width is None or _width(name) <= width else "account settings", _PLAIN)]
+    table: list[tuple[str, Style]] = []
+    if n:
+        columns = f"{_INDENT}{_cell('LABEL', label_cols)}{_GUTTER}{_cell('EMAIL', email_cols)}"
+        table.append((columns.rstrip(), _DIM))
+    else:
+        table.append((_note("No accounts yet.", width), _PLAIN))
+    for i, row in enumerate(view.rows):
+        here = i == at
+        text = (
+            f" {'>' if here else ' '}{'*' if row.active else ' '}"
+            f"{_cell(row.label, label_cols, ellipsis=True)}{_GUTTER}"
+            f"{_cell(row.email, email_cols, ellipsis=True)}"
+        ).rstrip()
+        spans = [(1, 2, _KEY_STYLE)] if here else []
+        table.append(
+            (
+                _clip(text, width) if width else text,
+                Style("plain" if here else "dim", spans=tuple(spans)),
+            )
+        )
+
+    items: list[tuple[str, Style]] = []
+    for j, (_action, name) in enumerate(MANAGE_ITEMS):
+        here = view.pick is None and at == n + j
+        text = f" {'>' if here else ' '} {name}"
+        spans = [(1, 2, _KEY_STYLE)] if here else []
+        spans.append((3, 4, Style("plain", bold=True)))
+        items.append(
+            (
+                _clip(text, width) if width else text,
+                Style("plain" if here else "dim", spans=tuple(spans)),
+            )
+        )
+
+    if view.pick is not None:
+        verb = "Rename" if view.pick == "rename" else "Delete"
+        foot = [
+            (_note(f"{verb} which account? Move to it and press enter", width), Style("warn")),
+            *_keys_block(PICK_FOOTER, width),
+        ]
+    else:
+        foot = _keys_block(MANAGE_FOOTER, width)
+    keep: list[tuple[str, Style]] = []
+    if view.confirmation:
+        keep += [(line, Style("warn")) for line in _wrapped_note(view.confirmation, width)]
+    if view.message:
+        keep.append((_note(view.message, width), _PLAIN))
+
+    gap = [("", _PLAIN)]
+    out = [*title, *gap, *table, *gap, *items, *gap, *foot, *(gap + keep if keep else [])]
+    if height is None or len(out) <= height:
+        return out
+    # 짧으면 빈 줄 → 긴 조작법(항목 첫 글자가 이미 키를 말한다) → 계정 행(커서 주위만) 순으로 뺀다.
+    if view.pick is None:
+        foot = _keys_block((("b", "back"), ("q", "quit")), width)
+    out = [*title, *table, *items, *foot, *keep]
+    over = len(out) - height
+    if over > 0 and n > 1:
+        head, rows = table[:1], table[1:]
+        room = max(len(rows) - over, 1)
+        focus = min(at, n - 1)
+        start = min(max(0, focus - room // 2), n - room)
+        out = [*title, *head, *rows[start : start + room], *items, *foot, *keep]
+    return out[:height] if len(out) > height else out
 
 
 def menu_action_for(key: int) -> str | None:
@@ -1960,7 +2140,7 @@ def do_rename(view: View, old: str | None, new: str | None) -> View:
         return replace(view, message="No accounts yet")
     label = _account_label(view, old)
     if label is None:
-        return replace(view, message="Move to an account first, then press n")
+        return replace(view, message="Move to an account first, then press r")
     if new is None:
         return replace(view, message="")
 
@@ -2283,6 +2463,8 @@ def open_menu(view: View, action: str) -> View:
         )
     if action == "auto":
         return do_toggle_auto(view)
+    if action == "accounts":
+        return open_manage(view)
     return view
 
 
@@ -2684,22 +2866,12 @@ def _spend_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - �
     return apply_spend(view, _prompt(stdscr, asked, drawn))
 
 
-def _rename_here(stdscr, view: View, drawn: int) -> View:  # pragma: no cover - 터미널 필요
-    """curses 입력 한 줄을 순수한 이름 변경 동작에 건넨다."""
-    asked = rename_prompt(view)
-    row = selected_row(view)
-    if asked is None or row is None:
-        return do_rename(view, None, None)
-    return do_rename(view, row.label, _prompt(stdscr, asked, drawn))
-
-
-def _remove_here(stdscr, view: View, colored: bool) -> View:  # pragma: no cover - 터미널 필요
+def _remove_here(
+    stdscr, view: View, colored: bool, label: str
+) -> View:  # pragma: no cover - 터미널 필요
     """삭제 경고 전체를 먼저 그린 뒤 짧은 기본-No 입력만 받는다."""
-    row = selected_row(view)
-    if row is None:
-        return do_remove(view, None, None)
     try:
-        warning = remove_warning(view, row.label)
+        warning = remove_warning(view, label)
     except account_slots.SlotRefusal as exc:
         return replace(view, message=_slot_refusal_message(exc))
     except OSError as exc:
@@ -2711,8 +2883,8 @@ def _remove_here(stdscr, view: View, colored: bool) -> View:  # pragma: no cover
     drawn = _paint(stdscr, warned, colored)
     # 질문이 뜨기 전에 들어온 키는 삭제 승인으로 해석하지 않는다.
     curses.flushinp()
-    answer = _prompt(stdscr, "  Delete this slot? [y/N] ", drawn)
-    return do_remove(warned, row.label, answer)
+    answer = _prompt(stdscr, "  Delete this account? [y/N] ", drawn)
+    return do_remove(warned, label, answer)
 
 
 def _adopt_label(view: View) -> str:
@@ -3080,7 +3252,10 @@ def _loop(
 
         if view.mode == "doctor":
             if back:
+                came_from = view.back_to
                 view = build_view(settings, cursor=view.cursor, carry=_carry(view))
+                if came_from == "manage":
+                    view = as_manage(view, len(view.rows) + 3)
             elif key in tuple(map(ord, "tTrRfF")):
                 view = replace(view, findings=None, message="")
                 checker.start(settings)
@@ -3145,6 +3320,36 @@ def _loop(
                 view = save_policy(view)
             continue
 
+        if view.mode == "manage":
+            if back:
+                if view.pick is not None:
+                    view = replace(view, pick=None, message="Left it alone")
+                else:
+                    view = build_view(settings, cursor=view.cursor, carry=_carry(view))
+                continue
+            if key in (curses.KEY_UP, curses.KEY_DOWN):
+                view = move_manage(view, -1 if key == curses.KEY_UP else 1)
+                continue
+            pressed = "enter" if key in (curses.KEY_ENTER, 10, 13) else None
+            if pressed is None and manage_action_for(key) is not None:
+                pressed = MANAGE_KEYS[manage_action_for(key)]
+            if pressed is None:
+                continue
+            here = view.manage_cursor
+            view, action, label = manage_press(view, pressed)
+            if action == "adopt":
+                view = as_manage(do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn)), here)
+            elif action == "rename" and label is not None:
+                asked = f"  Rename '{label}' to: "
+                view = as_manage(do_rename(view, label, _prompt(stdscr, asked, drawn)), here)
+            elif action == "remove" and label is not None:
+                view = as_manage(_remove_here(stdscr, view, colored, label), here)
+            elif action == "doctor":
+                view = replace(view, mode="doctor", findings=None, message="", back_to="manage")
+                checker.start(settings)
+            curses.flushinp()
+            continue
+
         if key in HELP_KEYS:
             view = open_help(view)
         elif key in _ARROWS:
@@ -3169,10 +3374,6 @@ def _loop(
                 view = open_credits(view)
                 loader.start(settings)
                 continue
-            if action == "doctor":
-                view = replace(view, mode="doctor", findings=None, message="")
-                checker.start(settings)
-                continue
             if action == "quit":
                 return None
             if action == "update":
@@ -3187,8 +3388,6 @@ def _loop(
                 attempted.clear()
                 if not prober.start(settings, [r.label for r in view.rows]):
                     view = replace(view, message="Already probing")
-            elif action == "adopt":
-                view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
             elif action is None:
                 view = activate(view)
                 # 전환은 캐시를 파일째 비운다. `carry` 가 직전 숫자를 이어받지만 그것도
@@ -3196,12 +3395,6 @@ def _loop(
                 kick(auto_probe_targets(view, attempted))
             else:
                 view = open_menu(view, action)
-            curses.flushinp()
-        elif account_command_for(key) == "rename":
-            view = _rename_here(stdscr, view, drawn)
-            curses.flushinp()
-        elif account_command_for(key) == "remove":
-            view = _remove_here(stdscr, view, colored)
             curses.flushinp()
 
 

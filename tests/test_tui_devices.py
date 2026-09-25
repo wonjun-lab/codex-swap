@@ -161,18 +161,20 @@ def _sub_screens(settings: config.Settings) -> dict[str, tui.View]:
         "policy": tui.replace(base, mode="policy", saved_settings=settings),
         "credits": tui.replace(base, mode="credits", credit_accounts=()),
         "doctor": tui.replace(base, mode="doctor", findings=()),
+        "manage": tui.open_manage(base),
+        "manage-pick": tui.replace(tui.open_manage(base), pick="rename"),
     }
 
 
 @pytest.mark.parametrize("device", _IDS)
-@pytest.mark.parametrize("name", ["policy", "credits", "doctor"])
+@pytest.mark.parametrize("name", ["policy", "credits", "doctor", "manage", "manage-pick"])
 def test_every_sub_screen_fits_and_shows_the_way_back(settings, device: str, name: str) -> None:
     """들어갔는데 돌아오는 법이 안 보이는 화면은 갇힌 화면이다. 휴대폰에서는 `esc` 가 멀어
     `b` 가 보여야 한다."""
     screen = _draw(_sub_screens(settings)[name], device)
     _fits(screen, device)
     texts = " ".join(text for text, _ in screen)
-    back = "b cancel" if name == "policy" else "b back"
+    back = "b cancel" if name == "manage-pick" else "b back"
     assert back in texts, f"{device} {name}: {texts}"
 
 

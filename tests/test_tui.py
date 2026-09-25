@@ -1105,7 +1105,7 @@ def test_only_the_key_glyphs_are_highlighted() -> None:
     assert all(style == tui._KEY_STYLE for _, _, style in spans)
     # 설명은 구간 밖이다.
     covered = {i for a, b, _ in spans for i in range(a, b)}
-    for label in ("move", "switch", "rename"):
+    for label in ("move", "switch", "help"):
         at = text.index(label)
         assert not (covered & set(range(at, at + len(label)))), label
 
@@ -1145,10 +1145,10 @@ def test_the_account_screen_carries_the_key_spans(env) -> None:
 
 def test_the_policy_screen_carries_them_too(env) -> None:
     view = tui.replace(tui.build_view(env), mode="policy")
-    keys = next(st for text, st in tui.render_screen(view, width=140) if "e type" in text)
+    keys = next(st for text, st in tui.render_screen(view, width=140) if "e edit" in text)
     assert keys.spans
     assert "←→ adjust" in next(
-        text for text, _ in tui.render_screen(view, width=140) if "e type" in text
+        text for text, _ in tui.render_screen(view, width=140) if "e edit" in text
     )
 
 
@@ -1369,8 +1369,11 @@ def test_menu_keys_do_not_collide_with_each_other_or_the_row_keys() -> None:
     """겹치면 한 키가 두 일 중 하나를 **조용히** 못 하게 된다."""
     keys = list(tui.MENU_KEYS.values())
     assert len(keys) == len(set(keys)), keys
-    row_only = {glyph for glyph, _ in tui.ACCOUNT_COMMAND_KEYS}
-    assert not row_only & set(keys), row_only & set(keys)
+    manage = list(tui.MANAGE_KEYS.values())
+    assert len(manage) == len(set(manage)), manage
+    # Account settings 도 첫 글자다. 하위 화면이라 메인의 키와는 겹쳐도 된다.
+    for action, title in tui.MANAGE_ITEMS:
+        assert title[0].lower() == tui.MANAGE_KEYS[action], (action, title)
 
 
 def test_a_menu_key_folds_case_and_ignores_everything_else() -> None:
@@ -1460,13 +1463,13 @@ def test_narrow_screens_fold_the_keys_instead_of_dropping_what_they_do(name, wid
 
 def test_folded_keys_are_balanced_rather_than_leaving_an_orphan() -> None:
     """앞에서부터 채우면 마지막 줄에 `↑↓ move` 하나만 떨어진다."""
-    lines = [text for text, _ in tui.keys_lines(tui.ACCOUNT_KEYS, width=45)]
+    lines = [text for text, _ in tui.keys_lines(tui.ACCOUNT_KEYS, width=30)]
     assert len(lines) == 2, lines
     assert lines[-1].strip() != "↑↓ move", lines
 
 
 def test_folded_keys_read_top_to_bottom_on_the_account_screen(env) -> None:
-    lines = tui.render_lines(_view(env), width=40)
+    lines = tui.render_lines(_view(env), width=30)
     first = next(i for i, ln in enumerate(lines) if "enter switch" in ln)
     assert "↑↓ move" in lines[first + 1], lines
 
@@ -1497,11 +1500,11 @@ def test_the_compact_menu_is_only_a_stand_in(env) -> None:
     """자리가 있으면 세로 메뉴다. 모자랄 때만 접는다."""
     view = _view(env)
     roomy = [t for t, _ in tui.render_screen(view, width=60, height=40)]
-    assert any(t.strip() == "Settings" for t in roomy), roomy
+    assert any(t.strip() == "Swap strategy" for t in roomy), roomy
     squeezed = [t for t, _ in tui.render_screen(view, width=60, height=11)]
-    assert not any(t.strip() == "Settings" for t in squeezed), squeezed
+    assert not any(t.strip() == "Swap strategy" for t in squeezed), squeezed
     folded = " ".join(squeezed)
-    assert "Settings  Fetch" in folded and "Quit" in folded, squeezed
+    assert "Strategy  Mode" in folded and "Quit" in folded, squeezed
 
 
 def test_the_folded_menu_stays_folded_when_the_cursor_walks_into_it(env) -> None:
@@ -1511,7 +1514,7 @@ def test_the_folded_menu_stays_folded_when_the_cursor_walks_into_it(env) -> None
     screens = []
     for cursor in range(tui.cursor_limit(view) + 1):
         at = tui.replace(view, cursor=cursor)
-        screen = tui.render_screen(at, width=40, height=12)
+        screen = tui.render_screen(at, width=40, height=10)
         screens.append(screen)
 
         # 모양 = 각 줄의 글자. 커서 표시(`>`)·뒤집기, 그리고 `enter` 의 설명(`switch` ↔
@@ -1745,7 +1748,10 @@ def test_help_lists_every_key_from_the_tables(env) -> None:
     for action, _ in tui.MENU:
         line = next(ln for ln in text.splitlines() if tui.menu_title(action, view) in ln)
         assert line.split()[0] == tui.MENU_KEYS[action], line
-    for key, _ in (*tui.ACCOUNT_COMMAND_KEYS, ("enter", ""), ("?", ""), ("b", ""), ("q", "")):
+    for action, _ in tui.MANAGE_ITEMS:
+        line = next(ln for ln in text.splitlines() if dict(tui.MANAGE_ITEMS)[action] in ln)
+        assert line.split()[0] == tui.MANAGE_KEYS[action], line
+    for key in ("enter", "?", "b", "q"):
         assert any(ln.split()[:1] == [key] for ln in text.splitlines()), key
     assert "esc" in text
 
@@ -1818,7 +1824,7 @@ def test_a_laptop_pane_keeps_the_vertical_menu(env, terminal_rows) -> None:
     assert tui.menu_shape(view, height=terminal_rows - 1, width=114) == "full"
     lines = tui.render_lines(view, height=terminal_rows - 1, width=114)
     assert len(lines) <= terminal_rows - 1
-    assert any(line.strip() == "Settings" for line in lines), lines
+    assert any(line.strip() == "Swap strategy" for line in lines), lines
 
 
 def _folded_view(env, cursor: int) -> tui.View:
@@ -1873,3 +1879,84 @@ def test_the_key_hints_say_left_right_inside_a_folded_menu(env) -> None:
     on_row = " ".join(tui.render_lines(_folded_view(env, 0), height=11, width=114))
     assert "←→ move" in on_menu and "↑↓ move" not in on_menu, on_menu
     assert "↑↓ move" in on_row, on_row
+
+
+# ── Account settings ────────────────────────────────────────────────────────
+
+
+def _manage(env, cursor: int = 0, **kw) -> tui.View:
+    return tui.replace(tui.open_manage(_view(env)), manage_cursor=cursor, **kw)
+
+
+def test_account_settings_is_opened_from_the_main_menu(env) -> None:
+    view = tui.open_menu(_view(env), "accounts")
+    assert view.mode == "manage" and view.manage_cursor == 0 and view.pick is None
+    assert tui.menu_action_for(ord("a")) == "accounts"
+
+
+def test_the_main_screen_no_longer_renames_or_deletes() -> None:
+    """드물게 쓰는 되돌릴 수 없는 일은 Account settings 로 옮겼다. 메인 조작법에 없다."""
+    keys = dict(tui.ACCOUNT_KEYS)
+    assert "n" not in keys and "d" not in keys, keys
+    assert {"adopt", "doctor"}.isdisjoint(dict(tui.MENU)), "계정 관리 항목이 메인에 남았다"
+
+
+def test_r_and_d_on_an_account_row_act_on_that_account(env) -> None:
+    for key, action in (("r", "rename"), ("d", "remove")):
+        view, done, label = tui.manage_press(_manage(env, cursor=1), key)
+        assert (done, label) == (action, "b"), (key, done, label)
+        assert view.pick is None
+
+
+def test_picking_rename_from_the_list_asks_which_account(env) -> None:
+    """항목을 먼저 고르면 대상을 되묻는다 — 커서가 계정과 항목에 동시에 있을 수 없다."""
+    n = 2
+    rename_at = n + [a for a, _ in tui.MANAGE_ITEMS].index("rename")
+    view, done, _ = tui.manage_press(_manage(env, cursor=rename_at), "enter")
+    assert done is None and view.pick == "rename" and view.manage_cursor == 0
+    assert tui.manage_limit(view) == n - 1, "고르는 동안은 계정 행 밖으로 못 나간다"
+    view = tui.move_manage(view, +1)
+    view, done, label = tui.manage_press(view, "enter")
+    assert (done, label) == ("rename", "b") and view.pick is None
+
+
+def test_add_and_test_do_not_need_an_account(env) -> None:
+    for key, action in (("a", "adopt"), ("t", "doctor")):
+        _, done, label = tui.manage_press(_manage(env, cursor=3), key)
+        assert (done, label) == (action, None)
+
+
+def test_enter_on_an_account_row_says_what_to_press(env) -> None:
+    view, done, _ = tui.manage_press(_manage(env, cursor=0), "enter")
+    assert done is None and "r renames" in view.message
+
+
+def test_rename_with_no_accounts_says_so(env) -> None:
+    empty = tui.open_manage(tui.replace(_view(env), rows=()))
+    view, done, _ = tui.manage_press(empty, "r")
+    assert done is None and view.message == "No accounts yet"
+
+
+def test_account_settings_draws_the_accounts_the_items_and_the_way_back(env) -> None:
+    screen = tui.render_screen(_manage(env, cursor=0), width=100)
+    texts = [t for t, _ in screen]
+    assert texts[0] == "codex-swap · account settings"
+    for _, title in tui.MANAGE_ITEMS:
+        text, style = next((t, s) for t, s in screen if t.endswith(f" {title}"))
+        bold = [text[a:b] for a, b, s in style.spans if s.bold and b - a == 1]
+        assert bold == [title[0]], (title, bold)
+    assert any("b back" in t for t in texts)
+    assert any(t.startswith(" >") and "a@x" in t for t in texts), texts
+
+
+def test_the_pick_prompt_names_the_action_and_the_way_out(env) -> None:
+    screen = tui.render_lines(_manage(env, cursor=0, pick="remove"), width=100)
+    assert any("Delete which account?" in t for t in screen), screen
+    assert any("b cancel" in t for t in screen), screen
+
+
+def test_after_an_action_you_stay_in_account_settings(env) -> None:
+    """이름을 바꾸고 메인으로 튕겨 나가면 이어서 다른 계정을 고치러 다시 들어와야 한다."""
+    back = tui.as_manage(_view(env, cursor=0), 99)
+    assert back.mode == "manage" and back.pick is None
+    assert back.manage_cursor == tui.manage_limit(back)

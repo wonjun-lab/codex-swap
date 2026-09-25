@@ -159,7 +159,7 @@ def test_every_cli_command_is_either_on_screen_or_listed_as_known(
 
     on_screen = (
         {action for action, _ in tui.MENU}
-        | {action for _, action in tui.ACCOUNT_COMMAND_KEYS}
+        | {action for action, _ in tui.MANAGE_ITEMS}
         | {
             "use",
             "switch",
@@ -533,9 +533,11 @@ def test_the_screen_has_nothing_the_command_line_cannot_reach(_isolated_home: Pa
     parser = cli.build_parser()
     sub = next(a for a in parser._actions if getattr(a, "choices", None))
     commands = set(sub.choices)
-    for action, title in tui.MENU:
+    for action, title in (*tui.MENU, *tui.MANAGE_ITEMS):
         if action == "quit":
             continue  # 화면을 닫는 것이지 기능이 아니다
+        if action == "accounts":
+            continue  # 아래 항목들(MANAGE_ITEMS)을 묶는 화면이지 기능이 아니다
         if action == "refresh":
             assert "list" in commands, "화면의 새로고침에 대응하는 명령이 없다"
             continue
