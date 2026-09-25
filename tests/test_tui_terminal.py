@@ -122,7 +122,7 @@ def test_a_typed_ladder_shows_up_on_the_policy_screen(session: Session) -> None:
     화면을 떠나지 않고 확인한다. `esc` 를 누르면 그 값은 화면에서 사라지므로, 마지막
     화면만 보면 "입력이 안 됐다" 와 "입력됐다가 취소됐다" 가 구별되지 않는다.
     """
-    screen = session.run([b"p", b"e", b"33,66,88\n"])
+    screen = session.run([b"s", b"e", b"33,66,88\n"])
     assert "codex-swap · policy" in screen.text
     assert "33,66,88" in screen.text, screen.text
 
@@ -132,7 +132,7 @@ def test_esc_leaves_the_policy_screen_without_saving(session: Session) -> None:
 
     한 번에 버리던 때는 그것이 조용해서, 사용자가 "닫기" 로 읽고 저장이 됐다고 믿었다.
     """
-    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b", b"\x1b", b"q"])
+    screen = session.run([b"s", b"e", b"33,66,88\n", b"\x1b", b"\x1b", b"q"])
     assert screen.exit_code == 0
     assert "Left without saving" in screen.text
     assert not (session.accounts / "config.json").exists(), "esc 인데 저장됐다"
@@ -191,7 +191,7 @@ def test_a_finished_probe_does_not_eject_you_from_the_policy_screen(tmp_path: Pa
 
     # 조회가 **끝난 뒤**에 캡처해야 한다. 조용해졌다고 끊으면 아직 도는 중에 찍혀서
     # 검사가 아무것도 안 본 채 통과한다 — 실제로 그래서 뮤테이션을 놓쳤다.
-    screen = s.run([b"p", b"e", b"33,66,88\n"], settle=0.6, total=90.0, wait_for="Usage refreshed")
+    screen = s.run([b"s", b"e", b"33,66,88\n"], settle=0.6, total=90.0, wait_for="Usage refreshed")
     assert s.events.exists(), "프로브가 아예 안 돌았다 — 스텁·환경 문제다"
     assert "Usage refreshed" in screen.text, "조회가 안 끝났다 — 검사가 성립하지 않는다"
     assert "codex-swap · policy" in screen.text, "정책 화면에서 튀어나갔다"
@@ -312,10 +312,12 @@ def test_enter_on_the_active_account_says_so_instead_of_going_quiet(session: Ses
     assert "already active" in screen.text, screen.text
 
 
-def test_s_switches(session: Session) -> None:
-    screen = session.run([b"\x1bOB", b"s", b"q"])  # 아래로 한 칸 → shared → s
-    assert screen.exit_code == 0
-    assert "Switched to shared" in screen.text, screen.text
+def test_s_opens_the_switching_policy_instead_of_switching(session: Session) -> None:
+    """`s` 는 전환이었다. 이제 `Switching policy` 다 — 옛 손버릇으로 눌러도 화면이 열릴 뿐
+    자격증명은 그대로여야 한다."""
+    screen = session.run([b"\x1bOB", b"s"], settle=0.8)  # 아래로 한 칸 → shared → s
+    assert "codex-swap · policy" in screen.text, screen.text
+    assert "Switched to" not in screen.text, screen.text
 
 
 def test_arrowing_into_the_menu_and_entering_opens_the_policy_screen(session: Session) -> None:
@@ -337,14 +339,6 @@ def test_the_menu_quit_item_ends_the_session(session: Session) -> None:
     down = [b"\x1bOB"] * (2 + len(tui.MENU) - 1 - quit_at)  # 계정 2 개를 지나 Quit 까지
     screen = session.run([*down, b"\n"], total=25.0)
     assert screen.exit_code == 0
-
-
-def test_s_on_the_menu_does_not_switch(session: Session) -> None:
-    """커서가 메뉴에 있을 때 `s` 는 아무것도 바꾸지 않고 말해 준다."""
-    screen = session.run([b"\x1bOB", b"\x1bOB", b"s", b"q"])
-    assert screen.exit_code == 0
-    assert "Move to an account first" in screen.text, screen.text
-    assert "Switched to" not in screen.text, screen.text
 
 
 def test_n_renames_the_account_under_the_cursor(session: Session) -> None:
@@ -393,13 +387,13 @@ def test_the_prompt_says_which_account_it_will_keep(session: Session) -> None:
 
 def test_esc_asks_before_discarding_an_edit(session: Session) -> None:
     """편집이 사라지는 것이 조용하면 사용자는 저장이 됐다고 믿는다."""
-    screen = session.run([b"p", b"e", b"33,66,88\n", b"\x1b"])
+    screen = session.run([b"s", b"e", b"33,66,88\n", b"\x1b"])
     assert "Unsaved changes" in screen.text, screen.text
     assert "codex-swap · policy" in screen.text, "물어보지도 않고 나갔다"
     assert "33,66,88" in screen.text, "편집이 사라졌다"
 
 
 def test_esc_leaves_at_once_when_nothing_was_edited(session: Session) -> None:
-    screen = session.run([b"p", b"\x1b", b"q"])
+    screen = session.run([b"s", b"\x1b", b"q"])
     assert screen.exit_code == 0
     assert "Unsaved changes" not in screen.text, "잃을 것이 없는데 물었다"

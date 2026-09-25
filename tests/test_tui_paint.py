@@ -117,10 +117,57 @@ def test_the_terminal_shows_what_render_lines_says(session: Session, cols: int, 
 @_needs_pty
 def test_the_policy_screen_colours_the_arrow_keys(session: Session) -> None:
     """`←→` 는 앞에 다른 화살표가 있는 유일한 구간이다. 밀리면 여기서 색이 빠진다."""
-    screen = session.run([b"p"], cols=100, rows=24, settle=0.8)
+    screen = session.run([b"s"], cols=100, rows=24, settle=0.8)
     assert "←→ adjust" in screen.text, screen.text
     assert "36" in screen.attrs_of("←→"), screen.attrs_of("←→")
     assert "36" not in screen.attrs_of("adjust"), "설명까지 색을 입혔다"
+
+
+def _cell_attrs(screen, needle: str) -> list[frozenset[str]]:
+    """`needle` 이 그려진 첫 자리의 **글자별** SGR 코드. `attrs_of` 는 합집합이라 한 글자만
+    굵은지 가릴 수 없다."""
+    for row, line in enumerate(screen.lines):
+        at = line.find(needle)
+        if at >= 0:
+            return [screen.attrs[row][col] for col in range(at, at + len(needle))]
+    raise AssertionError(f"{needle!r} 가 화면에 없다:\n{screen.text}")
+
+
+@_needs_pty
+def test_the_terminal_bolds_only_the_shortcut_letter_of_a_menu_entry(session: Session) -> None:
+    """`Reset usage` 는 `r` 로 열린다. 실제 터미널에서 **`R` 한 글자만** 굵어야 한다."""
+    screen = session.run([b"q"], cols=100, rows=30)
+    cells = _cell_attrs(screen, "Reset usage")
+    assert "1" in cells[0], cells[0]
+    assert all("1" not in cell for cell in cells[1:]), cells
+    # 가운데 글자가 키인 항목도 그 글자만이다.
+    title = next(t for action, t in tui.MENU if action == "auto")
+    cells = _cell_attrs(screen, title)
+    bold = [i for i, cell in enumerate(cells) if "1" in cell]
+    assert bold == [title.lower().index(tui.MENU_KEYS["auto"])], (title, cells)
+
+
+@_needs_pty
+@pytest.mark.parametrize(
+    ("key", "title"),
+    [(b"r", "codex-swap · reset usage"), (b"t", "codex-swap · login test")],
+)
+def test_a_menu_shortcut_opens_its_screen_from_an_account_row(
+    session: Session, key: bytes, title: str
+) -> None:
+    """새로 생긴 키가 `enter` 와 같은 길을 지나는지. 순수 함수 테스트는 `_loop` 에 닿지 않는다."""
+    screen = session.run([key, b"q"], settle=1.0, total=60.0)
+    assert screen.exit_code == 0, screen.text
+    assert title in screen.text, screen.text
+
+
+@_needs_pty
+def test_a_phone_sized_terminal_still_explains_its_keys(session: Session) -> None:
+    """40 칸에서 조작법이 `enter  s  n  d …` 로 줄던 것. 실제로 그려진 화면에서 본다."""
+    screen = session.run([b"q"], cols=40, rows=24)
+    assert screen.exit_code == 0, screen.text
+    for key, label in tui.ACCOUNT_KEYS:
+        assert f"{key} {label}" in screen.text, screen.text
 
 
 @_needs_pty
@@ -268,6 +315,29 @@ def test_pushing_lines_carries_their_attributes() -> None:
     assert "1" not in attrs[0][0], attrs[0][0]
 
 
+def test_deleting_characters_pulls_the_rest_of_the_line_left() -> None:
+    """ncurses 는 줄이 짧아지면 DCH(`P`) 로 당긴다. 하네스가 모르면 옛 글자가 남아 보인다."""
+    from terminal import render
+
+    lines, _ = render("enter switch  n\x1b[1;7H\x1b[2P", 20, 1)
+    assert lines[0].rstrip() == "enter itch  n", lines
+    lines, _ = render("abc\x1b[1;2H\x1b[2@", 10, 1)
+    assert lines[0].rstrip() == "a  bc", lines
+
+
+@_needs_pty
+def test_the_screen_is_drawn_at_the_size_the_test_asked_for(session: Session) -> None:
+    """curses 는 pty 크기보다 `COLUMNS`·`LINES` 를 먼저 믿는다. 하네스가 그 둘을 늘 기본값으로
+    두던 동안 `cols=40` 테스트도 140 칸으로 그려졌다 — 폭 검사가 아무것도 안 재고 통과했다."""
+    screen = session.run([b"q"], cols=40, rows=14)
+    assert len(screen.lines) == 14
+    # 140 칸으로 그린 것을 40 칸이 읽으면 두 증상이 난다. 넓은 화면에만 있는 사용량 축이
+    # 나오고, 머리말의 `USED` 가 줄바꿈에 깨진다. `RESETS` 는 40 칸 밖이라 잘려서 안 보이므로
+    # 그것으로는 못 잰다 — 한동안 그것을 봤고, 크기가 틀려도 통과했다.
+    assert "current gate" not in screen.text, screen.text
+    assert "USED" in screen.text, screen.text
+
+
 @_needs_pty
 def test_the_credits_screen_keeps_its_keys_line_after_the_switch(session: Session) -> None:
     """화면을 바꾼 **뒤에도** 조작법이 보여야 한다.
@@ -278,6 +348,37 @@ def test_the_credits_screen_keeps_its_keys_line_after_the_switch(session: Sessio
     down = [b"\x1bOB"] * (2 + next(i for i, (a, _) in enumerate(tui.MENU) if a == "credits"))
     screen = session.run([*down, b"\n", b"q"], settle=1.0, total=60.0)
     assert screen.exit_code == 0
-    assert "codex-swap · usage resets" in screen.text, screen.text
-    assert "esc back" in screen.text, screen.text
+    assert "codex-swap · reset usage" in screen.text, screen.text
+    assert "b back" in screen.text, screen.text
     assert "q quit" in screen.text, screen.text
+
+
+@_needs_pty
+@pytest.mark.parametrize("back", [b"b", b"\x1bOD", b"\x1b"])
+def test_a_sub_screen_goes_back_with_a_key_a_phone_has(session: Session, back: bytes) -> None:
+    """`b` 와 `←` 는 휴대폰 자판에도 있다. `esc` 는 그대로 먹는다."""
+    screen = session.run([b"t", back, b"q"], settle=1.0, total=60.0)
+    assert screen.exit_code == 0, screen.text
+    assert "codex-swap · login test" not in screen.text, screen.text
+    assert "Switching policy" in screen.text, screen.text
+
+
+@_needs_pty
+@pytest.mark.parametrize("key", [b"?", b"h"])
+def test_help_opens_and_closes(session: Session, key: bytes) -> None:
+    opened = session.run([key], settle=0.8)
+    assert "codex-swap · help" in opened.text, opened.text
+    closed = session.run([key, b"b", b"q"], settle=0.8)
+    assert closed.exit_code == 0 and "codex-swap · help" not in closed.text, closed.text
+
+
+@_needs_pty
+def test_a_folded_menu_marks_the_cursor_by_reversing_the_word(session: Session) -> None:
+    """접힌 메뉴는 한 줄에 여러 항목이라 줄 앞의 `>` 로는 어느 것인지 못 가리킨다.
+    실제 터미널에서 고른 낱말이 뒤집혀(SGR 7) 그려져야 한다."""
+    down = [b"\x1bOB"] * 2  # 계정 2 개를 지나 메뉴 첫 항목
+    screen = session.run(down, cols=40, rows=14, settle=0.8)
+    assert "Switching policy" in screen.text, screen.text
+    assert not any(line.startswith(" > ") for line in screen.lines), "세로 메뉴로 펼쳐졌다"
+    assert "7" in screen.attrs_of("Switching policy"), screen.attrs_of("Switching policy")
+    assert "7" not in screen.attrs_of("Fetch"), "고르지 않은 항목까지 뒤집었다"

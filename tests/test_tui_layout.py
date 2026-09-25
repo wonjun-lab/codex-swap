@@ -140,11 +140,14 @@ def test_the_cursor_line_survives_the_clamp(_isolated_home: Path, cursor: int, h
     가운데 줄로 떨어졌다.
     """
     view = _many(config.load(), cursor)
-    lines = tui.render_lines(view, height=height, width=90)
+    screen = tui.render_screen(view, height=height, width=90)
+    lines = [text for text, _ in screen]
     assert len(lines) <= height, f"{len(lines)} 줄을 {height} 칸 화면에 냈다"
-    assert any(line.startswith(" >") for line in lines), (
-        f"커서 줄이 잘려 나갔다 (cursor={cursor}, height={height})\n" + "\n".join(lines)
-    )
+    # 커서는 줄 앞의 `>` 거나, 접힌 메뉴에서는 뒤집힌 낱말이다.
+    assert any(
+        text.startswith(" >") or any(span.reverse for _, _, span in style.spans)
+        for text, style in screen
+    ), f"커서 줄이 잘려 나갔다 (cursor={cursor}, height={height})\n" + "\n".join(lines)
 
 
 @pytest.mark.parametrize("height", [6, 8, 10, 14, 20])
