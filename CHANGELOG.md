@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-09-26
+
+- Opening the TUI reads what is out of date in the background: the account in use every
+  time, the others once their reading is older than the cache TTL (5 minutes). It used to
+  read only accounts never read before, so the screen opened on hours-old numbers until you
+  pressed `f`. `CODEX_SWAP_FETCH_ON_OPEN=0` leaves stale readings alone.
+- Up to three accounts are read at once (they used to be read one after another).
+- A login the server refuses shows on its row as `login needed`, in red, until a fresh reading
+  comes in; the message points to `Account settings → Test all logins`. A reading that fails
+  for another reason still says `Could not read usage` and keeps the old value.
+
 ## 0.4.0 — 2026-09-25
 
 ### The menu, regrouped

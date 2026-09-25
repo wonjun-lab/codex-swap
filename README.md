@@ -331,6 +331,7 @@ never written there).
 | `58%` | Fresh reading |
 | `~58% 5h` | Cached value past its TTL (5 min by default), and how old it is |
 | `?` | Never read successfully |
+| `login needed` (under `RENEWS`, in red) | The last read was refused: the saved login no longer works |
 
 If `?` persists, find out why:
 
@@ -346,10 +347,23 @@ If discovery is the problem, point `CODEX_ACCOUNT_BIN` straight at the binary.
 probes every slot and stores what it reads; `status --fresh` only reads the active account,
 and `Fetch latest usage` in the TUI (`f`) reads them all.
 
-Watch the age next to `~`. Nothing refreshes an idle account on its own: `rotate` stops
-early while the active account is below the first rung, which is most of the time, so a
-slot you are not using can sit at a reading from days ago — long enough for its window to
-have reset underneath it.
+**Opening the TUI reads what is out of date, in the background.** The account in use is read
+every time; the others only once their reading is older than the cache TTL (5 minutes), so
+opening and closing the screen does not start a codex per account each time. Up to three
+accounts are read at once, and the screen shows the cached values (with `~`) until the new
+ones arrive. Set `CODEX_SWAP_FETCH_ON_OPEN=0` to leave stale readings alone — the account in
+use and slots never read are still read.
+
+Reading usage is also a login check: it only works if the saved login does. When the server
+refuses one, its row turns red and says `login needed`, and the message line points you to
+`Account settings → Test all logins`, which says how to fix it. A reading that fails for any
+other reason (no network, codex not starting) says `Could not read usage` instead and keeps
+the old value.
+
+Outside the TUI, nothing refreshes an idle account on its own: `rotate` stops early while
+the active account is below the first rung, which is most of the time, so a slot you are not
+using can sit at a reading from days ago — long enough for its window to have reset
+underneath it.
 
 ## Usage resets
 
@@ -487,6 +501,7 @@ script never has to read prose off stderr. The exit code still follows the human
 | `CODEX_ACCOUNT_DEFAULT_HOME` | `~/.codex` | Home of the active account. **Set this if you moved codex's home with `CODEX_HOME`** — see below |
 | `CODEX_ACCOUNT_BIN` · `CODEX_REAL_BIN` | — | Point at the codex binary directly (skips discovery) |
 | `CODEX_SWAP_THEME` | `auto` | `dark`, `light`, or `auto` — see below |
+| `CODEX_SWAP_FETCH_ON_OPEN` | `1` | `0` stops the TUI re-reading stale usage when it opens (see "When usage shows `?`") |
 
 ### Light and dark terminals
 

@@ -33,13 +33,15 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def session(tmp_path: Path) -> Session:
-    """계정 둘, 사용량은 캐시에 심어 둔 판. 프로브가 필요 없다."""
+    """계정 둘, 사용량은 캐시에 심어 둔 판. 열 때 지금 계정을 읽기는 하지만 네트워크 실패로
+    끝나 심어 둔 값이 그대로 그려진다(`offline`)."""
     s = Session(tmp_path / "home")
     s.slot("master", "a@example.com")
     s.slot("shared", "b@example.com")
     s.activate("a@example.com")
     s.cache("master", 58, credits=1)
     s.cache("shared", 70, credits=2)
+    s.offline()
     return s
 
 
@@ -238,6 +240,7 @@ def test_the_reset_time_is_not_cut_off(tmp_path: Path) -> None:
     s.slot("master", "a@example.com")
     s.activate("a@example.com")
     s.cache("master", 58, resets_in=3 * 3600 + 60)
+    s.offline()
 
     screen = s.run([b"q"], cols=120)
     row = screen.row("master")
@@ -300,6 +303,9 @@ def test_enter_switches_to_the_account_under_the_cursor(session: Session) -> Non
     토글하는데 계정 줄에서만 "`s` 를 누르라" 고 안내해서, 같은 화면 안에서 같은 키가 다른
     규칙을 따르는 것처럼 보였다.
     """
+    # 전환하면 새로 활성이 된 계정을 곧바로 읽고, 그 결과 문구가 전환 문구를 덮는다. 조회를
+    # 늦춰 두어 여기서는 전환 문구만 본다.
+    session.delay(30)
     screen = session.run([b"\x1bOB", b"\n", b"q"])  # 아래로 한 칸 → shared → enter
     assert screen.exit_code == 0
     assert "Switched to shared" in screen.text, screen.text

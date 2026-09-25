@@ -366,12 +366,42 @@ def test_an_unknown_row_is_not_carried_forward_as_if_known(env) -> None:
     assert (row.used, row.known) == ("?", False)
 
 
-def test_auto_probe_skips_rows_that_are_merely_stale(env) -> None:
-    """낡은 값은 **아는** 값이다. 자동 조회 대상에 들어가면 화면을 열 때마다 슬롯
-    수만큼 프로브가 돈다 — 아끼려던 비용을 그대로 되돌린다."""
-    _cache_usage(env, "master", 38, age=env.cache_ttl + 10)
+def test_stale_rows_are_fetched_again_when_the_screen_opens(env) -> None:
+    """낡은 값(`~`)만 두던 때는 열 때마다 몇 시간 전 숫자를 보고 `f` 를 눌러야 했다. 비용은
+    TTL 이 막는다 — 낡았다는 것 자체가 TTL 을 넘었다는 뜻이다."""
+    _cache_usage(env, "shared", 38, age=env.cache_ttl + 10)
     view = tui.build_view(env)
-    assert tui.auto_probe_targets(view) == ("shared",)
+    assert "shared" in tui.auto_probe_targets(view)
+
+
+def test_fresh_rows_are_left_alone(env) -> None:
+    """TTL 안에 다시 열면 다시 읽지 않는다 — 여닫을 때마다 codex 가 계정 수만큼 뜨면 안 된다."""
+    _cache_usage(env, "shared", 38)
+    view = tui.build_view(env)
+    assert "shared" not in tui.auto_probe_targets(view)
+
+
+def test_the_account_in_use_is_always_fetched_even_when_fresh(env) -> None:
+    """화면을 여는 까닭의 대부분이 "지금 계정이 얼마나 남았나" 다. 5 분 전 숫자로 답하면 안 된다."""
+    _cache_usage(env, "master", 38)  # master 가 활성이다
+    _cache_usage(env, "shared", 12)
+    view = tui.build_view(env)
+    assert tui.auto_probe_targets(view) == ("master",)
+    assert tui.auto_probe_targets(view, {"master"}) == (), "한 번 읽었으면 다시 안 읽는다"
+
+
+def test_turning_it_off_keeps_stale_rows_but_still_reads_the_account_in_use(env) -> None:
+    _cache_usage(env, "master", 38)
+    _cache_usage(env, "shared", 12, age=env.cache_ttl + 10)
+    view = tui.build_view(env)
+    assert tui.auto_probe_targets(view, stale_too=False) == ("master",)
+    assert tui.auto_probe_targets(view, stale_too=True) == ("master", "shared")
+
+
+@pytest.mark.parametrize(("value", "on"), [(None, True), ("1", True), ("0", False), ("off", False)])
+def test_fetch_on_open_reads_its_environment_switch(value, on) -> None:
+    env = {} if value is None else {tui.FETCH_ON_OPEN_ENV: value}
+    assert tui.fetch_on_open(env) is on
 
 
 def test_nothing_known_anywhere_still_says_so(env) -> None:
@@ -430,7 +460,8 @@ def test_pressing_enter_on_the_active_row_keeps_the_numbers(env) -> None:
 
 
 def test_auto_refresh_probes_only_the_requested_slots(env, monkeypatch) -> None:
-    """자동 조회는 **모르는 슬롯만** 읽는다. 전체 조회(`r`)와 갈리는 지점이다."""
+    """조회는 **부탁받은 슬롯만** 읽는다. 자동 조회 대상(모르는 것·낡은 것·지금 쓰는 것)을 넘기면
+    그것만 읽고, 전체 조회(`f`)와 갈린다."""
     from codex_swap.core.types import ProbeResult, Usage
 
     seen: list[str] = []
@@ -444,13 +475,14 @@ def test_auto_refresh_probes_only_the_requested_slots(env, monkeypatch) -> None:
 
     _cache_usage(env, "master", 38)
     view = tui.build_view(env)
-    assert tui.auto_probe_targets(view) == ("shared",)
+    # master 는 신선하지만 지금 쓰는 계정이라 늘 읽는다. shared 는 모른다.
+    assert tui.auto_probe_targets(view) == ("master", "shared")
 
     after = tui.do_refresh(view, ("shared",))
-    assert seen == ["shared"], "모르는 슬롯만 읽어야 한다"
+    assert seen == ["shared"], "부탁받은 슬롯만 읽어야 한다"
     rows = {r.label: r for r in after.rows}
     assert (rows["master"].used, rows["shared"].used) == ("38%", "11%")
-    assert tui.auto_probe_targets(after) == ()
+    assert tui.auto_probe_targets(after, {"master"}) == ()
 
 
 def test_a_failed_auto_refresh_says_what_is_still_empty(env, monkeypatch) -> None:
@@ -483,7 +515,9 @@ def test_the_stale_marker_is_explained_only_when_something_is_stale(env) -> None
 
 
 def test_the_prober_hands_back_a_message_and_then_goes_idle(env, monkeypatch) -> None:
-    monkeypatch.setattr(tui, "_refresh_message", lambda s, labels: f"읽었다: {','.join(labels)}")
+    monkeypatch.setattr(
+        tui, "_refresh_outcome", lambda s, labels: (f"읽었다: {','.join(labels)}", ("shared",))
+    )
     prober = tui._Prober()
     assert prober.labels == ()
     assert prober.start(env, ["master", "shared"]) is True
@@ -492,7 +526,7 @@ def test_the_prober_hands_back_a_message_and_then_goes_idle(env, monkeypatch) ->
         if message is not None:
             break
         time.sleep(0.01)
-    assert message == "읽었다: master,shared"
+    assert message == ("읽었다: master,shared", ("shared",)), "거절된 라벨도 함께 넘긴다"
     # 끝났으면 다시 놀아야 한다. 안 그러면 다음 조회가 영영 안 뜬다.
     assert prober.labels == ()
     assert prober.take() is None
@@ -502,7 +536,7 @@ def test_the_prober_hands_back_a_message_and_then_goes_idle(env, monkeypatch) ->
 def test_the_prober_does_not_stack_two_runs(env, monkeypatch) -> None:
     """같은 슬롯을 두 번 읽지 않는다. 놓친 대상은 다음 틱에 다시 집힌다."""
     release = threading.Event()
-    monkeypatch.setattr(tui, "_refresh_message", lambda s, labels: release.wait(5) and "done")
+    monkeypatch.setattr(tui, "_refresh_outcome", lambda s, labels: release.wait(5) and ("done", ()))
     prober = tui._Prober()
     assert prober.start(env, ["master"]) is True
     assert prober.start(env, ["shared"]) is False
@@ -516,7 +550,7 @@ def test_the_prober_never_leaves_the_screen_stuck_on_probing(env, monkeypatch) -
     def boom(settings, labels):
         raise RuntimeError("터졌다")
 
-    monkeypatch.setattr(tui, "_refresh_message", boom)
+    monkeypatch.setattr(tui, "_refresh_outcome", boom)
     prober = tui._Prober()
     prober.start(env, ["master"])
     for _ in range(200):
@@ -524,7 +558,7 @@ def test_the_prober_never_leaves_the_screen_stuck_on_probing(env, monkeypatch) -
         if message is not None:
             break
         time.sleep(0.01)
-    assert message is not None and "터졌다" in message
+    assert message is not None and "터졌다" in message[0]
     assert prober.labels == ()
 
 
@@ -1960,3 +1994,77 @@ def test_after_an_action_you_stay_in_account_settings(env) -> None:
     back = tui.as_manage(_view(env, cursor=0), 99)
     assert back.mode == "manage" and back.pick is None
     assert back.manage_cursor == tui.manage_limit(back)
+
+
+# ── 열 때 조회: 나란히 읽고, 거절된 로그인은 표에 드러낸다 ──────────────────
+
+
+def _probe_by_slot(monkeypatch, results: dict, delay: float = 0.0) -> list[str]:
+    """슬롯 이름(홈 디렉토리 이름)별로 정해 둔 프로브 결과를 돌려준다. 활성 계정은 `.codex`."""
+    from codex_swap.core.types import ProbeResult
+
+    seen: list[str] = []
+
+    def fake(codex_bin: str, home: str | None = None, **kw):
+        name = Path(home).name
+        seen.append(name)
+        time.sleep(delay)
+        outcome = results[name]
+        if outcome == "auth":
+            return ProbeResult.auth_failed()
+        if outcome == "unknown":
+            return ProbeResult.unknown()
+        from codex_swap.core.types import Usage
+
+        return ProbeResult.of(Usage(used_percent=outcome))
+
+    monkeypatch.setattr(tui.probe, "probe", fake)
+    monkeypatch.setattr(tui, "resolve_codex_bin", lambda: "/bin/true")
+    return seen
+
+
+def test_a_rejected_login_is_told_apart_from_an_unreachable_one(env, monkeypatch) -> None:
+    """조회가 곧 로그인 점검이다. 거절은 "로그인 필요", 네트워크 실패는 "다시 읽기" 다 — 뭉치면
+    멀쩡한 계정을 다시 로그인하러 가거나, 거절된 계정을 `f` 로 계속 두드리게 된다."""
+    _probe_by_slot(monkeypatch, {".codex": "auth", "shared": "unknown"})
+    message, rejected = tui._refresh_outcome(env, ("master", "shared"))
+    assert rejected == ("master",)
+    assert "Login needed: master" in message and "Test all logins" in message, message
+    assert "Could not read usage for shared" in message, message
+
+
+def test_slots_are_read_side_by_side(env, monkeypatch) -> None:
+    """하나씩 읽던 때는 계정 다섯에 수십 초가 걸렸다."""
+    _probe_by_slot(monkeypatch, {".codex": 20, "shared": 30}, delay=0.5)
+    started = time.monotonic()
+    message, rejected = tui._refresh_outcome(env, ("master", "shared"))
+    assert time.monotonic() - started < 0.9, "하나씩 읽었다"
+    assert (message, rejected) == ("Usage refreshed", ())
+
+
+def test_reading_side_by_side_loses_no_cache_entry(env, monkeypatch) -> None:
+    """캐시는 통째로 읽고 한 줄 갈아 다시 쓴다. 쓰기가 겹치면 먼저 쓴 계정이 사라진다."""
+    _probe_by_slot(monkeypatch, {".codex": 20, "shared": 30}, delay=0.05)
+    tui._refresh_outcome(env, ("master", "shared"))
+    rows = {r.label: r for r in tui.build_view(env).rows}
+    assert (rows["master"].used, rows["shared"].used) == ("20%", "30%")
+
+
+def test_a_rejected_login_shows_on_its_row_until_a_fresh_reading(env) -> None:
+    _cache_usage(env, "shared", 40, age=env.cache_ttl + 10)
+    view = tui.build_view(env)
+    flagged = tui.apply_probe_result(view, "Login needed: shared", ("shared",))
+    row = next(r for r in flagged.rows if r.label == "shared")
+    assert row.login_failed
+    screen = tui.render_screen(flagged, width=140)
+    line, style = next((t, s) for t, s in screen if "shared" in t and "b@example.com" in t)
+    assert "login needed" in line and style.tone == "danger", (line, style.tone)
+
+    # 커서를 움직이는 등 화면을 새로 읽어도 남는다.
+    again = tui.build_view(env, carry=tui._carry(flagged))
+    assert next(r for r in again.rows if r.label == "shared").login_failed
+
+    # 새로 읽은 값이 오면 풀린다.
+    _cache_usage(env, "shared", 41)
+    fresh = tui.build_view(env, carry=tui._carry(again))
+    assert not next(r for r in fresh.rows if r.label == "shared").login_failed

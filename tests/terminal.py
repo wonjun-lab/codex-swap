@@ -303,6 +303,15 @@ class Session:
         messages = json.loads((FIXTURES / "ok.json").read_text())["messages"]
         self.scenario.write_text(json.dumps({"messages": messages, "delays": {"3": seconds}}))
 
+    def offline(self) -> None:
+        """조회가 곧바로 **네트워크 실패**(`UNKNOWN`)로 끝나게 한다. 캐시는 그대로 남는다.
+
+        화면은 열 때 지금 쓰는 계정을 늘 읽는다(0.4.1). 캐시에 심은 값이 어떻게 **그려지는가**를
+        보는 테스트에서 가짜 서버가 성공하면, 그 값이 서버 쪽 숫자로 덮여 검사가 엉뚱한 것을 잰다.
+        """
+        messages = json.loads((FIXTURES / "network_failure.json").read_text())["messages"]
+        self.scenario.write_text(json.dumps({"messages": messages, "delays": {}}))
+
     def slot(self, label: str, email: str) -> None:
         import base64
 
