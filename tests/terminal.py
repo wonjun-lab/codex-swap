@@ -39,7 +39,13 @@ from codex_swap.tui import _width
 FIXTURES = Path(__file__).parent / "fixtures" / "probe"
 
 _CSI = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z@])")
-_OTHER_ESC = re.compile(r"\x1b[()][B0]|\x1b[=>]|\x1b\][^\x07]*\x07")
+_OTHER_ESC = re.compile(r"\x1b[()][B0]|\x1b[=>]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+"""글자가 아닌 나머지 제어열. OSC 는 BEL(`\\x07`) 로도 ST(`ESC \\`) 로도 끝난다.
+
+배경색 질의(`ESC ] 11 ; ? ESC \\`)가 ST 로 끝나는데 BEL 만 알던 때는 그것을 **글자**로
+그렸다 — 화면 첫 줄에 `]11;?` 와 역슬래시가 찍혔다. 그러면 "화면이 떴다" 는 판단이 질의만 보고
+참이 되어, 키가 질의의 응답 대기 틈에 나가 삼켜졌다(`run` 의 설명).
+"""
 
 _ZERO_WIDTH = frozenset("\x0e\x0f\x07\x00")
 """칸을 차지하지 않는 제어 문자. SO/SI 는 ncurses 가 속성 전환에 쓴다."""
@@ -366,6 +372,8 @@ class Session:
         settle: float = 0.6,
         total: float = 30.0,
         wait_for: str | None = None,
+        ready: str | None = None,
+        until_exit: bool | None = None,
     ) -> Screen:
         """키를 차례로 넣고 화면을 되읽는다.
 
@@ -375,7 +383,21 @@ class Session:
         `wait_for` 는 키를 다 보낸 뒤 **그 문구가 화면에 뜰 때까지** 더 읽는다. 배경
         조회처럼 스스로 끝나는 일을 기다릴 때 쓴다 — 조용해졌다고 끊으면 아직 도는
         중에 캡처해서, 검사가 아무것도 안 본 채 통과한다.
+
+        **첫 키는 화면이 뜬 뒤에 보낸다**(`ready` 문구, 없으면 글자가 하나라도 그려질 때).
+        조용해진 것만 보던 때는 배경색 질의(OSC 11 — 보이는 글자가 없다)가 끝난 틈에 키가
+        나가, 화면이 열리며 버퍼를 비우는 `flushinp` 에 먹혔다. 그러면 `q` 를 눌렀는데
+        프로그램이 안 끝나 25 초 뒤 실패한다 — 느린 CI 러너에서만 가끔.
+
+        **`q` 로 끝나면 프로그램이 실제로 끝날 때까지 읽는다**(`until_exit`, 기본은 마지막
+        키가 `q` 인지로 정한다). 조용해진 것만 보고 끊던 때는, `q` 가 먹힌 뒤 인터프리터가
+        정리하느라 `settle` 보다 오래 조용하면 하네스가 먼저 pty 를 닫아 SIGHUP 으로 죽였다 —
+        종료 코드가 `-1` 이 되어 "q 가 안 먹었다" 로 읽혔다. 같은 테스트가 2026-09-11 에 두
+        OS 에서 한 번씩, 09-25 에 macOS 에서 한 번 이렇게 깨졌다. 일부러 화면을 열어 둔 채
+        캡처하는 호출은 예전처럼 조용해지면 끊는다.
         """
+        if until_exit is None:
+            until_exit = bool(keys) and keys[-1] in (b"q", b"Q")
         import pty
 
         pid, fd = pty.fork()
@@ -393,9 +415,10 @@ class Session:
         start = time.monotonic()
         quiet = None
         index = 0
+        shown = False
         while time.monotonic() - start < total:
-            ready, _, _ = select.select([fd], [], [], 0.1)
-            if ready:
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if readable:
                 try:
                     chunk = os.read(fd, 65536)
                 except OSError:
@@ -408,11 +431,22 @@ class Session:
             if quiet is None:
                 continue
             idle = time.monotonic() - quiet
+            if not shown and index < len(keys):
+                lines, _ = render(bytes(buf).decode("utf-8", "replace"), cols, rows)
+                shown = (
+                    any(ready in line for line in lines)
+                    if ready is not None
+                    else any(line.strip() for line in lines)
+                )
+                if not shown:
+                    continue
             if index < len(keys) and idle > settle:
                 os.write(fd, keys[index])
                 index += 1
                 quiet = time.monotonic()
             elif index >= len(keys) and idle > settle:
+                if until_exit:
+                    continue  # 끝날 때까지 — EOF 가 오면 위에서 빠진다
                 if wait_for is None:
                     break
                 lines, _ = render(bytes(buf).decode("utf-8", "replace"), cols, rows)
