@@ -150,7 +150,7 @@ def test_the_terminal_bolds_only_the_shortcut_letter_of_a_menu_entry(session: Se
 @_needs_pty
 @pytest.mark.parametrize(
     ("key", "title"),
-    [(b"r", "codex-swap · reset usage"), (b"t", "codex-swap · login test")],
+    [(b"r", "codex-swap · reset usage"), (b"a", "codex-swap · account settings")],
 )
 def test_a_menu_shortcut_opens_its_screen_from_an_account_row(
     session: Session, key: bytes, title: str
@@ -357,10 +357,10 @@ def test_the_credits_screen_keeps_its_keys_line_after_the_switch(session: Sessio
 @pytest.mark.parametrize("back", [b"b", b"\x1bOD", b"\x1b"])
 def test_a_sub_screen_goes_back_with_a_key_a_phone_has(session: Session, back: bytes) -> None:
     """`b` 와 `←` 는 휴대폰 자판에도 있다. `esc` 는 그대로 먹는다."""
-    screen = session.run([b"t", back, b"q"], settle=1.0, total=60.0)
+    screen = session.run([b"a", back, b"q"], settle=1.0, total=60.0)
     assert screen.exit_code == 0, screen.text
-    assert "codex-swap · login test" not in screen.text, screen.text
-    assert "Settings" in screen.text, screen.text
+    assert "codex-swap · account settings" not in screen.text, screen.text
+    assert "Swap strategy" in screen.text, screen.text
 
 
 @_needs_pty
@@ -377,10 +377,10 @@ def test_a_folded_menu_marks_the_cursor_by_reversing_the_word(session: Session) 
     """접힌 메뉴는 한 줄에 여러 항목이라 줄 앞의 `>` 로는 어느 것인지 못 가리킨다.
     실제 터미널에서 고른 낱말이 뒤집혀(SGR 7) 그려져야 한다."""
     down = [b"\x1bOB"] * 2  # 계정 2 개를 지나 메뉴 첫 항목
-    screen = session.run(down, cols=40, rows=14, settle=0.8)
-    assert "Settings" in screen.text, screen.text
+    screen = session.run(down, cols=40, rows=11, settle=0.8)
+    assert "Strategy" in screen.text, screen.text
     assert not any(line.startswith(" > ") for line in screen.lines), "세로 메뉴로 펼쳐졌다"
-    assert "7" in screen.attrs_of("Settings"), screen.attrs_of("Settings")
+    assert "7" in screen.attrs_of("Strategy"), screen.attrs_of("Strategy")
     assert "7" not in screen.attrs_of("Fetch"), "고르지 않은 항목까지 뒤집었다"
 
 
@@ -426,7 +426,14 @@ def test_keys_still_go_out_when_the_screen_never_shows_a_letter(
 @_needs_pty
 def test_right_arrow_walks_a_folded_menu_in_a_real_terminal(session: Session) -> None:
     """`_loop` 이 방향키를 `next_cursor` 에 넘기는지. 짧은 창에서 메뉴가 접히고, `↓↓` 로 첫
-    항목에 들어가 `→→` 로 세 번째(Reset usage)까지 간 뒤 `enter`."""
-    keys = [b"\x1bOB", b"\x1bOB", b"\x1bOC", b"\x1bOC", b"\n"]
+    항목에 들어가 `→→→` 로 네 번째(Reset usage)까지 간 뒤 `enter`."""
+    keys = [b"\x1bOB", b"\x1bOB", b"\x1bOC", b"\x1bOC", b"\x1bOC", b"\n"]
     screen = session.run(keys, cols=40, rows=12, settle=0.6, total=30.0)
     assert "codex-swap · reset usage" in screen.text, screen.text
+
+
+@_needs_pty
+def test_the_login_test_opened_from_account_settings_goes_back_there(session: Session) -> None:
+    """`Test all logins` 는 Account settings 아래에 있다. 거기서 열었으면 `b` 도 거기로 간다."""
+    screen = session.run([b"a", b"t", b"b"], settle=1.0, total=60.0)
+    assert "codex-swap · account settings" in screen.text, screen.text

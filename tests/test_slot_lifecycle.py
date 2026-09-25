@@ -438,7 +438,7 @@ def test_remove_active_keeps_live_credentials_and_explains_what_stops(
 def test_row_actions_refuse_menu_and_empty_selections(env: config.Settings) -> None:
     """행을 잃은 메뉴 커서와 빈 목록은 이름 입력이나 삭제로 이어지지 않는다."""
     menu = tui.replace(tui.build_view(env), cursor=2)
-    assert tui.do_rename(menu, None, "new").message == "Move to an account first, then press n"
+    assert tui.do_rename(menu, None, "new").message == "Move to an account first, then press r"
     assert tui.do_remove(menu, None, "y").message == "Move to an account first, then press d"
 
     for label in ("master", "shared"):

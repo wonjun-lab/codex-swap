@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.0 — 2026-09-25
+
+### The menu, regrouped
+
+The main screen keeps what you do every day; what you do to the accounts themselves moved
+under **Account settings**.
+
+| Was | Now |
+| --- | --- |
+| `Settings` (`s`) | **`Swap strategy`** (`s`) — `Strategy` in the one-line menu |
+| `n` on an account row renames it | Account settings → `r` on the account, or **Rename account** |
+| `d` on an account row removes it | Account settings → `d` on the account, or **Delete account** |
+| `Add current login` (`a`) | Account settings → **Add current login** (`a`) |
+| `Test all logins` (`t`) | Account settings → **Test all logins** (`t`) |
+| — | **`Account settings`** (`a`) on the main menu — `Accounts` in the one-line menu |
+
+- Main menu: **S**wap strategy · **M**ode · **F**etch latest usage · **R**eset usage ·
+  **A**ccount settings · **U**pdate · **Q**uit. The main key hints are down to
+  `enter switch  ? help  q quit  ↑↓ move`.
+- In Account settings, `r` and `d` act on the account under the cursor. Picking
+  **Rename account** or **Delete account** from the list asks which account (`b` cancels).
+  After renaming or deleting you stay in Account settings; `b` from the login test goes back
+  there too.
+- The swap strategy screen says `e edit` and `b back` (it asks before throwing away unsaved
+  changes).
+- The layout never changes as the cursor moves. On very short screens the menu used to be
+  left out and come back — with a blank line — once the cursor walked into it; the one-line
+  menu is now the smallest it gets.
+
 ## 0.3.2 — 2026-09-25
 
 - `Switching policy` is now **`Settings`** (same key, `s`). The screen it opens is

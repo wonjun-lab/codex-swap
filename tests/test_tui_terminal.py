@@ -99,7 +99,7 @@ def test_a_typed_name_arrives_whole_on_every_terminal(tmp_path: Path, term: str)
     s.slot("master", "a@example.com")
     s.activate("a@example.com")
     s.cache("master", 58)
-    screen = s.run([b"a", b".not-a-real-label\n", b"q"])
+    screen = s.run([b"a", b"a", b".not-a-real-label\n", b"q"])
     assert screen.exit_code == 0
     assert ".not-a-real-label" in screen.text, screen.text
 
@@ -110,7 +110,7 @@ def test_a_typed_name_arrives_whole(session: Session) -> None:
     실제로 `master` 를 넣었더니 `ster` 슬롯이 만들어졌다. 여기서는 규약상 거부되는
     이름을 넣어, **슬롯을 만들지 않고** 문자열이 온전히 도착했는지만 본다.
     """
-    screen = session.run([b"a", b".not-a-real-label\n", b"q"])
+    screen = session.run([b"a", b"a", b".not-a-real-label\n", b"q"])
     assert screen.exit_code == 0
     assert ".not-a-real-label" in screen.text, screen.text
     assert not (session.accounts / "ot-a-real-label").exists()
@@ -123,7 +123,7 @@ def test_a_typed_ladder_shows_up_on_the_policy_screen(session: Session) -> None:
     화면만 보면 "입력이 안 됐다" 와 "입력됐다가 취소됐다" 가 구별되지 않는다.
     """
     screen = session.run([b"s", b"e", b"33,66,88\n"])
-    assert "codex-swap · settings" in screen.text
+    assert "codex-swap · swap strategy" in screen.text
     assert "33,66,88" in screen.text, screen.text
 
 
@@ -155,7 +155,7 @@ def test_the_loop_still_breathes_after_a_prompt_closes(tmp_path: Path) -> None:
     s.slot("shared", "b@example.com")  # 캐시 없음 → 조회 대상
     s.delay(2.0)
 
-    screen = s.run([b"a", b"\n"], settle=0.8, total=40.0, wait_for="Usage refreshed")
+    screen = s.run([b"a", b"a", b"\n"], settle=0.8, total=40.0, wait_for="Usage refreshed")
     assert "Usage refreshed" in screen.text, (
         "프롬프트를 닫은 뒤 루프가 막혔다 — 조회 결과가 화면에 붙지 않는다"
     )
@@ -194,7 +194,7 @@ def test_a_finished_probe_does_not_eject_you_from_the_policy_screen(tmp_path: Pa
     screen = s.run([b"s", b"e", b"33,66,88\n"], settle=0.6, total=90.0, wait_for="Usage refreshed")
     assert s.events.exists(), "프로브가 아예 안 돌았다 — 스텁·환경 문제다"
     assert "Usage refreshed" in screen.text, "조회가 안 끝났다 — 검사가 성립하지 않는다"
-    assert "codex-swap · settings" in screen.text, "정책 화면에서 튀어나갔다"
+    assert "codex-swap · swap strategy" in screen.text, "정책 화면에서 튀어나갔다"
     assert "33,66,88" in screen.text, "미저장 편집이 날아갔다"
 
 
@@ -316,7 +316,7 @@ def test_s_opens_the_switching_policy_instead_of_switching(session: Session) -> 
     """`s` 는 전환이었다. 이제 `Settings` 다 — 옛 손버릇으로 눌러도 화면이 열릴 뿐
     자격증명은 그대로여야 한다."""
     screen = session.run([b"\x1bOB", b"s"], settle=0.8)  # 아래로 한 칸 → shared → s
-    assert "codex-swap · settings" in screen.text, screen.text
+    assert "codex-swap · swap strategy" in screen.text, screen.text
     assert "Switched to" not in screen.text, screen.text
 
 
@@ -324,7 +324,7 @@ def test_arrowing_into_the_menu_and_entering_opens_the_policy_screen(session: Se
     """계정을 지나 메뉴 첫 항목까지 내려가 `enter`."""
     down = [b"\x1bOB"] * 2  # 계정 2 개를 지나면 메뉴 첫 항목
     screen = session.run([*down, b"\n"])
-    assert "codex-swap · settings" in screen.text, screen.text
+    assert "codex-swap · swap strategy" in screen.text, screen.text
 
 
 def test_the_menu_quit_item_ends_the_session(session: Session) -> None:
@@ -341,18 +341,18 @@ def test_the_menu_quit_item_ends_the_session(session: Session) -> None:
     assert screen.exit_code == 0
 
 
-def test_n_renames_the_account_under_the_cursor(session: Session) -> None:
-    """실제 키 분기가 입력한 이름을 선택된 슬롯에 적용한다."""
-    screen = session.run([b"\x1bOB", b"n", b"personal\n", b"q"])
+def test_r_in_account_settings_renames_the_account_under_the_cursor(session: Session) -> None:
+    """Account settings 에서 계정에 커서를 두고 `r` — 입력한 이름이 그 슬롯에 붙는다."""
+    screen = session.run([b"a", b"\x1bOB", b"r", b"personal\n", b"q"])
     assert screen.exit_code == 0
     assert "Renamed shared -> personal" in screen.text, screen.text
     assert (session.accounts / "personal/auth.json").is_file()
     assert not (session.accounts / "shared").exists()
 
 
-def test_d_shows_the_full_warning_then_removes_on_yes(session: Session) -> None:
-    """삭제 키는 긴 경고를 그린 뒤 짧은 y 입력만 받는다."""
-    screen = session.run([b"\x1bOB", b"d", b"y\n", b"q"], cols=80)
+def test_d_in_account_settings_warns_then_removes_on_yes(session: Session) -> None:
+    """Account settings 의 `d` 는 긴 경고를 그린 뒤 짧은 y 입력만 받는다."""
+    screen = session.run([b"a", b"\x1bOB", b"d", b"y\n", b"q"], cols=80)
     assert screen.exit_code == 0
     assert "cannot be undone" in screen.raw
     assert "[y/N]" in screen.raw
@@ -369,7 +369,7 @@ def test_the_prompt_sits_right_under_the_content(session: Session) -> None:
     방금 누른 키와 그 반응이 화면 양 끝에 갈라져 있으면 무엇을 묻는 것인지 읽히지
     않는다. `_paint` 가 그린 줄 수를 돌려주고 그 바로 아래에 그린다.
     """
-    screen = session.run([b"a"], rows=40, settle=0.8)
+    screen = session.run([b"a", b"a"], rows=40, settle=0.8)
     filled = [i for i, ln in enumerate(screen.lines) if ln.strip()]
     prompt_at = next(i for i, ln in enumerate(screen.lines) if "Keep " in ln)
     body_end = max(i for i in filled if i != prompt_at)
@@ -381,7 +381,7 @@ def test_the_prompt_sits_right_under_the_content(session: Session) -> None:
 
 def test_the_prompt_says_which_account_it_will_keep(session: Session) -> None:
     """`Slot name:` 만으로는 무엇에 이름을 붙이는지 화면 어디에도 없다."""
-    screen = session.run([b"a"], settle=0.8)
+    screen = session.run([b"a", b"a"], settle=0.8)
     assert "Keep a@example.com as:" in screen.text, screen.text
 
 
@@ -389,7 +389,7 @@ def test_esc_asks_before_discarding_an_edit(session: Session) -> None:
     """편집이 사라지는 것이 조용하면 사용자는 저장이 됐다고 믿는다."""
     screen = session.run([b"s", b"e", b"33,66,88\n", b"\x1b"])
     assert "Unsaved changes" in screen.text, screen.text
-    assert "codex-swap · settings" in screen.text, "물어보지도 않고 나갔다"
+    assert "codex-swap · swap strategy" in screen.text, "물어보지도 않고 나갔다"
     assert "33,66,88" in screen.text, "편집이 사라졌다"
 
 
@@ -397,3 +397,24 @@ def test_esc_leaves_at_once_when_nothing_was_edited(session: Session) -> None:
     screen = session.run([b"s", b"\x1b", b"q"])
     assert screen.exit_code == 0
     assert "Unsaved changes" not in screen.text, "잃을 것이 없는데 물었다"
+
+
+def test_picking_rename_asks_which_account_then_renames_it(session: Session) -> None:
+    """`Rename account` 를 항목으로 고르면 어느 계정인지 되묻는다 — 커서가 계정 목록으로 올라가
+    있고, 고른 뒤 `enter` 면 그 계정의 이름을 묻는다."""
+    down = [b"\x1bOB"] * 3  # master·shared 를 지나 두 번째 항목(Rename account)
+    keys = [b"a", *down, b"\n", b"\x1bOB", b"\n", b"personal\n", b"q"]
+    screen = session.run(keys, settle=0.6, total=40.0)
+    assert screen.exit_code == 0
+    assert "Renamed shared -> personal" in screen.text, screen.text
+    assert "codex-swap · account settings" in screen.text, "이름을 바꾸고 메인으로 튕겨 나갔다"
+    assert (session.accounts / "personal/auth.json").is_file()
+
+
+def test_rename_and_delete_are_not_main_screen_keys_any_more(session: Session) -> None:
+    """드물게 쓰는 되돌릴 수 없는 일은 Account settings 아래로 옮겼다. 메인의 `d` 는 아무것도
+    지우지 않는다."""
+    screen = session.run([b"\x1bOB", b"d", b"y\n", b"q"], cols=80)
+    assert screen.exit_code == 0
+    assert (session.accounts / "shared").exists()
+    assert "Delete this account" not in screen.raw

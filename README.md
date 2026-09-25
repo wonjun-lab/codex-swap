@@ -21,16 +21,15 @@ codex-swap    gate 70% · margin 5%p
                                                               ┴    ┻  ┴  ┴
                                                               50   70 85 95    ┻ = current gate
 
-   Settings
+   Swap strategy
+   Mode: auto switching
    Fetch latest usage
    Reset usage
-   Add current login
-   Mode: auto switching
-   Test all logins
+   Account settings
    Update codex-swap
    Quit
 
-   enter switch   n rename   d remove   ? help   q quit   ↑↓ move
+   enter switch   ? help   q quit   ↑↓ move
 ```
 
 `*` is the account in use, `>` is the cursor. On a bar, `┆` is the gate you have to
@@ -40,23 +39,28 @@ is an alternative to switching.
 
 The cursor runs past the accounts into the menu underneath, and `enter` does whatever the
 row it is on says: switches to that account, or opens that menu entry. Every menu entry also
-has a shortcut, the first letter of its name drawn in bold: **S**ettings, **F**etch,
-**R**eset, **A**dd, **M**ode, **T**est, **U**pdate, **Q**uit. `Mode` turns automatic switching
-on and off: `auto` lets accounts switch on their own as usage climbs, `manual` switches only
-when you pick an account. `Add current login` keeps the login you are already in (`codex-swap adopt`); signing a
-new account in through the browser is `codex-swap add`. `Test all logins` really tries each
-one and says how to fix what fails (`codex-swap doctor`).
+has a shortcut, the first letter of its name drawn in bold: **S**wap strategy, **M**ode,
+**F**etch, **R**eset usage, **A**ccount settings, **U**pdate, **Q**uit. `Swap strategy` is
+when to switch (the ladder, margin and cooldowns). `Mode` turns automatic switching on and
+off: `auto` lets accounts switch on their own as usage climbs, `manual` switches only when you
+pick an account.
+
+`Account settings` holds what you do to the accounts themselves: **A**dd current login
+(keeps the login you are already in, `codex-swap adopt`; signing a new account in through the
+browser is `codex-swap add`), **R**ename account, **D**elete account, and **T**est all logins
+(really tries each one and says how to fix what fails, `codex-swap doctor`). Put the cursor on
+an account and press `r` or `d`; or pick `Rename account` / `Delete account` and it asks which
+account.
 
 On a screen too short for the whole menu — after the stale legend, the usage axis and the
 blank lines have already made room — it folds into one or two lines with the same bold
 letters. There `←` and `→` walk along the line and `↑` goes back to the accounts, and the
-screen keeps its shape wherever the cursor is. On a narrow screen the key hints wrap onto more lines
-instead of losing their words. On an account row, `n` renames that slot and `d` removes it;
-those two stay row actions because the menu cursor no longer selects an account. `?` (or `h`)
-lists every key.
+screen keeps its shape wherever the cursor is. In the one-line menu `Swap strategy` reads
+`Strategy` and `Account settings` reads `Accounts`. On a narrow screen the key hints wrap onto
+more lines instead of losing their words. `?` (or `h`) lists every key.
 
 Every screen you open from the menu goes back with `b` as well as `esc`, and with `←` outside
-the settings screen — phone and tablet SSH keyboards tend to hide `esc` and backspace.
+the swap strategy screen — phone and tablet SSH keyboards tend to hide `esc` and backspace.
 
 Switching itself is reversible — you can always switch back. During a switch, the one
 consequence you cannot undo is discarding credentials that are not saved in any slot, and
@@ -171,7 +175,7 @@ explicit value always wins, but pointing it at `~/.codex` puts you back in the a
 ### When something looks wrong
 
 ```bash
-codex-swap doctor        # or: pick "Test all logins" in the TUI
+codex-swap doctor        # or: Account settings → "Test all logins" in the TUI
 ```
 
 It tries each account for real rather than checking that files exist, and prints what to
@@ -241,10 +245,10 @@ Then run it with no arguments to get the TUI:
 codex-swap
 ```
 
-`enter` switches to the account under the cursor, `n` renames it, `d` removes it.
-Everything else is in the menu underneath: move down and press `enter`, or press the bold
-letter in the entry's name — `f` fetches the latest usage, `r` resets usage, `s` opens the
-settings (the switching policy), `t` tests every login.
+`enter` switches to the account under the cursor. Everything else is in the menu underneath:
+move down and press `enter`, or press the bold letter in the entry's name — `f` fetches the
+latest usage, `r` resets usage, `s` opens the swap strategy, `a` opens account settings
+(add, rename, delete, test logins).
 
 ## Wiring up automatic switching
 
@@ -428,7 +432,7 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 `ls`, `switch` and `rm` exist as aliases.
 
 `remove` asks for confirmation when it is talking to a terminal, and names the account it
-is about to delete. The TUI's `d` key shows the same identity and irreversible consequence
+is about to delete. `d` in the TUI's account settings shows the same identity and irreversible consequence
 before its `[y/N]` prompt. `--yes` skips the CLI question; called from a script it does not
 ask at all, because a prompt behind a pipe never returns.
 
