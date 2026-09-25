@@ -72,6 +72,13 @@ class Row:
 
     표시와 계산을 한 필드로 겸하면 서식이 바뀔 때마다 파싱이 따라 깨진다."""
 
+    login_failed: bool = False
+    """마지막 조회에서 서버가 이 로그인을 **거절했다**(`AUTH_FAILED`). 네트워크 실패는 아니다.
+
+    조회가 곧 로그인 점검이다 — 사용량을 읽으려면 저장된 로그인이 실제로 통해야 한다. 그래서
+    따로 점검을 돌리지 않아도 조회에서 거절된 계정은 표에서 바로 드러낸다. 새로 읽은 값이 오면
+    풀린다."""
+
     credits: int | None = None
     """남은 사용량 리셋 쿠폰 수. 모르면 None.
 
@@ -601,6 +608,15 @@ def build_view(
                 used = f"~{used}"
         else:
             used, reset, known = "?", "-", False
+        # 거절 표시는 **새로 읽은 값이 올 때까지** 이어받는다. 화면을 다시 그릴 때마다 사라지면
+        # 커서를 한 번 움직인 사이에 경고가 없어진다.
+        before = carry.get(label) if carry is not None else None
+        login_failed = bool(
+            before is not None
+            and before.login_failed
+            and before.email == email
+            and (not known or stale)
+        )
         rows.append(
             Row(
                 label=label,
@@ -612,6 +628,7 @@ def build_view(
                 stale=stale,
                 percent=percent,
                 credits=credits,
+                login_failed=login_failed,
             )
         )
 
@@ -1504,9 +1521,11 @@ def _render_accounts(
             line += f"{_GUTTER}{usage_bar(row.percent, view.current_rung)}"
         if with_reset:
             credits = "-" if row.credits is None else str(row.credits)
+            # 거절된 로그인은 갱신 시각보다 급하다 — 그 계정은 지금 아무것도 못 한다.
+            renews = "login needed" if row.login_failed else row.reset
             line += (
                 f"{_GUTTER}{_cell(credits, _CREDIT_COLS)}"
-                f"{_GUTTER}{_cell(row.reset, _RESET_COLS, ellipsis=True)}"
+                f"{_GUTTER}{_cell(renews, _RESET_COLS, ellipsis=True)}"
             )
         # 마지막 칸의 채움은 지운다. 머리말은 이미 그렇게 하는데 행만 남겨 두었더니,
         # 리셋 열이 빠지는 좁은 폭에서 행마다 눈에 안 보이는 꼬리가 붙었다. 행에는 색이
@@ -1516,7 +1535,7 @@ def _render_accounts(
         # 그려져서, 같은 문자열인 바가 활성 행에서만 길어 보인다 — 실제로 두 행의
         # 문자열·폭·열 위치가 전부 같은데도 "아래 바가 더 짧다" 로 읽혔다.
         # 강조는 글자 구간에만 얹는다. 거기는 굵어져도 뜻이 왜곡되지 않는다.
-        tone = _row_tone(row, view)
+        tone = "danger" if row.login_failed else _row_tone(row, view)
         spans = []
         # 커서는 `>` 한 글자에만 색을 준다. 이 표시가 눈에 안 띄면 enter 가 **어느 행**을
         # 전환하는지 확신할 수 없다 — 자격증명을 바꾸는 키라 그 불확실함의 대가가 크다.
@@ -2356,8 +2375,25 @@ def do_adopt(view: View, label: str | None) -> View:
     return build_view(view.settings, select=label, message=f"Adopted {label}", carry=_carry(view))
 
 
-def _probe_into_cache(s: config.Settings, label: str, active: str | None, codex_bin: str) -> bool:
-    """한 슬롯을 프로브해 캐시에 얹는다. 성공이면 True.
+_CACHE_WRITE = threading.Lock()
+"""여러 슬롯을 **나란히** 조회할 때 캐시 쓰기만 줄 세운다.
+
+캐시는 문서 하나를 통째로 읽고 라벨 하나를 갈아끼워 다시 쓴다. 두 스레드가 동시에 쓰면 나중
+쓰기가 먼저 쓰기를 덮어, 방금 읽은 계정 하나가 물음표로 돌아간다. 조회(느린 쪽)는 나란히,
+쓰기(빠른 쪽)만 차례로."""
+
+FETCH_WORKERS = 3
+"""한 번에 조회하는 슬롯 수. 하나씩이면 계정 다섯에 수십 초가 걸렸다. 조회마다 codex
+프로세스가 하나 뜨므로 너무 늘리지 않는다."""
+
+
+def _probe_into_cache(
+    s: config.Settings, label: str, active: str | None, codex_bin: str
+) -> ProbeOutcome:
+    """한 슬롯을 프로브해 캐시에 얹는다. 결과의 종류를 돌려준다.
+
+    `AUTH_FAILED` 는 서버가 로그인을 거절한 것이고, `UNKNOWN` 은 네트워크·파싱처럼 계정에 대해
+    아무 말도 안 하는 실패다 — 화면은 앞의 것만 "로그인 필요" 로 알린다.
 
     활성 라벨만 홈이 다르다 — 자격증명이 실제로 `~/.codex` 에 있으므로 슬롯 경로로
     프로브하면 보관본(대개 더 낡은 토큰)을 읽는다.
@@ -2366,10 +2402,18 @@ def _probe_into_cache(s: config.Settings, label: str, active: str | None, codex_
     try:
         result = probe.probe(codex_bin, str(home))
     except Exception:
-        return False
+        return ProbeOutcome.UNKNOWN
     if result.outcome is not ProbeOutcome.OK or result.usage is None:
-        return False
+        return (
+            result.outcome if result.outcome is ProbeOutcome.AUTH_FAILED else ProbeOutcome.UNKNOWN
+        )
     u = result.usage
+    with _CACHE_WRITE:
+        _write_usage(s, label, u)
+    return ProbeOutcome.OK
+
+
+def _write_usage(s: config.Settings, label: str, u) -> None:
     cache.write(
         s,
         label,
@@ -2384,7 +2428,6 @@ def _probe_into_cache(s: config.Settings, label: str, active: str | None, codex_
             "reached": u.reached,
         },
     )
-    return True
 
 
 def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
@@ -2405,7 +2448,9 @@ def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
     except OSError as exc:
         return replace(view, message=f"Could not read slots: {exc}")
 
-    failed = [lb for lb in targets if not _probe_into_cache(s, lb, active, codex_bin)]
+    failed = [
+        lb for lb in targets if _probe_into_cache(s, lb, active, codex_bin) is not ProbeOutcome.OK
+    ]
     if not failed:
         msg = "Usage refreshed"
     elif labels is not None:
@@ -2418,7 +2463,21 @@ def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
     return build_view(s, select=select, message=msg, carry=_carry(view))
 
 
-def auto_probe_targets(view: View, attempted: Collection[str] = ()) -> tuple[str, ...]:
+FETCH_ON_OPEN_ENV = "CODEX_SWAP_FETCH_ON_OPEN"
+"""`0`·`off` 면 화면을 열 때 **낡은 값은** 다시 읽지 않는다(물음표는 여전히 채운다)."""
+
+
+def fetch_on_open(env: Mapping[str, str] | None = None) -> bool:
+    """화면을 열 때 낡은 사용량도 다시 읽을까. 기본은 읽는다."""
+    import os
+
+    table = os.environ if env is None else env
+    return (table.get(FETCH_ON_OPEN_ENV) or "").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def auto_probe_targets(
+    view: View, attempted: Collection[str] = (), *, stale_too: bool | None = None
+) -> tuple[str, ...]:
     """자동으로 조회할 슬롯. 값을 하나도 모르고, **이번 세션에서 아직 안 시도한** 것.
 
     `attempted` 가 없으면 프로브가 계속 실패하는 슬롯 하나가 화면을 인질로 잡는다.
@@ -2429,7 +2488,18 @@ def auto_probe_targets(view: View, attempted: Collection[str] = ()) -> tuple[str
     일이라 기다림도 그의 선택이다.
     """
     seen = set(attempted)
-    return tuple(r.label for r in view.rows if not r.known and r.label not in seen)
+    # **낡은 값도 다시 읽는다**(`stale_too`). 한동안 물음표만 채우고 낡은 값은 `~` 를 단 채
+    # 두었는데, 그러면 화면을 열 때마다 몇 시간 전 숫자를 보고 `f` 를 눌러야 했다. 비용은
+    # TTL(기본 5 분)이 막는다 — TTL 안에 다시 열면 낡은 값이 없으니 아무것도 안 읽는다.
+    wanted = fetch_on_open() if stale_too is None else stale_too
+    # **지금 쓰는 계정은 늘 읽는다** — 신선해도. 화면을 여는 이유의 대부분이 "지금 계정이 얼마나
+    # 남았나" 이고, 그 숫자가 5 분 전 것이면 바로 그 질문에 틀리게 답할 수 있다. 하나뿐이라
+    # 비용도 작다. 전환 뒤 새로 활성이 된 계정도 이 규칙으로 한 번 읽힌다.
+    return tuple(
+        r.label
+        for r in view.rows
+        if (not r.known or r.active or (wanted and r.stale)) and r.label not in seen
+    )
 
 
 def activate(view: View) -> View:
@@ -3037,7 +3107,7 @@ class _Prober:
     """
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, tuple[str, ...]]] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._labels: tuple[str, ...] = ()
 
@@ -3061,7 +3131,7 @@ class _Prober:
         self._thread.start()
         return True
 
-    def take(self) -> str | None:
+    def take(self) -> tuple[str, tuple[str, ...]] | None:
         """끝났으면 결과 메시지를, 아직이면 None.
 
         큐를 먼저 보고 스레드를 정리한다. 반대로 하면 스레드가 막 끝났는데 결과를 한 틱
@@ -3081,30 +3151,57 @@ class _Prober:
         # 이 스레드에서 나가는 예외는 아무도 못 본다. 무엇이 됐든 메시지 하나는 반드시
         # 큐에 넣어야 `take` 가 영영 None 을 돌려주고 화면이 "조회 중" 에 굳는 일이 없다.
         try:
-            self._queue.put(_refresh_message(settings, labels))
+            self._queue.put(_refresh_outcome(settings, labels))
         # 넓게 잡는다. 이 스레드에서 나가는 예외는 아무도 못 보고, 큐가 비면 `take` 가
         # 영영 None 을 돌려줘 화면이 "조회 중" 에 굳는다.
         except BaseException as exc:
-            self._queue.put(f"Usage probe failed: {exc}")
+            self._queue.put((f"Usage probe failed: {exc}", ()))
 
 
 def _refresh_message(settings: config.Settings, labels: tuple[str, ...]) -> str:
-    """`labels` 를 프로브해 캐시에 얹고, 화면에 띄울 한 줄을 만든다. curses 를 모른다."""
+    """`_refresh_outcome` 의 한 줄만."""
+    return _refresh_outcome(settings, labels)[0]
+
+
+def _refresh_outcome(
+    settings: config.Settings, labels: tuple[str, ...]
+) -> tuple[str, tuple[str, ...]]:
+    """`labels` 를 프로브해 캐시에 얹는다. `(화면에 띄울 한 줄, 로그인이 거절된 라벨들)`.
+
+    **나란히** 읽는다(`FETCH_WORKERS`). 하나씩 읽던 때는 계정 다섯에 수십 초가 걸렸다.
+    curses 를 모른다 — 배경 스레드에서 돈다.
+    """
     try:
         codex_bin = str(resolve_codex_bin())
     except Exception as exc:
-        return f"Could not find codex: {exc}"
+        return f"Could not find codex: {exc}", ()
     try:
         active = store.active_label(settings)
     except OSError as exc:
-        return f"Could not read slots: {exc}"
-    failed = [lb for lb in labels if not _probe_into_cache(settings, lb, active, codex_bin)]
-    if not failed:
-        return "Usage refreshed"
-    return f"Could not read usage for {', '.join(failed)} (f to retry)"
+        return f"Could not read slots: {exc}", ()
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max(1, min(FETCH_WORKERS, len(labels)))) as pool:
+        outcomes = dict(
+            zip(
+                labels,
+                pool.map(lambda lb: _probe_into_cache(settings, lb, active, codex_bin), labels),
+                strict=True,
+            )
+        )
+    rejected = tuple(lb for lb in labels if outcomes[lb] is ProbeOutcome.AUTH_FAILED)
+    unread = [lb for lb in labels if outcomes[lb] is ProbeOutcome.UNKNOWN]
+    parts = []
+    if rejected:
+        # 조회가 곧 로그인 점검이다. 거절이면 "읽지 못했다" 가 아니라 "로그인이 필요하다" 다 —
+        # 다시 읽어도 안 되고, 고치는 법은 로그인 점검 화면이 말한다.
+        parts.append(f"Login needed: {', '.join(rejected)} (Account settings → Test all logins)")
+    if unread:
+        parts.append(f"Could not read usage for {', '.join(unread)} (f to retry)")
+    return ("; ".join(parts) if parts else "Usage refreshed"), rejected
 
 
-def apply_probe_result(view: View, message: str) -> View:
+def apply_probe_result(view: View, message: str, rejected: Collection[str] = ()) -> View:
     """배경 조회가 끝났다. 화면을 갱신한다 — **다만 계정 화면일 때만 다시 만든다.**
 
     `build_view` 는 디스크에서 새로 읽으므로 `mode` 도 기본값(계정)으로 돌아가고 아직
@@ -3114,7 +3211,13 @@ def apply_probe_result(view: View, message: str) -> View:
 
     다른 화면에서는 결과 문구만 얹는다. 계정 화면으로 돌아오는 경로(esc)가 어차피
     디스크에서 다시 읽으므로 숫자는 그때 최신이 된다.
+
+    `rejected` 는 서버가 로그인을 거절한 라벨이다. 행에 표시를 달아 둔다 — `build_view` 가
+    새로 읽은 값이 올 때까지 이어받으므로, 다른 화면에 있다 돌아와도 남아 있다.
     """
+    flagged = set(rejected)
+    rows = tuple(replace(r, login_failed=True) if r.label in flagged else r for r in view.rows)
+    view = replace(view, rows=rows)
     if view.mode != "accounts":
         return replace(view, message=message)
     picked = selected_row(view)
@@ -3213,7 +3316,7 @@ def _loop(
             )
         done = prober.take()
         if done is not None:
-            view = apply_probe_result(view, done)
+            view = apply_probe_result(view, *done)
             # 조회 중에 전환·등록이 있었으면 새 슬롯이 비어 있을 수 있다.
             kick(auto_probe_targets(view, attempted))
         drawn = _paint(stdscr, probing_note(refresh_clock(view), prober.labels), colored)
