@@ -1497,11 +1497,11 @@ def test_the_compact_menu_is_only_a_stand_in(env) -> None:
     """자리가 있으면 세로 메뉴다. 모자랄 때만 접는다."""
     view = _view(env)
     roomy = [t for t, _ in tui.render_screen(view, width=60, height=40)]
-    assert any(t.strip() == "Switching policy" for t in roomy), roomy
-    squeezed = [t for t, _ in tui.render_screen(view, width=60, height=14)]
-    assert not any(t.strip() == "Switching policy" for t in squeezed), squeezed
+    assert any(t.strip() == "Settings" for t in roomy), roomy
+    squeezed = [t for t, _ in tui.render_screen(view, width=60, height=11)]
+    assert not any(t.strip() == "Settings" for t in squeezed), squeezed
     folded = " ".join(squeezed)
-    assert "Switching policy  Fetch" in folded and "Quit" in folded, squeezed
+    assert "Settings  Fetch" in folded and "Quit" in folded, squeezed
 
 
 def test_the_folded_menu_stays_folded_when_the_cursor_walks_into_it(env) -> None:
@@ -1511,13 +1511,16 @@ def test_the_folded_menu_stays_folded_when_the_cursor_walks_into_it(env) -> None
     screens = []
     for cursor in range(tui.cursor_limit(view) + 1):
         at = tui.replace(view, cursor=cursor)
-        screen = tui.render_screen(at, width=40, height=16)
+        screen = tui.render_screen(at, width=40, height=12)
         screens.append(screen)
 
         # 모양 = 각 줄의 글자. 커서 표시(`>`)·뒤집기, 그리고 `enter` 의 설명(`switch` ↔
         # `open`)만 달라도 된다 — 줄 수와 자리는 같아야 한다.
         def shape(scr):
-            return [t.replace(">", " ").replace("enter open", "enter switch") for t, _ in scr]
+            return [
+                t.replace(">", " ").replace("enter open", "enter switch").replace("←→", "↑↓")
+                for t, _ in scr
+            ]
 
         assert shape(screen) == shape(screens[0]), cursor
     # 메뉴 위의 커서는 접힌 줄 안에서 그 항목 낱말을 뒤집는다.
@@ -1777,3 +1780,96 @@ def test_the_back_word_on_sub_screens_is_a_key_a_phone_has() -> None:
     for pairs in (tui.CREDIT_KEYS, tui.POLICY_KEYS, tui.DOCTOR_KEYS, tui.HELP_FOOTER):
         keys = dict(pairs)
         assert "b" in keys and "esc" not in keys, pairs
+
+
+# ── 노트북 창과 접힌 메뉴의 방향키 ─────────────────────────────────────────
+
+
+def _laptop_rows() -> tuple[tui.Row, ...]:
+    """사용자가 보낸 화면과 같은 모양: 계정 둘, 낡은 값 하나(범례가 뜬다), 바가 나오는 폭."""
+    return (
+        tui.Row(
+            "master",
+            "account.name@gmail.com",
+            "~91%",
+            "09-30 14:07 (in 4d)",
+            False,
+            stale=True,
+            percent=91,
+            credits=0,
+        ),
+        tui.Row(
+            "shared",
+            "other.name@gmail.com",
+            "7%",
+            "10-02 15:13 (in 6d)",
+            True,
+            percent=7,
+            credits=0,
+        ),
+    )
+
+
+@pytest.mark.parametrize("terminal_rows", [14, 15, 16, 20])
+def test_a_laptop_pane_keeps_the_vertical_menu(env, terminal_rows) -> None:
+    """16 줄짜리 노트북 분할 창에서 메뉴가 한 줄로 접혔다. 범례·축·빈 줄은 메뉴보다 덜 중요하다
+    — 그것들을 먼저 빼고, 접힌 메뉴는 정말 좁은 화면(휴대폰 가로·플립 커버)에만 쓴다."""
+    view = tui.View(rows=_laptop_rows(), cursor=0, settings=env, current_rung=50)
+    assert tui.menu_shape(view, height=terminal_rows - 1, width=114) == "full"
+    lines = tui.render_lines(view, height=terminal_rows - 1, width=114)
+    assert len(lines) <= terminal_rows - 1
+    assert any(line.strip() == "Settings" for line in lines), lines
+
+
+def _folded_view(env, cursor: int) -> tui.View:
+    return tui.View(rows=_laptop_rows(), cursor=cursor, settings=env, current_rung=50)
+
+
+def test_left_and_right_walk_along_the_folded_menu(env) -> None:
+    """접힌 메뉴는 옆으로 늘어선 줄이다. 옆으로 가는 키가 옆 항목으로 가야 한다."""
+    size = {"height": 11, "width": 114}
+    n = len(_laptop_rows())
+    assert tui.menu_shape(_folded_view(env, n), **size) == "folded"
+    assert tui.next_cursor(_folded_view(env, n), "right", **size) == n + 1
+    assert tui.next_cursor(_folded_view(env, n + 1), "left", **size) == n
+    assert tui.next_cursor(_folded_view(env, n), "left", **size) == n, "첫 항목에서 멈춘다"
+    last = tui.cursor_limit(_folded_view(env, 0))
+    assert tui.next_cursor(_folded_view(env, last), "right", **size) == last, "끝에서 멈춘다"
+
+
+def test_up_leaves_a_one_line_menu_and_down_enters_it(env) -> None:
+    size = {"height": 11, "width": 114}
+    n = len(_laptop_rows())
+    assert tui.next_cursor(_folded_view(env, n + 3), "up", **size) == n - 1
+    assert tui.next_cursor(_folded_view(env, n - 1), "down", **size) == n
+    assert tui.next_cursor(_folded_view(env, n + 3), "down", **size) == n + 3, "아래 줄이 없다"
+
+
+def test_up_and_down_cross_the_lines_of_a_menu_folded_twice(env) -> None:
+    """휴대폰 폭에서는 두 줄로 접힌다. `↓` 은 바로 아래 항목으로, `↑` 은 바로 위 항목으로."""
+    size = {"height": 12, "width": 39}
+    n = len(_laptop_rows())
+    view = _folded_view(env, n)
+    layout = tui._folded_layout(view, size["width"])
+    assert len(layout) == 2, layout
+    order = [action for action, _ in tui.MENU]
+    first_below = order.index(layout[1][0][0])
+    assert tui.next_cursor(view, "down", **size) == n + first_below
+    back = tui.next_cursor(_folded_view(env, n + first_below), "up", **size)
+    assert back == n + order.index(layout[0][0][0])
+
+
+def test_arrows_in_the_vertical_menu_stay_vertical(env) -> None:
+    size = {"height": 40, "width": 114}
+    n = len(_laptop_rows())
+    assert tui.menu_shape(_folded_view(env, n), **size) == "full"
+    assert tui.next_cursor(_folded_view(env, n), "down", **size) == n + 1
+    assert tui.next_cursor(_folded_view(env, n), "right", **size) == n, "옆 키는 아무것도 안 한다"
+
+
+def test_the_key_hints_say_left_right_inside_a_folded_menu(env) -> None:
+    n = len(_laptop_rows())
+    on_menu = " ".join(tui.render_lines(_folded_view(env, n), height=11, width=114))
+    on_row = " ".join(tui.render_lines(_folded_view(env, 0), height=11, width=114))
+    assert "←→ move" in on_menu and "↑↓ move" not in on_menu, on_menu
+    assert "↑↓ move" in on_row, on_row

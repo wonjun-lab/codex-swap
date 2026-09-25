@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 — 2026-09-25
+
+- `Switching policy` is now **`Settings`** (same key, `s`). The screen it opens is
+  `codex-swap · settings`; the command is still `codex-swap policy`.
+- A short laptop pane keeps the vertical menu. The menu used to fold into one line below 17
+  rows, while the stale-value legend and the usage axis stayed; those, and then the blank
+  lines, now make room first, and the menu folds only below 14 rows (for two accounts).
+- In the one-line menu, `←` and `→` move between entries and the key hints say so; `↑` goes
+  back to the accounts, and on a menu folded into two lines `↑` `↓` move between the lines.
+  Up and down used to step through the line sideways.
+
 ## 0.3.1 — 2026-09-25
 
 - `update` works for an install made from a folder (`uv tool install ./codex-swap`). It used to
