@@ -89,6 +89,12 @@ make_auth() { # $1=path $2=email $3=refresh
 import base64, json, os, sys
 path, email, refresh = sys.argv[1:4]
 claims = base64.urlsafe_b64encode(json.dumps({"email": email}).encode()).decode().rstrip("=")
+# `account_id` 를 넣지 않는다. codex 0.157.0 부터 app-server 는 워크스페이스가 고른 로그인
+# (`tokens.account_id`)의 `account/read` 에 답하기 전에 서버의 `accounts/check` 로 라우팅을
+# 확인한다(openai/codex#45529). 가짜 토큰은 거기서 401 을 받고 토큰 갱신까지 시도한 뒤
+# 계정을 비운다 — 이 검사가 약속한 "로컬 account/read 만" 이 깨지고, 가짜 토큰이 OpenAI 로
+# 나간다. 워크스페이스가 없는 로그인은 그 확인을 건너뛴다. codex-swap 은 `account_id` 를 읽지
+# 않으므로(전환은 파일째) 이 필드가 없어도 검사하는 것은 같다.
 body = {
     "OPENAI_API_KEY": None,
     "auth_mode": "chatgpt",
@@ -96,7 +102,6 @@ body = {
         "id_token": f"h.{claims}.s",
         "access_token": "AT-fake",
         "refresh_token": refresh,
-        "account_id": "acc",
     },
 }
 with open(path, "w") as fh:
@@ -245,6 +250,10 @@ try:
         print("matched")
     elif response is None:
         print("no-account-read")
+    elif isinstance(response.get("error"), dict):
+        # 오류를 `no-account` 로 뭉개면 "로그인이 안 읽혔다" 로 보인다. codex 0.157.0 에서
+        # 실제 원인은 `workspace routing discovery failed` 였고, 그 문장이 없어서 진단이 늦었다.
+        print(f"error: {response['error'].get('message', '?')}")
     elif isinstance(account, dict):
         print("different-account")
     else:
