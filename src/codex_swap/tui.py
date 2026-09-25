@@ -203,7 +203,7 @@ MENU: tuple[tuple[str, str], ...] = (
     ("refresh", "Fetch latest usage"),
     ("credits", "Reset usage"),
     ("adopt", "Add current login"),
-    ("auto", "Automatic switching"),
+    ("auto", "Mode"),
     ("doctor", "Test all logins"),
     ("update", "Update codex-swap"),
     ("quit", "Quit"),
@@ -222,7 +222,7 @@ MENU_KEYS: dict[str, str] = {
     "refresh": "f",
     "credits": "r",
     "adopt": "a",
-    "auto": "o",
+    "auto": "m",
     "doctor": "t",
     "update": "u",
     "quit": "q",
@@ -241,8 +241,9 @@ MENU_KEYS: dict[str, str] = {
 - 사용량을 다시 읽는 항목은 그래서 `r` 을 내주고 `Fetch latest usage`(`f`) 가 됐다. 하는
   일이 "서버의 지금 상태를 다시 가져온다" 이고, 이 도구를 쓰는 사람에게 `fetch` 는
   `git fetch` 로 이미 그 뜻이다. `Refresh` 는 화면만 다시 그리는 것으로도 읽혔다.
-- `Automatic` 만 `o` 다. `a` 는 `Add` 가 먼저 가졌고, `o` 는 이 항목이 원래 쓰던 키다.
-  좁아져서 `Auto: on`, 끝내 `on` 이 돼도 `o` 는 남는다.
+- 자동 전환 켜고 끄기는 `Mode: auto` / `Mode: manual`(`m`) 이다. `Automatic switching: on`
+  이던 때는 `a` 를 `Add` 가 먼저 가져 유일하게 가운데 글자(`o`)가 키였다. "자동이냐 수동이냐"
+  는 설명 없이 읽히는 구분이고, 상태가 이름 안에 들어가 있어 on/off 를 따로 적지 않는다.
 - `Switching policy`(`s`) 는 `Policy settings` 였다. 무엇의 정책인지 이름이 말하지 않았다.
   `s` 는 원래 계정 줄의 전환 키였는데, `enter` 와 같은 일을 하는 두 번째 키라 비웠다 —
   옛 손버릇으로 눌러도 정책 화면이 열릴 뿐 되돌릴 수 없는 일은 안 일어난다.
@@ -319,13 +320,6 @@ def account_keys(view: View) -> tuple[tuple[str, str], ...]:
 
 EMPTY_KEYS = (("a", "add current login"), ("?", "help"), ("q", "quit"))
 """계정이 하나도 없을 때의 조작법. 메뉴를 그리지 않는 화면이라 이 둘만 적는다."""
-AUTO_ON_LINES = ("Auto switch: on   (o to turn off)", "Auto switch: on", "Auto: on", "ON")
-AUTO_OFF_LINES = (
-    "Auto switch: off   (o to turn on)",
-    "Auto switch: off",
-    "Auto: off",
-    "OFF",
-)
 STALE_LEGENDS = (
     "~ marks a stale cached value (f to fetch)",
     "~ = stale (f to fetch)",
@@ -1037,7 +1031,7 @@ def menu_title(action: str, view: View, *, width: int | None = None) -> str:
     않았다. 그래서 상태는 꼬리말이 따로 들고 있었고, 같은 사실을 두 곳이 다른 어휘로
     말하게 됐다.
 
-    `enter` 가 무엇을 할지는 상태에서 따라온다 — `on` 이면 끄고 `off` 면 켠다.
+    `enter` 가 무엇을 할지는 상태에서 따라온다 — `auto` 면 `manual` 로, 반대도 같다.
     """
     base = next(title for name, title in MENU if name == action)
     if action != "auto":
@@ -1045,22 +1039,21 @@ def menu_title(action: str, view: View, *, width: int | None = None) -> str:
     # 상태를 **덧붙인다.** 문구를 따로 적으면 `MENU` 의 이름과 화면의 이름이 갈려서,
     # 문서·테스트가 어느 쪽을 봐야 하는지 알 수 없게 된다.
     #
-    # 좁으면 **이름을 줄이고 상태는 남긴다.** 그냥 자르면 `Automatic switching: of` 처럼
-    # 하필 상태가 먼저 잘린다 — 이 줄에서 정작 필요한 것이 그 두 글자다.
-    state = "off" if view.auto_off else "on"
-    for name in (base, "Auto switching", "Auto"):
-        text = f"{name}: {state}"
+    # 좁으면 **꼬리(`switching`)부터 뗀다.** 상태 낱말은 끝까지 남는다 — 이 줄에서 정작
+    # 필요한 것이 그것이다. 가장 짧은 판도 `Mode` 를 지킨다: 단축키 `m` 이 그 안에 있다.
+    state = "manual" if view.auto_off else "auto"
+    for text in (f"{base}: {state} switching", f"{base}: {state}"):
         if width is None or _width(text) + 4 <= width:  # ` > ` + 여유 한 칸
             return text
-    return state
+    return f"{base}: {state}"
 
 
 def _menu_word(action: str, view: View) -> str:
     """접힌 메뉴에 쓸 짧은 이름. 단축키 글자가 반드시 들어 있다(테스트가 지킨다)."""
     if action == "auto":
-        return f"Auto: {'off' if view.auto_off else 'on'}"
+        return f"Mode: {'manual' if view.auto_off else 'auto'}"
     title = menu_title(action, view)
-    # 정책만 이름 전체다. 첫 낱말 `Switching` 만 남기면 바로 옆 `Auto: on` 과 같은 말로 읽힌다.
+    # 정책만 이름 전체다. 첫 낱말 `Switching` 만 남기면 무엇의 정책인지 사라진다.
     return title if action == "policy" else title.split()[0]
 
 
@@ -1168,7 +1161,7 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
     # **자동 전환이 꺼진 것은 여기 있어야 한다.** 이 줄은 이미 "왜 안 바뀌었나" 에 답하는
     # 자리고(관문·쿨다운), 꺼짐은 그 질문의 가장 큰 답이다. 메뉴에도 상태가 있지만 그쪽은
     # **조작**이라 본문이 잘리면 함께 사라진다 — 계정이 많고 화면이 짧으면 실제로 그랬다.
-    parts = ["auto off"] if view.auto_off else []
+    parts = ["manual mode"] if view.auto_off else []
     parts.append(gate)
     if view.cooldown_left is not None:
         parts.append(f"cooldown {_duration(view.cooldown_left)} left")
@@ -2213,13 +2206,14 @@ def do_toggle_auto(view: View) -> View:
         # 눌렀는데 off 파일만 새로 생기고, 메시지는 거꾸로 "on" 이라고 말한다.
         return replace(
             view,
-            message="Automatic switching remains off: CODEX_ROTATE_SKIP is set",
+            message="Mode stays manual: CODEX_ROTATE_SKIP is set",
         )
     try:
         now_on = policy_edit.set_auto(view.settings, not policy_edit.auto_on(view.settings))
     except OSError as exc:
         return replace(view, message=f"Could not toggle the switch: {exc}")
-    msg = f"Automatic switching {'on' if now_on else 'off'}"
+    # 휴대폰 폭(40 칸)에서도 잘리지 않는 길이로 둔다 — 뒤가 잘리면 무엇이 바뀌었는지가 빠진다.
+    msg = "Mode: auto — switches on its own" if now_on else "Mode: manual — switch by hand"
     return build_view(view.settings, select=select, message=msg, carry=_carry(view))
 
 

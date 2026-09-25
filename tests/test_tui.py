@@ -114,28 +114,30 @@ def test_toggling_auto_rotation_uses_the_same_file_as_bash(env) -> None:
     view = tui.build_view(env)
     # 상태는 **메뉴가** 들고 있다. 꼬리말에도 두던 때는 같은 사실을 두 곳이 다른 어휘로
     # 말해서, 본 사람이 그 둘이 같은 것인지부터 확인해야 했다.
-    assert "Automatic switching: on" in text(view)
+    assert "Mode: auto switching" in text(view)
 
     off = tui.do_toggle_auto(view)
     assert env.off_switch.exists()
-    assert "Automatic switching: off" in text(off)
+    assert "Mode: manual switching" in text(off)
+    assert off.message.startswith("Mode: manual"), off.message
 
     on = tui.do_toggle_auto(off)
     assert not env.off_switch.exists()
-    assert "Automatic switching: on" in text(on)
+    assert "Mode: auto switching" in text(on)
+    assert on.message.startswith("Mode: auto"), on.message
 
 
 def test_skip_environment_is_shown_as_automatic_switching_off(env) -> None:
     """환경이 모든 판단을 막으면 off-switch 파일이 없어도 실효 상태는 off 다."""
     blocked = tui.replace(env, skip=True)
-    assert "Automatic switching: off" in text(tui.build_view(blocked))
+    assert "Mode: manual switching" in text(tui.build_view(blocked))
 
 
 def test_skip_environment_cannot_be_toggled_into_a_fake_on_state(env) -> None:
     blocked = tui.build_view(tui.replace(env, skip=True))
     after = tui.do_toggle_auto(blocked)
     assert not env.off_switch.exists(), "환경 가드를 파일 off-switch 로 잘못 뒤집었다"
-    assert "Automatic switching: off" in text(after)
+    assert "Mode: manual switching" in text(after)
     assert "CODEX_ROTATE_SKIP" in after.message
 
 
@@ -1549,11 +1551,11 @@ def test_the_menu_shape_does_not_depend_on_where_the_cursor_is(env, count) -> No
 
 def test_the_compact_menu_marks_auto_off_like_the_full_menu(env) -> None:
     view = tui.replace(_view(env), auto_off=True)
-    line = next(line for line in tui.compact_menu(view, 200) if "Auto: off" in line[0])
+    line = next(line for line in tui.compact_menu(view, 200) if "Mode: manual" in line[0])
     text, style = line
-    at = text.index("Auto: off")
+    at = text.index("Mode: manual")
     warned = {i for a, b, s in style.spans if s.tone == "warn" for i in range(a, b)}
-    assert set(range(at, at + len("Auto: off"))) <= warned, style.spans
+    assert set(range(at, at + len("Mode: manual"))) <= warned, style.spans
 
 
 def test_every_compact_word_carries_its_shortcut(env) -> None:
@@ -1564,13 +1566,19 @@ def test_every_compact_word_carries_its_shortcut(env) -> None:
 
 
 def test_the_auto_key_survives_every_shortened_title(env) -> None:
-    """좁아지면 `Automatic switching: on` 이 `Auto: on`, 끝내 `on` 이 된다. 어느 판에도
-    키 글자가 남아야 한다 — 줄이 짧아졌다고 단축키 표시가 사라지면 안 된다."""
-    for width in (140, 26, 12, 6):
-        text, style = _menu_line(env, "auto", width=width)
-        bold = [(a, b) for a, b, s in style.spans if s.bold]
-        assert len(bold) == 1, (width, text)
-        assert text[bold[0][0]] == "o", (width, text)
+    """좁아지면 `Mode: auto switching` 이 `Mode: auto` 가 된다. 어느 판에도 키 글자가
+    남아야 한다 — 줄이 짧아졌다고 단축키 표시가 사라지면 안 된다."""
+    for auto_off in (False, True):
+        for width in (140, 26, 16):
+            view = tui.replace(_view(env), auto_off=auto_off)
+            title = tui.menu_title("auto", view, width=width)
+            text, style = next(
+                (t, st) for t, st in tui.render_screen(view, width=width) if t.endswith(f" {title}")
+            )
+            bold = [(a, b) for a, b, st in style.spans if st.bold]
+            assert len(bold) == 1, (width, text)
+            assert text[bold[0][0]] == "M", (width, text)
+            assert ("manual" if auto_off else "auto") in text, (width, text)
 
 
 def test_enter_on_an_account_actually_switches(env) -> None:
@@ -1709,9 +1717,9 @@ def test_moving_the_cursor_disarms_the_pending_discard(env) -> None:
 
 
 def test_menu_keys_are_the_first_letter_except_where_taken() -> None:
-    """가운데 글자는 굵게 칠해도 눈이 한 번 더 찾는다. 첫 글자가 아닌 것은 까닭이 있어야 한다."""
+    """가운데 글자는 굵게 칠해도 눈이 한 번 더 찾는다. 모든 항목의 키가 첫 글자다."""
     not_first = {action for action, title in tui.MENU if title[0].lower() != tui.MENU_KEYS[action]}
-    assert not_first == {"auto"}, not_first
+    assert not not_first, not_first
 
 
 def test_help_and_back_keys_do_not_shadow_a_menu_key() -> None:

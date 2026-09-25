@@ -17,7 +17,7 @@ codex-swap    gate 70% · margin 5%p
    Fetch latest usage
    Reset usage
    Add current login
-   Automatic switching: on
+   Mode: auto switching
    Test all logins
    Update codex-swap
    Quit
@@ -33,8 +33,9 @@ is an alternative to switching.
 The cursor runs past the accounts into the menu underneath, and `enter` does whatever the
 row it is on says: switches to that account, or opens that menu entry. Every menu entry also
 has a shortcut, the first letter of its name drawn in bold: **S**witching policy, **F**etch,
-**R**eset, **A**dd, **T**est, **U**pdate, **Q**uit — and Aut**o**matic switching, whose `a` was
-taken. `Add current login` keeps the login you are already in (`codex-swap adopt`); signing a
+**R**eset, **A**dd, **M**ode, **T**est, **U**pdate, **Q**uit. `Mode` turns automatic switching
+on and off: `auto` lets accounts switch on their own as usage climbs, `manual` switches only
+when you pick an account. `Add current login` keeps the login you are already in (`codex-swap adopt`); signing a
 new account in through the browser is `codex-swap add`. `Test all logins` really tries each
 one and says how to fix what fails (`codex-swap doctor`).
 
