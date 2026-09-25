@@ -382,3 +382,42 @@ def test_a_folded_menu_marks_the_cursor_by_reversing_the_word(session: Session) 
     assert not any(line.startswith(" > ") for line in screen.lines), "세로 메뉴로 펼쳐졌다"
     assert "7" in screen.attrs_of("Switching policy"), screen.attrs_of("Switching policy")
     assert "7" not in screen.attrs_of("Fetch"), "고르지 않은 항목까지 뒤집었다"
+
+
+def test_an_osc_ended_by_st_draws_nothing() -> None:
+    """배경색 질의(`ESC ] 11 ; ? ESC \\`)는 ST 로 끝난다. BEL 만 알던 하네스는 그것을 글자로
+    그려, 아직 빈 화면을 "떴다" 로 읽었다."""
+    from terminal import render
+
+    lines, _ = render("\x1b]11;?\x1b\\", 20, 1)
+    assert not lines[0].strip(), lines
+    lines, _ = render("\x1b]0;title\x07ok", 20, 1)
+    assert lines[0].rstrip() == "ok", lines
+
+
+@_needs_pty
+def test_q_sent_the_moment_the_screen_appears_still_quits(session: Session) -> None:
+    """`settle=0` 은 느린 CI 러너를 흉내 낸다 — 키가 화면이 뜨자마자 나간다.
+
+    하네스가 배경색 질의만 보고 화면이 떴다고 판단하던 때는 `q` 가 질의의 응답 대기 틈에
+    나가 삼켜져, 이 조건에서 매번 실패했다(CI 에서는 가끔).
+    """
+    for _ in range(3):
+        screen = session.run([b"q"], settle=0.0, total=10.0)
+        assert screen.exit_code == 0, screen.text
+
+
+@_needs_pty
+def test_keys_still_go_out_when_the_screen_never_shows_a_letter(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS 의 `TERM=dumb` 는 에뮬레이터가 읽을 글자를 하나도 내지 않는다. "글자가 보이면
+    보낸다" 만 있던 때는 `q` 를 영영 안 보내고 시간이 다 돼 `-1` 로 끝났다(#33 의 CI)."""
+    import terminal
+
+    real = terminal.render
+    monkeypatch.setattr(
+        terminal, "render", lambda raw, cols, rows: ([""] * rows, real("", cols, rows)[1])
+    )
+    screen = session.run([b"q"], total=15.0)
+    assert screen.exit_code == 0
