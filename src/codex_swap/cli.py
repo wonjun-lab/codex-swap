@@ -1749,6 +1749,14 @@ def cmd_update(*, check_only: bool = False, assume_yes: bool = False) -> int:
     elif latest is None and install.is_git:
         # 못 읽은 것을 "최신" 으로 접으면, 갱신이 있는데도 없다고 믿게 된다.
         print("  could not reach the remote to compare — updating anyway")
+    elif install.local_path is not None and not install.editable:
+        # 폴더에서 지은 판은 커밋 기록이 없다. 견줄 수 있는 것은 판 번호뿐이라 그것을 보여 주고
+        # 폴더의 지금 상태로 다시 짓는다 — 같은 판이어도 커밋이 다를 수 있어 건너뛰지 않는다.
+        from codex_swap import __version__
+
+        folder = selfupdate.folder_version(install.local_path) or "?"
+        print(f"  installed {__version__} · folder has {folder} at {selfupdate.short(latest)}")
+        print("  a folder install does not record its commit — rebuilding from the folder as it is")
 
     try:
         command = selfupdate.upgrade_command(install)

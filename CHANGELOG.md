@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-09-25
+
+- `update` works for an install made from a folder (`uv tool install ./codex-swap`). It used to
+  compare the folder's current commit with itself, so after pulling the folder it always said
+  "already up to date" and left the old build in place. It now shows the installed version next
+  to the folder's and rebuilds.
+- The README opens with what the tool is for — keeping your own logins side by side — with a
+  demo of the screen (`docs/demo.gif`, generated from the real renderer by
+  `docs/make_demo.py`).
+
 ## 0.3.0 — 2026-09-25
 
 ### Keys that moved

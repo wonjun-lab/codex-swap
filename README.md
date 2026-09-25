@@ -1,7 +1,15 @@
 # codex-swap
 
-Keep several Codex CLI accounts side by side and swap to the next one as usage climbs
-toward the limit. No logging out and back in every time you want a different account.
+Keep your Codex CLI logins side by side — work, personal, a team seat — and switch between
+them without logging out and back in. One screen shows each account's usage and when it
+renews, and if you want, it can move you to another of your accounts when the one in use gets
+close to its limit.
+
+![codex-swap in a terminal](docs/demo.gif)
+
+It only ever switches between accounts **you** signed in to. It does not share or pool
+accounts between people, and each account stays subject to its own plan's terms and, for work
+accounts, your organization's policies.
 
 ```
 codex-swap    gate 70% · margin 5%p
@@ -184,6 +192,10 @@ It reads how it was installed — uv, pipx or pip, from git or from a path — a
 that, so you do not have to remember. Since a git install keeps the same version number
 while the commit moves, it compares commits rather than versions and tells you when there
 is nothing to do.
+
+An install from a folder (`uv tool install ./codex-swap`) records no commit, so `update`
+cannot tell whether the folder moved on since. It shows the installed version next to the
+folder's and rebuilds from the folder as it is — `git pull` the folder first.
 
 **If `update` is not there yet**, you are on a build from before it existed — run the
 install line again instead. Nothing needs uninstalling first: every path above overwrites
