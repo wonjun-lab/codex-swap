@@ -13,16 +13,16 @@ codex-swap    gate 70% · margin 5%p
                                                               ┴    ┻  ┴  ┴
                                                               50   70 85 95    ┻ = current gate
 
-   Policy settings
-   Refresh usage
-   Usage resets
-   Adopt the account in use
-   Automatic switching: on
-   Check accounts
+   Switching policy
+   Fetch latest usage
+   Reset usage
+   Add current login
+   Mode: auto switching
+   Test all logins
    Update codex-swap
    Quit
 
-   enter select   s switch   n rename   d remove   r usage   a adopt   p policy   o auto   q quit   ↑↓ move
+   enter switch   n rename   d remove   ? help   q quit   ↑↓ move
 ```
 
 `*` is the account in use, `>` is the cursor. On a bar, `┆` is the gate you have to
@@ -31,9 +31,23 @@ the account has left — when an account is exhausted and still has a usage rese
 is an alternative to switching.
 
 The cursor runs past the accounts into the menu underneath, and `enter` does whatever the
-row it is on says: switches to that account, or opens that menu entry. `s` still switches,
-so the old finger memory keeps working. On an account row, `n` renames that slot and `d`
-removes it; those two stay row actions because the menu cursor no longer selects an account.
+row it is on says: switches to that account, or opens that menu entry. Every menu entry also
+has a shortcut, the first letter of its name drawn in bold: **S**witching policy, **F**etch,
+**R**eset, **A**dd, **M**ode, **T**est, **U**pdate, **Q**uit. `Mode` turns automatic switching
+on and off: `auto` lets accounts switch on their own as usage climbs, `manual` switches only
+when you pick an account. `Add current login` keeps the login you are already in (`codex-swap adopt`); signing a
+new account in through the browser is `codex-swap add`. `Test all logins` really tries each
+one and says how to fix what fails (`codex-swap doctor`).
+
+On a screen too short for the whole menu, it folds into one or two lines with the same bold
+letters, and the cursor walks through that line instead of unfolding it, so the screen keeps
+its shape wherever the cursor is. On a narrow screen the key hints wrap onto more lines
+instead of losing their words. On an account row, `n` renames that slot and `d` removes it;
+those two stay row actions because the menu cursor no longer selects an account. `?` (or `h`)
+lists every key.
+
+Every screen you open from the menu goes back with `b` as well as `esc`, and with `←` outside
+the policy screen — phone and tablet SSH keyboards tend to hide `esc` and backspace.
 
 Switching itself is reversible — you can always switch back. During a switch, the one
 consequence you cannot undo is discarding credentials that are not saved in any slot, and
@@ -148,7 +162,7 @@ explicit value always wins, but pointing it at `~/.codex` puts you back in the a
 ### When something looks wrong
 
 ```bash
-codex-swap doctor        # or: pick "Check accounts" in the TUI
+codex-swap doctor        # or: pick "Test all logins" in the TUI
 ```
 
 It tries each account for real rather than checking that files exist, and prints what to
@@ -214,9 +228,10 @@ Then run it with no arguments to get the TUI:
 codex-swap
 ```
 
-`enter` (or `s`) switches to the account under the cursor, `n` renames it, `d` removes it,
-`r` refreshes usage, and `p` edits the policy. Move down to the menu and press `enter` for
-actions that do not require a selected account.
+`enter` switches to the account under the cursor, `n` renames it, `d` removes it.
+Everything else is in the menu underneath: move down and press `enter`, or press the bold
+letter in the entry's name — `f` fetches the latest usage, `r` resets usage, `s` edits the
+switching policy, `t` tests every login.
 
 ## Wiring up automatic switching
 
@@ -347,7 +362,7 @@ codex-swap credits use shared     # a named one
 codex-swap credits use --dry-run  # say what would happen, spend nothing
 ```
 
-The TUI has the same screen: `Usage resets` in the menu, then move to the reset you want and
+The TUI has the same screen: `Reset usage` in the menu (`r`), then move to the reset you want and
 press `enter`. Both surfaces then ask the same thing — `y` to go ahead, naming the account
 and when that reset expires.
 

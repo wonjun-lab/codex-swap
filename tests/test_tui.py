@@ -114,28 +114,30 @@ def test_toggling_auto_rotation_uses_the_same_file_as_bash(env) -> None:
     view = tui.build_view(env)
     # 상태는 **메뉴가** 들고 있다. 꼬리말에도 두던 때는 같은 사실을 두 곳이 다른 어휘로
     # 말해서, 본 사람이 그 둘이 같은 것인지부터 확인해야 했다.
-    assert "Automatic switching: on" in text(view)
+    assert "Mode: auto switching" in text(view)
 
     off = tui.do_toggle_auto(view)
     assert env.off_switch.exists()
-    assert "Automatic switching: off" in text(off)
+    assert "Mode: manual switching" in text(off)
+    assert off.message.startswith("Mode: manual"), off.message
 
     on = tui.do_toggle_auto(off)
     assert not env.off_switch.exists()
-    assert "Automatic switching: on" in text(on)
+    assert "Mode: auto switching" in text(on)
+    assert on.message.startswith("Mode: auto"), on.message
 
 
 def test_skip_environment_is_shown_as_automatic_switching_off(env) -> None:
     """환경이 모든 판단을 막으면 off-switch 파일이 없어도 실효 상태는 off 다."""
     blocked = tui.replace(env, skip=True)
-    assert "Automatic switching: off" in text(tui.build_view(blocked))
+    assert "Mode: manual switching" in text(tui.build_view(blocked))
 
 
 def test_skip_environment_cannot_be_toggled_into_a_fake_on_state(env) -> None:
     blocked = tui.build_view(tui.replace(env, skip=True))
     after = tui.do_toggle_auto(blocked)
     assert not env.off_switch.exists(), "환경 가드를 파일 off-switch 로 잘못 뒤집었다"
-    assert "Automatic switching: off" in text(after)
+    assert "Mode: manual switching" in text(after)
     assert "CODEX_ROTATE_SKIP" in after.message
 
 
@@ -458,7 +460,7 @@ def test_a_failed_auto_refresh_says_what_is_still_empty(env, monkeypatch) -> Non
     view = tui.build_view(env)
     after = tui.do_refresh(view, ("master", "shared"))
     assert "master" in after.message and "shared" in after.message
-    assert "r to retry" in after.message
+    assert "f to retry" in after.message
     assert [r.used for r in after.rows] == ["?", "?"]
 
 
@@ -542,7 +544,7 @@ def test_refresh_message_names_what_it_could_not_read(env, monkeypatch) -> None:
     monkeypatch.setattr(tui, "resolve_codex_bin", lambda: "/bin/true")
     monkeypatch.setattr(tui.probe, "probe", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     msg = tui._refresh_message(env, ("master", "shared"))
-    assert "master" in msg and "shared" in msg and "r to retry" in msg
+    assert "master" in msg and "shared" in msg and "f to retry" in msg
 
 
 def test_refresh_message_reports_a_missing_codex_instead_of_raising(env, monkeypatch) -> None:
@@ -1103,7 +1105,7 @@ def test_only_the_key_glyphs_are_highlighted() -> None:
     assert all(style == tui._KEY_STYLE for _, _, style in spans)
     # 설명은 구간 밖이다.
     covered = {i for a, b, _ in spans for i in range(a, b)}
-    for label in ("move", "switch", "usage"):
+    for label in ("move", "switch", "rename"):
         at = text.index(label)
         assert not (covered & set(range(at, at + len(label)))), label
 
@@ -1137,7 +1139,7 @@ def test_the_span_offsets_are_character_indices_not_columns(env) -> None:
 def test_the_account_screen_carries_the_key_spans(env) -> None:
     rows = (tui.Row("a", "a@x", "70%", "-", True, percent=70),)
     view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70)
-    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter select" in text)
+    keys = next(st for text, st in tui.render_screen(view, width=140) if "enter switch" in text)
     assert keys.spans and keys.tone == "dim"
 
 
@@ -1348,6 +1350,237 @@ def test_enter_on_a_menu_item_goes_in(env) -> None:
     assert after.mode == "policy"
 
 
+# ── 메뉴의 단축키는 메뉴 이름 안에 있다 ─────────────────────────────────────
+
+
+def test_every_menu_entry_has_a_key_taken_from_its_own_title(env) -> None:
+    """키를 이름 **밖에서** 가져오면 화면이 그 키를 보여 줄 자리가 없다.
+
+    `Reset usage` 가 `x` 로 열리면, 그 사실은 이름 어디에도 굵게 칠할 글자가 없다.
+    """
+    assert set(tui.MENU_KEYS) == {action for action, _ in tui.MENU}
+    for action, title in tui.MENU:
+        key = tui.MENU_KEYS[action]
+        assert len(key) == 1 and key.islower(), key
+        assert key in title.lower(), f"{title!r} 에 {key!r} 가 없다"
+
+
+def test_menu_keys_do_not_collide_with_each_other_or_the_row_keys() -> None:
+    """겹치면 한 키가 두 일 중 하나를 **조용히** 못 하게 된다."""
+    keys = list(tui.MENU_KEYS.values())
+    assert len(keys) == len(set(keys)), keys
+    row_only = {glyph for glyph, _ in tui.ACCOUNT_COMMAND_KEYS}
+    assert not row_only & set(keys), row_only & set(keys)
+
+
+def test_a_menu_key_folds_case_and_ignores_everything_else() -> None:
+    for action, key in tui.MENU_KEYS.items():
+        assert tui.menu_action_for(ord(key)) == action
+        assert tui.menu_action_for(ord(key.upper())) == action
+    assert tui.menu_action_for(ord("n")) is None
+    assert tui.menu_action_for(-1) is None
+    assert tui.menu_action_for(0x1_0000) is None
+
+
+def _menu_line(env, action: str, *, cursor: int = 0, width: int | None = 140):
+    view = _view(env, cursor=cursor)
+    title = tui.menu_title(action, view, width=width)
+    screen = tui.render_screen(view, width=width)
+    return next((text, style) for text, style in screen if text.endswith(f" {title}"))
+
+
+def test_only_the_shortcut_letter_is_bold_in_each_menu_entry(env) -> None:
+    """`Reset usage` 가 `r` 로 열리면 **`R` 만** 굵다 — 이름 전체가 아니다."""
+    for action, _ in tui.MENU:
+        text, style = _menu_line(env, action)
+        bold = [(a, b, s) for a, b, s in style.spans if s.bold]
+        assert len(bold) == 1, (text, style.spans)
+        start, end, _ = bold[0]
+        assert end - start == 1, text
+        assert text[start].lower() == tui.MENU_KEYS[action], (text, start)
+        # 이름 안에서 **처음** 나오는 그 글자다. 뒤엣것을 칠하면 눈이 두 번 찾는다.
+        title_at = text.index(tui.menu_title(action, _view(env)))
+        assert text.lower().index(tui.MENU_KEYS[action], title_at) == start, text
+
+
+def test_the_bold_letter_stays_readable_on_a_dimmed_entry(env) -> None:
+    """고르지 않은 항목은 흐리게 그린다. 키 글자까지 흐리면 굵게 칠한 뜻이 없다."""
+    _, style = _menu_line(env, "credits")
+    assert style.tone == "dim"
+    bold = next(s for _, _, s in style.spans if s.bold)
+    assert bold.tone != "dim"
+
+
+def test_the_bold_letter_keeps_the_warning_colour_when_auto_is_off(env) -> None:
+    """꺼진 자동 전환은 경고색이다. 키 글자만 그 색을 잃으면 줄이 얼룩진다."""
+    view = tui.replace(_view(env), auto_off=True)
+    title = tui.menu_title("auto", view, width=140)
+    _, style = next(
+        (t, s) for t, s in tui.render_screen(view, width=140) if t.endswith(f" {title}")
+    )
+    assert style.tone == "warn"
+    assert next(s for _, _, s in style.spans if s.bold).tone == "warn"
+
+
+def test_the_cursor_mark_and_the_bold_letter_coexist(env) -> None:
+    at = len(_view(env).rows) + [a for a, _ in tui.MENU].index("credits")
+    text, style = _menu_line(env, "credits", cursor=at)
+    assert text.startswith(" >"), text
+    starts = [a for a, _, _ in style.spans]
+    assert starts == sorted(starts), "구간이 뒤섞이면 `segments` 가 글자를 버린다"
+    assert len(style.spans) == 2, style.spans
+
+
+_ALL_KEYS = {
+    "accounts": tui.ACCOUNT_KEYS,
+    "empty": tui.EMPTY_KEYS,
+    "policy": tui.POLICY_KEYS,
+    "credits": tui.CREDIT_KEYS,
+    "doctor": tui.DOCTOR_KEYS,
+}
+
+
+@pytest.mark.parametrize("width", [30, 40, 52, 60, 80, 100])
+@pytest.mark.parametrize("name", list(_ALL_KEYS))
+def test_narrow_screens_fold_the_keys_instead_of_dropping_what_they_do(name, width) -> None:
+    """휴대폰·태블릿 폭에서 조작법이 `enter  s  n  d  q  ↑↓` 로 줄었다. 처음 보는 사람에게
+    그건 글자 나열이다 — 설명은 줄을 접어서라도 남아야 한다."""
+    pairs = _ALL_KEYS[name]
+    lines = tui.keys_lines(pairs, width=width)
+    for text, _ in lines:
+        assert tui._width(text) <= width, (width, text)
+        assert text.startswith(tui._INDENT) and not text[len(tui._INDENT)].isspace(), text
+    flat = " ".join(text.strip() for text, _ in lines)
+    for key, label in pairs:
+        assert f"{key} {label}" in flat, (name, width, lines)
+    # 키 강조 구간도 줄을 따라간다.
+    for text, spans in lines:
+        assert all(text[a:b] in {k for k, _ in pairs} for a, b, _ in spans), (text, spans)
+
+
+def test_folded_keys_are_balanced_rather_than_leaving_an_orphan() -> None:
+    """앞에서부터 채우면 마지막 줄에 `↑↓ move` 하나만 떨어진다."""
+    lines = [text for text, _ in tui.keys_lines(tui.ACCOUNT_KEYS, width=45)]
+    assert len(lines) == 2, lines
+    assert lines[-1].strip() != "↑↓ move", lines
+
+
+def test_folded_keys_read_top_to_bottom_on_the_account_screen(env) -> None:
+    lines = tui.render_lines(_view(env), width=40)
+    first = next(i for i, ln in enumerate(lines) if "enter switch" in ln)
+    assert "↑↓ move" in lines[first + 1], lines
+
+
+def _bold_letters(screen) -> str:
+    return "".join(
+        text[a:b].lower() for text, style in screen for a, b, span in style.spans if span.bold
+    )
+
+
+@pytest.mark.parametrize("width", [40, 60, 100])
+@pytest.mark.parametrize("height", [16, 18, 22, 40])
+def test_every_menu_shortcut_stays_on_screen_when_the_menu_does_not_fit(env, width, height) -> None:
+    """높이가 모자라면 세로 메뉴의 아래쪽이 잘렸고, 잘린 항목의 키는 어디에도 없었다."""
+    rows = tuple(
+        tui.Row(f"acct{i}", f"user{i}@example.com", f"{10 * i}%", "-", i == 0, percent=10 * i)
+        for i in range(4)
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=70, message="Usage refreshed")
+    screen = tui.render_screen(view, width=width, height=height)
+    assert len(screen) <= height
+    assert set(tui.MENU_KEYS.values()) <= set(_bold_letters(screen)), [t for t, _ in screen]
+    assert any(t.strip() == "Usage refreshed" for t, _ in screen), "메시지가 밀려나면 안 된다"
+    assert sum(1 for t, _ in screen if t.startswith(" >")) == 1, "커서 행은 남는다"
+
+
+def test_the_compact_menu_is_only_a_stand_in(env) -> None:
+    """자리가 있으면 세로 메뉴다. 모자랄 때만 접는다."""
+    view = _view(env)
+    roomy = [t for t, _ in tui.render_screen(view, width=60, height=40)]
+    assert any(t.strip() == "Switching policy" for t in roomy), roomy
+    squeezed = [t for t, _ in tui.render_screen(view, width=60, height=14)]
+    assert not any(t.strip() == "Switching policy" for t in squeezed), squeezed
+    folded = " ".join(squeezed)
+    assert "Switching policy  Fetch" in folded and "Quit" in folded, squeezed
+
+
+def test_the_folded_menu_stays_folded_when_the_cursor_walks_into_it(env) -> None:
+    """**화면 모양이 커서를 따라 바뀌지 않는다.** 한때 커서가 메뉴에 들어서는 순간 세로로
+    펼쳤고, 한 번의 `↓` 에 메뉴가 두 줄에서 아홉 줄이 되며 조작법이 튀었다."""
+    view = _view(env)
+    screens = []
+    for cursor in range(tui.cursor_limit(view) + 1):
+        at = tui.replace(view, cursor=cursor)
+        screen = tui.render_screen(at, width=40, height=16)
+        screens.append(screen)
+
+        # 모양 = 각 줄의 글자. 커서 표시(`>`)·뒤집기, 그리고 `enter` 의 설명(`switch` ↔
+        # `open`)만 달라도 된다 — 줄 수와 자리는 같아야 한다.
+        def shape(scr):
+            return [t.replace(">", " ").replace("enter open", "enter switch") for t, _ in scr]
+
+        assert shape(screen) == shape(screens[0]), cursor
+    # 메뉴 위의 커서는 접힌 줄 안에서 그 항목 낱말을 뒤집는다.
+    for i, (action, _) in enumerate(tui.MENU):
+        screen = screens[len(view.rows) + i]
+        flipped = [
+            text[a:b] for text, style in screen for a, b, span in style.spans if span.reverse
+        ]
+        assert "".join(flipped) == tui._menu_word(action, view), (action, flipped)
+
+
+@pytest.mark.parametrize("count", [3, 8, 20])
+def test_the_menu_shape_does_not_depend_on_where_the_cursor_is(env, count) -> None:
+    """계정이 많아 목록이 스크롤돼도 메뉴가 접히느냐는 커서가 아니라 화면 크기가 정한다."""
+    rows = tuple(
+        tui.Row(f"acct{i:02d}", f"a{i}@x", f"{i}%", "-", i == 0, percent=i) for i in range(count)
+    )
+    view = tui.View(rows=rows, cursor=0, settings=env, current_rung=50)
+    for height in (14, 18, 24, 40):
+        folded = set()
+        for cursor in range(tui.cursor_limit(view) + 1):
+            texts = [
+                t
+                for t, _ in tui.render_screen(
+                    tui.replace(view, cursor=cursor), width=60, height=height
+                )
+            ]
+            folded.add(not any(t.strip().endswith("Update codex-swap") for t in texts))
+        assert len(folded) == 1, (count, height)
+
+
+def test_the_compact_menu_marks_auto_off_like_the_full_menu(env) -> None:
+    view = tui.replace(_view(env), auto_off=True)
+    line = next(line for line in tui.compact_menu(view, 200) if "Mode: manual" in line[0])
+    text, style = line
+    at = text.index("Mode: manual")
+    warned = {i for a, b, s in style.spans if s.tone == "warn" for i in range(a, b)}
+    assert set(range(at, at + len("Mode: manual"))) <= warned, style.spans
+
+
+def test_every_compact_word_carries_its_shortcut(env) -> None:
+    for auto_off in (False, True):
+        view = tui.replace(_view(env), auto_off=auto_off)
+        for action, _ in tui.MENU:
+            assert tui.MENU_KEYS[action] in tui._menu_word(action, view).lower(), action
+
+
+def test_the_auto_key_survives_every_shortened_title(env) -> None:
+    """좁아지면 `Mode: auto switching` 이 `Mode: auto` 가 된다. 어느 판에도 키 글자가
+    남아야 한다 — 줄이 짧아졌다고 단축키 표시가 사라지면 안 된다."""
+    for auto_off in (False, True):
+        for width in (140, 26, 16):
+            view = tui.replace(_view(env), auto_off=auto_off)
+            title = tui.menu_title("auto", view, width=width)
+            text, style = next(
+                (t, st) for t, st in tui.render_screen(view, width=width) if t.endswith(f" {title}")
+            )
+            bold = [(a, b) for a, b, st in style.spans if st.bold]
+            assert len(bold) == 1, (width, text)
+            assert text[bold[0][0]] == "M", (width, text)
+            assert ("manual" if auto_off else "auto") in text, (width, text)
+
+
 def test_enter_on_an_account_actually_switches(env) -> None:
     """**커서가 놓인 줄이 말하는 일을 한다.**
 
@@ -1389,9 +1622,10 @@ def test_s_on_a_menu_row_is_refused_gently(env) -> None:
 
 
 def test_the_key_line_teaches_the_new_layout(env) -> None:
+    """`enter select` 와 `s switch` 는 계정 줄에서 같은 일이었다. 한 칸으로 합친다."""
     text, _ = tui.keys_line(tui.ACCOUNT_KEYS, width=140)
-    assert "s switch" in text, text
-    assert "enter select" in text, text
+    assert "enter switch" in text, text
+    assert "s switch" not in text and "select" not in text, text
 
 
 # ── 방향키는 방향키로 보여야 한다 ──────────────────────────────────────────
@@ -1477,3 +1711,69 @@ def test_moving_the_cursor_disarms_the_pending_discard(env) -> None:
     moved = replace(armed, policy_cursor=1, discard_armed=False, message="")
     after = tui.leave_policy(moved)
     assert after.mode == "policy", "다시 묻지 않고 버렸다"
+
+
+# ── 도움말과 휴대폰 자판 ────────────────────────────────────────────────────
+
+
+def test_menu_keys_are_the_first_letter_except_where_taken() -> None:
+    """가운데 글자는 굵게 칠해도 눈이 한 번 더 찾는다. 모든 항목의 키가 첫 글자다."""
+    not_first = {action for action, title in tui.MENU if title[0].lower() != tui.MENU_KEYS[action]}
+    assert not not_first, not_first
+
+
+def test_help_and_back_keys_do_not_shadow_a_menu_key() -> None:
+    for key in (*tui.HELP_KEYS, *tui.BACK_KEYS):
+        assert tui.menu_action_for(key) is None, chr(key)
+
+
+def test_enter_says_open_on_a_menu_row_and_switch_on_an_account(env) -> None:
+    """`select` 는 둘 다 말하려다 어느 쪽도 말하지 않았다."""
+    on_row = dict(tui.account_keys(_view(env, cursor=0)))
+    on_menu = dict(tui.account_keys(_view(env, cursor=2)))
+    assert on_row["enter"] == "switch" and on_menu["enter"] == "open"
+    assert set(on_row) == set(on_menu), "커서가 움직일 때 키 목록이 바뀌면 줄이 흔들린다"
+
+
+def test_help_lists_every_key_from_the_tables(env) -> None:
+    """도움말을 문장으로 따로 적으면 키를 바꿀 때 그것만 옛 키를 말한다."""
+    view = tui.open_help(_view(env))
+    text = "\n".join(tui.render_lines(view, width=120))
+    for action, _ in tui.MENU:
+        line = next(ln for ln in text.splitlines() if tui.menu_title(action, view) in ln)
+        assert line.split()[0] == tui.MENU_KEYS[action], line
+    for key, _ in (*tui.ACCOUNT_COMMAND_KEYS, ("enter", ""), ("?", ""), ("b", ""), ("q", "")):
+        assert any(ln.split()[:1] == [key] for ln in text.splitlines()), key
+    assert "esc" in text
+
+
+def test_help_bolds_the_menu_letter_like_the_menu_does(env) -> None:
+    view = tui.open_help(_view(env))
+    screen = tui.render_screen(view, width=120)
+    text, style = next(
+        (t, s) for t, s in screen if t.rstrip().endswith(tui.menu_title("credits", view))
+    )
+    bold = [(a, b) for a, b, s in style.spans if s.bold and s.tone == "plain"]
+    assert len(bold) == 1 and text[bold[0][0]] == "R", (text, style.spans)
+
+
+@pytest.mark.parametrize(("width", "height"), [(40, 16), (60, 20), (120, 60)])
+def test_help_fits_a_phone_and_scrolls_to_its_end(env, width, height) -> None:
+    view = tui.open_help(_view(env))
+    first = tui.render_lines(view, width=width, height=height)
+    assert len(first) <= height and all(tui._width(ln) <= width for ln in first), first
+    for _ in range(100):
+        view = tui.scroll_help(view, +1, height=height, width=width)
+    last = tui.render_lines(view, width=width, height=height)
+    assert len(last) <= height
+    assert any(ln.split()[:1] == ["q"] and "quit" in ln for ln in last), last
+    # 끝에서 더 눌러도 늘지 않는다 — 늘기만 하면 올라오는 데 그만큼 든다.
+    assert tui.scroll_help(view, +1, height=height, width=width).help_scroll == view.help_scroll
+    assert tui.scroll_help(view, -100, height=height, width=width).help_scroll == 0
+
+
+def test_the_back_word_on_sub_screens_is_a_key_a_phone_has() -> None:
+    """`esc` 는 휴대폰 SSH 앱에서 구석에 있거나 없다. 조작법 줄이 알려 주는 것은 `b` 다."""
+    for pairs in (tui.CREDIT_KEYS, tui.POLICY_KEYS, tui.DOCTOR_KEYS, tui.HELP_FOOTER):
+        keys = dict(pairs)
+        assert "b" in keys and "esc" not in keys, pairs

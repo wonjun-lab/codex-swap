@@ -140,11 +140,14 @@ def test_the_cursor_line_survives_the_clamp(_isolated_home: Path, cursor: int, h
     가운데 줄로 떨어졌다.
     """
     view = _many(config.load(), cursor)
-    lines = tui.render_lines(view, height=height, width=90)
+    screen = tui.render_screen(view, height=height, width=90)
+    lines = [text for text, _ in screen]
     assert len(lines) <= height, f"{len(lines)} 줄을 {height} 칸 화면에 냈다"
-    assert any(line.startswith(" >") for line in lines), (
-        f"커서 줄이 잘려 나갔다 (cursor={cursor}, height={height})\n" + "\n".join(lines)
-    )
+    # 커서는 줄 앞의 `>` 거나, 접힌 메뉴에서는 뒤집힌 낱말이다.
+    assert any(
+        text.startswith(" >") or any(span.reverse for _, _, span in style.spans)
+        for text, style in screen
+    ), f"커서 줄이 잘려 나갔다 (cursor={cursor}, height={height})\n" + "\n".join(lines)
 
 
 @pytest.mark.parametrize("height", [6, 8, 10, 14, 20])
@@ -216,14 +219,14 @@ def test_automatic_switching_is_quiet_while_it_is_on(_isolated_home: Path) -> No
 
     on = tui.build_view(s)
     line, style = next(
-        pair for pair in tui.render_screen(on, width=140) if "Automatic switching" in pair[0]
+        pair for pair in tui.render_screen(on, width=140) if "Mode: auto switching" in pair[0]
     )
-    assert "on" in line
+    assert "auto" in line
     assert style.tone != "warn", f"켜져 있는데 경고색이다: {line!r}"
 
     off = tui.replace(on, auto_off=True)
     _, off_style = next(
-        pair for pair in tui.render_screen(off, width=140) if "Automatic switching" in pair[0]
+        pair for pair in tui.render_screen(off, width=140) if "Mode: manual switching" in pair[0]
     )
     assert off_style.tone == "warn", "꺼짐이 켜짐과 같은 밝기다"
 
@@ -246,26 +249,27 @@ def test_the_headline_carries_the_off_switch_so_clipping_cannot_hide_it(
     off = tui.replace(tui.build_view(s), rows=rows, cursor=0, auto_off=True)
 
     short = tui.render_lines(off, height=10, width=90)
-    assert not any("Automatic switching" in ln for ln in short), "전제가 깨졌다 — 메뉴가 안 잘렸다"
-    assert "auto off" in short[0], short
+    assert not any("Mode: manual switching" in ln for ln in short), (
+        "전제가 깨졌다 — 메뉴가 안 접혔다"
+    )
+    assert "manual mode" in short[0], short
 
     on = tui.replace(off, auto_off=False)
-    assert "auto off" not in tui.render_lines(on, height=10, width=90)[0], "정상인데 시끄럽다"
+    assert "manual" not in tui.render_lines(on, height=10, width=90)[0], "정상인데 시끄럽다"
 
 
-@pytest.mark.parametrize(("width", "want"), [(20, "Auto: off"), (26, "Auto switching: off")])
+@pytest.mark.parametrize(("width", "want"), [(20, "Mode: manual"), (26, "Mode: manual switching")])
 def test_a_narrow_screen_keeps_the_state_and_shortens_the_name(
     _isolated_home: Path, width: int, want: str
 ) -> None:
-    """그냥 자르면 하필 **상태가 먼저** 잘린다 — `Automatic switching: of`.
-
-    이 줄에서 정작 필요한 것이 그 두 글자다. 이름을 줄이고 상태를 남긴다.
+    """그냥 자르면 하필 **상태가 먼저** 잘린다 — `Mode: manual swi` 는 그나마 낫지만, 더
+    좁으면 `Mode: man` 이 된다. 꼬리를 떼고 상태를 남긴다.
     """
     s = config.load()
     _auth(s.accounts_dir / "a/auth.json", "a@x")
     _auth(s.default_home / "auth.json", "a@x")
     off = tui.replace(tui.build_view(s), auto_off=True)
-    line = next(ln for ln in tui.render_lines(off, width=width) if "uto" in ln and ":" in ln)
+    line = next(ln for ln in tui.render_lines(off, width=width) if "Mode:" in ln)
     assert line.strip() == want, line
 
 

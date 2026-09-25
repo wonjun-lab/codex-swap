@@ -25,8 +25,9 @@ import queue
 import threading
 import time
 import unicodedata
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import TypeVar
 
 from codex_swap.core import (
     account_slots,
@@ -46,6 +47,8 @@ from codex_swap.core.discovery import resolve_codex_bin
 from codex_swap.core.types import Credit, ProbeOutcome
 
 __all__ = ["Row", "View", "build_view", "render_lines", "replace"]
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,7 @@ class View:
     settings: config.Settings
     message: str = ""
     mode: str = "accounts"
-    """accounts | policy | credits | doctor"""
+    """accounts | policy | credits | doctor | help"""
 
     findings: tuple[doctor.Finding, ...] | None = None
     """점검 결과. `None` 은 **아직 안 읽었다**이지 "문제 없다" 가 아니다."""
@@ -155,6 +158,9 @@ class View:
     confirmation: str = ""
     """짧은 입력을 받기 전에 화면에 온전히 보여 줄 되돌릴 수 없는 동작의 설명."""
 
+    help_scroll: int = 0
+    """도움말을 몇 줄 내려 봤나. 휴대폰 높이에는 도움말이 한 화면에 안 들어간다."""
+
 
 POLICY_FIELDS = (
     (
@@ -193,12 +199,12 @@ LADDER_PRESETS = ((50, 70, 85, 95), (70,), (50, 75), (25, 50, 75, 90), (90,))
 # 다시 파싱해야 하는데, 그 파싱은 설명에 같은 글자가 들어가는 순간 틀린다 — 틀린 자리를
 # 강조하는 화면은 강조가 없는 것보다 나쁘다. 폭에 맞춘 축약도 여기서 파생된다.
 MENU: tuple[tuple[str, str], ...] = (
-    ("policy", "Policy settings"),
-    ("refresh", "Refresh usage"),
-    ("credits", "Usage resets"),
-    ("adopt", "Adopt the account in use"),
-    ("auto", "Automatic switching"),
-    ("doctor", "Check accounts"),
+    ("policy", "Switching policy"),
+    ("refresh", "Fetch latest usage"),
+    ("credits", "Reset usage"),
+    ("adopt", "Add current login"),
+    ("auto", "Mode"),
+    ("doctor", "Test all logins"),
     ("update", "Update codex-swap"),
     ("quit", "Quit"),
 )
@@ -209,6 +215,46 @@ MENU: tuple[tuple[str, str], ...] = (
 
 `(동작 이름, 표시 문자열)` 이다. 동작을 문자열로 두는 것은 `_loop` 이 키 처리와 같은
 분기로 흘려보내기 위해서다 — 같은 일을 두 벌로 구현하면 한쪽만 고쳐지는 날이 온다.
+"""
+
+MENU_KEYS: dict[str, str] = {
+    "policy": "s",
+    "refresh": "f",
+    "credits": "r",
+    "adopt": "a",
+    "auto": "m",
+    "doctor": "t",
+    "update": "u",
+    "quit": "q",
+}
+"""메뉴 항목의 단축키. **항목 이름 안의 글자**이고, 화면은 그 글자만 굵게 그린다.
+
+키가 이름 밖에 있으면 메뉴를 보고는 키를 알 수 없다 — 조작법 줄을 따로 읽어야 하고,
+`Usage resets`·`Check accounts`·`Update codex-swap` 은 아예 키가 없어서 커서로 내려가는
+길뿐이었다. 이름 안의 글자를 칠하면 메뉴가 곧 단축키 목록이 된다.
+
+**키는 이름의 첫 글자다.** 이름을 먼저 고르고 키를 거기서 뽑는 것이 아니라, 키가 첫
+글자가 되도록 이름을 고른다 — 가운데 글자는 굵게 칠해도 눈이 한 번 더 찾아야 하고, 외울
+때도 단어와 이어지지 않는다. 한동안 `Update` 가 `t` 였던 것이 그 예다.
+
+- `Reset usage` 가 `r` 이다. 쿠폰을 쓰는 화면이라 이름이 **하는 일**을 말한다.
+- 사용량을 다시 읽는 항목은 그래서 `r` 을 내주고 `Fetch latest usage`(`f`) 가 됐다. 하는
+  일이 "서버의 지금 상태를 다시 가져온다" 이고, 이 도구를 쓰는 사람에게 `fetch` 는
+  `git fetch` 로 이미 그 뜻이다. `Refresh` 는 화면만 다시 그리는 것으로도 읽혔다.
+- 자동 전환 켜고 끄기는 `Mode: auto` / `Mode: manual`(`m`) 이다. `Automatic switching: on`
+  이던 때는 `a` 를 `Add` 가 먼저 가져 유일하게 가운데 글자(`o`)가 키였다. "자동이냐 수동이냐"
+  는 설명 없이 읽히는 구분이고, 상태가 이름 안에 들어가 있어 on/off 를 따로 적지 않는다.
+- `Switching policy`(`s`) 는 `Policy settings` 였다. 무엇의 정책인지 이름이 말하지 않았다.
+  `s` 는 원래 계정 줄의 전환 키였는데, `enter` 와 같은 일을 하는 두 번째 키라 비웠다 —
+  옛 손버릇으로 눌러도 정책 화면이 열릴 뿐 되돌릴 수 없는 일은 안 일어난다.
+- `Add current login`(`a`) 은 `Adopt the account in use` 였다. `Add` 만 두면 CLI 의 `add`
+  (브라우저로 **새** 계정에 로그인) 로 읽히는데, 이 항목은 **지금 로그인된 것**을 목록에
+  넣을 뿐이다. `current login` 이 그 차이를 말한다. CLI 이름은 그대로 `adopt` 다.
+- `Test all logins`(`t`) 는 `Check accounts` 였다. 무엇을 확인하는지가 없어서 사용량을 보는
+  것으로도 읽혔다. 실제로 하는 일은 각 로그인을 **정말로 써 보고** 안 되는 것과 고치는 법을
+  말하는 것이다(CLI `doctor`).
+
+`n`·`d`·`h` 는 계정 행과 도움말이 쓰므로 여기 쓸 수 없다. 테스트가 겹침을 지킨다.
 """
 
 
@@ -223,28 +269,60 @@ ACCOUNT_COMMAND_KEYS = (("n", "rename"), ("d", "remove"))
 """메뉴가 선택한 계정을 잃는 행 전용 명령과 실제 키의 대응."""
 
 ACCOUNT_KEYS = (
-    # `open` 이었다. 계정 줄에서는 전환이고 메뉴 줄에서는 화면을 여는데, 그중 하나만
-    # 적어 두면 나머지 자리에서 `enter` 가 무슨 키인지 알 수 없다.
-    ("enter", "select"),
-    ("s", "switch"),
+    ("enter", "switch"),
     *ACCOUNT_COMMAND_KEYS,
-    ("r", "usage"),
-    ("a", "adopt"),
-    ("p", "policy"),
-    ("o", "auto"),
+    ("?", "help"),
     ("q", "quit"),
     ("↑↓", "move"),
 )
-AUTO_ON_LINES = ("Auto switch: on   (o to turn off)", "Auto switch: on", "Auto: on", "ON")
-AUTO_OFF_LINES = (
-    "Auto switch: off   (o to turn on)",
-    "Auto switch: off",
-    "Auto: off",
-    "OFF",
-)
+"""계정 화면의 조작법 줄. **메뉴에 없는 키만** 적는다.
+
+`r`·`a`·`p`·`o` 도 여기 있던 때는 같은 키를 두 곳이 다른 말로 불렀다 — 메뉴는 `Refresh
+usage`, 여기는 `r usage`. 그 넷은 이제 메뉴 이름 안의 굵은 글자가 알려 준다. 줄이 짧아진
+만큼 좁은 화면에서 설명을 버려야 하는 폭도 내려간다.
+
+`enter select` 와 `s switch` 가 따로 있던 때는 계정 줄에서 같은 일을 하는 키가 두 칸을
+썼다. 이제 `enter` 하나다 — `s` 는 `Switching policy` 가 가졌다. 커서가 메뉴에 있으면
+`enter` 의 설명이 `open` 으로 바뀐다(`account_keys`).
+
+`q` 는 메뉴에도 있지만 남긴다. 계정이 많아 메뉴가 화면 밖으로 밀려도 나가는 법은 보여야
+한다.
+"""
+
+MINIMAL_KEYS = (("?", "help"), ("q", "quit"))
+"""조작법 줄 전체가 안 들어가는 아주 짧은 화면(플립 커버 등)에 남기는 것. 나머지는 전부
+`?` 가 보여 준다 — 무엇이 빠졌는지 찾는 길 하나와 나가는 길 하나면 갇히지 않는다."""
+
+HELP_KEYS = (ord("?"), ord("h"), ord("H"))
+"""도움말을 여는 키. `?` 가 관례지만 휴대폰 자판에서는 기호 판을 한 번 넘겨야 나온다.
+`h` 는 첫 판에 있다."""
+
+BACK_KEYS = (27, ord("b"), ord("B"))
+"""하위 화면에서 계정 화면으로 돌아가는 키.
+
+`esc` 하나였다. 휴대폰·태블릿의 SSH 앱은 `esc` 를 보조 줄 구석에 두거나 아예 안 두고,
+백스페이스도 멀리 있다 — 들어가기는 했는데 나오는 법이 `q`(프로그램 종료)뿐인 화면이
+됐다. `b` 는 어느 자판이든 첫 판에 있다. 정책 화면이 아니면 `←` 도 돌아간다(거기서는 값을
+내리는 키다).
+"""
+
+
+def account_keys(view: View) -> tuple[tuple[str, str], ...]:
+    """계정 화면의 조작법. `enter` 의 설명만 커서 자리를 따라간다.
+
+    계정 줄에서는 전환이고 메뉴 줄에서는 그 항목을 여는데, 한 낱말로 둘을 다 말하려던
+    `select` 는 어느 쪽도 말하지 않았다.
+    """
+    if selected_menu(view) is None:
+        return ACCOUNT_KEYS
+    return tuple((key, "open" if key == "enter" else label) for key, label in ACCOUNT_KEYS)
+
+
+EMPTY_KEYS = (("a", "add current login"), ("?", "help"), ("q", "quit"))
+"""계정이 하나도 없을 때의 조작법. 메뉴를 그리지 않는 화면이라 이 둘만 적는다."""
 STALE_LEGENDS = (
-    "~ marks a stale cached value (r to refresh)",
-    "~ = stale (r to refresh)",
+    "~ marks a stale cached value (f to fetch)",
+    "~ = stale (f to fetch)",
     "~ = stale",
 )
 """판마다 **들여쓰기를 적지 않는다.** `_help_line` 이 `_INDENT` 로 붙인다."""
@@ -252,7 +330,7 @@ STALE_LEGENDS = (
 CREDIT_KEYS = (
     ("enter", "spend"),
     ("r", "reload"),
-    ("esc", "back"),
+    ("b", "back"),
     ("q", "quit"),
     ("↑↓", "move"),
 )
@@ -269,7 +347,7 @@ CREDIT_KEYS = (
 POLICY_KEYS = (
     ("e", "type"),
     ("s", "save"),
-    ("esc", "cancel"),
+    ("b", "cancel"),
     ("q", "quit"),
     ("↑↓", "move"),
     ("←→", "adjust"),
@@ -354,15 +432,18 @@ def _note(text: str, width: int | None) -> str:
     return f"{_INDENT}{_cell(text, max(width - len(_INDENT), 0), ellipsis=True)}".rstrip()
 
 
-def _wrapped_note(text: str, width: int | None) -> list[str]:
+def _wrapped_note(text: str, width: int | None, *, indent: str = _INDENT) -> list[str]:
     """확인 경고를 말줄임표 없이 여러 줄로 보존한다.
 
     평상시 메시지는 한 줄에서 결과를 빠르게 훑는 것이 먼저지만, 삭제 확인은 뒤가
     잘리면 되돌릴 수 없음이나 활성 계정의 결과를 읽지 못한 채 `y` 를 누르게 된다.
+
+    설명문도 이것을 쓴다. 정책 항목의 뜻이나 "되돌릴 수 없다" 는 경고가 좁은 화면에서
+    `…` 로 잘리면, 그 줄은 자리만 차지하고 아무것도 알려 주지 않는다.
     """
     if width is None:
-        return [_note(text, None)]
-    room = max(width - len(_INDENT), 1)
+        return [f"{indent}{text}"]
+    room = max(width - len(indent), 1)
     remaining = text.strip()
     lines: list[str] = []
     while _width(remaining) > room:
@@ -383,7 +464,7 @@ def _wrapped_note(text: str, width: int | None) -> list[str]:
             remaining = remaining[cut:].lstrip()
     if remaining:
         lines.append(remaining)
-    return [f"{_INDENT}{line}" for line in lines] or [_INDENT]
+    return [f"{indent}{line}" for line in lines] or [indent]
 
 
 def _help_line(*variants: str, width: int | None) -> str:
@@ -575,6 +656,10 @@ class Style:
 
     bold: bool = False
 
+    reverse: bool = False
+    """글자와 바탕을 뒤집는다. 접힌 메뉴의 커서다 — 한 줄에 여러 항목이 있어서 줄 앞의 `>`
+    로는 어느 항목인지 가리킬 수 없다. 색이 없는 터미널에서도 보인다."""
+
     spans: tuple[tuple[int, int, Style], ...] = ()
     """`(문자 시작, 문자 끝, 속성)`. 줄 위에 덧칠할 구간들.
 
@@ -637,6 +722,76 @@ def keys_line(
     # 화면에서 못 나가는 것이 조작법을 못 읽는 것보다 나쁘다.
     last = next((pair for pair in pairs if pair[0] == "q"), pairs[-1])
     return _assemble_keys([last], "  ", labels=False)
+
+
+def keys_lines(
+    pairs: Sequence[tuple[str, str]],
+    *,
+    width: int | None,
+    shape: Sequence[tuple[str, str]] | None = None,
+) -> list[tuple[str, tuple[tuple[int, int, Style], ...]]]:
+    """조작법을 **여러 줄로 접어서라도** 설명을 지킨다.
+
+    `keys_line` 은 한 줄에 맞추려고 설명부터 버린다. 그래서 휴대폰·태블릿 폭(40~90 칸)에서
+    조작법이 `enter  s  n  d  q  ↑↓` 가 됐다 — 처음 보는 사람에게는 무엇이 무엇인지 알 수
+    없는 글자 나열이다. 설명을 한 번 익히면 안 본다는 판단은 **이미 익힌 사람**의 것이었다.
+
+    한 줄에 들어가면 한 줄이다. 넘치면 `키 설명` 짝을 쪼개지 않고 다음 줄로 넘긴다. 짝
+    하나조차 한 줄에 안 들어가는 폭에서만 `keys_line` 의 축약으로 물러난다.
+
+    `shape` 를 주면 **줄 나눔은 그것으로 정하고** 글자는 `pairs` 로 채운다. 계정 화면의
+    `enter` 설명은 커서를 따라 `switch` ↔ `open` 으로 바뀌는데, 두 글자 차이로 한쪽은 한
+    줄·다른 쪽은 두 줄이 되는 폭이 있었다(60 칸, 태블릿 분할 화면) — 커서가 메뉴로 넘어가는
+    순간 조작법이 한 줄 올라붙었다. 긴 쪽의 모양을 쓰면 짧은 쪽은 언제나 들어간다.
+    """
+    model = list(shape) if shape is not None else list(pairs)
+    if width is None:
+        return [_assemble_keys(pairs, "   ", labels=True)]
+    for joiner in ("   ", "  "):
+        if _width(_assemble_keys(model, joiner, labels=True)[0]) <= width:
+            return [_assemble_keys(pairs, joiner, labels=True)]
+    chunks = _balanced(model, width, lambda c: _assemble_keys(c, "  ", labels=True)[0])
+    if any(_width(_assemble_keys(chunk, "  ", labels=True)[0]) > width for chunk in chunks):
+        return [keys_line(pairs, width=width)]
+    out, at = [], 0
+    for chunk in chunks:
+        out.append(_assemble_keys(pairs[at : at + len(chunk)], "  ", labels=True))
+        at += len(chunk)
+    return out
+
+
+def _keys_block(
+    pairs: Sequence[tuple[str, str]],
+    width: int | None,
+    shape: Sequence[tuple[str, str]] | None = None,
+) -> list[tuple[str, Style]]:
+    """`keys_lines` 를 화면 줄로. 조작법 줄은 어느 화면에서나 흐리고, 키 글자만 강조한다."""
+    return [
+        (text, Style("dim", spans=spans))
+        for text, spans in keys_lines(pairs, width=width, shape=shape)
+    ]
+
+
+def _balanced(items: Sequence[_T], width: int, draw: Callable[[list[_T]], str]) -> list[list[_T]]:
+    """`items` 를 `width` 안에 줄로 나눈다. 줄 수는 폭이 정하고, 길이는 고르게 맞춘다.
+
+    그냥 앞에서부터 채우면 마지막 줄에 `↑↓ move` 하나만 떨어지는 식으로 한쪽이 휑하다.
+    그래서 같은 줄 수가 나오는 **가장 좁은 폭**으로 다시 채운다. 항목이 열 개 안팎이라
+    폭을 하나씩 올려 보는 것으로 충분하다.
+    """
+
+    def pack(limit: int) -> list[list[_T]]:
+        chunks: list[list[_T]] = [[]]
+        for item in items:
+            candidate = [*chunks[-1], item]
+            if chunks[-1] and _width(draw(candidate)) > limit:
+                chunks.append([item])
+            else:
+                chunks[-1] = candidate
+        return chunks
+
+    lines = len(pack(width))
+    return next(chunks for limit in range(1, width + 1) if len(chunks := pack(limit)) <= lines)
 
 
 BAR_FILL = "█"
@@ -876,7 +1031,7 @@ def menu_title(action: str, view: View, *, width: int | None = None) -> str:
     않았다. 그래서 상태는 꼬리말이 따로 들고 있었고, 같은 사실을 두 곳이 다른 어휘로
     말하게 됐다.
 
-    `enter` 가 무엇을 할지는 상태에서 따라온다 — `on` 이면 끄고 `off` 면 켠다.
+    `enter` 가 무엇을 할지는 상태에서 따라온다 — `auto` 면 `manual` 로, 반대도 같다.
     """
     base = next(title for name, title in MENU if name == action)
     if action != "auto":
@@ -884,14 +1039,63 @@ def menu_title(action: str, view: View, *, width: int | None = None) -> str:
     # 상태를 **덧붙인다.** 문구를 따로 적으면 `MENU` 의 이름과 화면의 이름이 갈려서,
     # 문서·테스트가 어느 쪽을 봐야 하는지 알 수 없게 된다.
     #
-    # 좁으면 **이름을 줄이고 상태는 남긴다.** 그냥 자르면 `Automatic switching: of` 처럼
-    # 하필 상태가 먼저 잘린다 — 이 줄에서 정작 필요한 것이 그 두 글자다.
-    state = "off" if view.auto_off else "on"
-    for name in (base, "Auto switching", "Auto"):
-        text = f"{name}: {state}"
+    # 좁으면 **꼬리(`switching`)부터 뗀다.** 상태 낱말은 끝까지 남는다 — 이 줄에서 정작
+    # 필요한 것이 그것이다. 가장 짧은 판도 `Mode` 를 지킨다: 단축키 `m` 이 그 안에 있다.
+    state = "manual" if view.auto_off else "auto"
+    for text in (f"{base}: {state} switching", f"{base}: {state}"):
         if width is None or _width(text) + 4 <= width:  # ` > ` + 여유 한 칸
             return text
-    return state
+    return f"{base}: {state}"
+
+
+def _menu_word(action: str, view: View) -> str:
+    """접힌 메뉴에 쓸 짧은 이름. 단축키 글자가 반드시 들어 있다(테스트가 지킨다)."""
+    if action == "auto":
+        return f"Mode: {'manual' if view.auto_off else 'auto'}"
+    title = menu_title(action, view)
+    # 정책만 이름 전체다. 첫 낱말 `Switching` 만 남기면 무엇의 정책인지 사라진다.
+    return title if action == "policy" else title.split()[0]
+
+
+def compact_menu(view: View, width: int | None) -> list[tuple[str, Style]]:
+    """세로 메뉴가 화면에 다 안 들어갈 때 대신 그리는 한두 줄. 단축키 글자는 똑같이 굵다.
+
+    커서가 메뉴에 들어오면 **이 줄 안에서** 움직인다(고른 낱말이 뒤집힌다). 세로 메뉴로
+    펼치지 않는다 — 화면 모양이 커서를 따라 바뀌면 사용자는 다음 화면을 예측할 수 없다.
+
+    세로 메뉴는 아홉 줄을 쓴다. 휴대폰을 눕힌 화면처럼 높이가 모자라면 본문을 자르는
+    단계에서 메뉴 아래쪽이 잘려 나갔고, 잘린 항목의 단축키는 화면 어디에도 없었다 —
+    조작법 줄은 메뉴에 있는 키를 다시 적지 않는다. 키가 **어딘가에는** 보여야 한다.
+    """
+    words = [(action, _menu_word(action, view)) for action, _ in MENU]
+    picked = selected_menu(view)
+
+    def draw(chunk: list[tuple[str, str]]) -> str:
+        return _INDENT + "  ".join(word for _, word in chunk)
+
+    chunks = [words] if width is None else _balanced(words, width, draw)
+    out: list[tuple[str, Style]] = []
+    for chunk in chunks:
+        text = _INDENT
+        spans: list[tuple[int, int, Style]] = []
+        for i, (action, word) in enumerate(chunk):
+            if i:
+                text += "  "
+            start = len(text)
+            text += word
+            warn = action == "auto" and view.auto_off
+            here = action == picked
+            tone = "warn" if warn else "plain"
+            # 고른 항목은 낱말 전체를 뒤집는다. 키 글자는 그 안에서도 굵다.
+            word_style = Style(tone, reverse=True) if here else (_WARN if warn else None)
+            key = start + word.lower().find(MENU_KEYS[action])
+            if word_style is not None:
+                spans.append((start, key, word_style))
+            spans.append((key, key + 1, Style(tone, bold=True, reverse=here)))
+            if word_style is not None:
+                spans.append((key + 1, len(text), word_style))
+        out.append((_clip(text, width) if width else text, Style("dim", spans=tuple(spans))))
+    return out
 
 
 def cursor_limit(view: View) -> int:
@@ -957,7 +1161,7 @@ def _headline(view: View, *, show_ladder: bool, width: int | None) -> str:
     # **자동 전환이 꺼진 것은 여기 있어야 한다.** 이 줄은 이미 "왜 안 바뀌었나" 에 답하는
     # 자리고(관문·쿨다운), 꺼짐은 그 질문의 가장 큰 답이다. 메뉴에도 상태가 있지만 그쪽은
     # **조작**이라 본문이 잘리면 함께 사라진다 — 계정이 많고 화면이 짧으면 실제로 그랬다.
-    parts = ["auto off"] if view.auto_off else []
+    parts = ["manual mode"] if view.auto_off else []
     parts.append(gate)
     if view.cooldown_left is not None:
         parts.append(f"cooldown {_duration(view.cooldown_left)} left")
@@ -999,6 +1203,8 @@ def render_screen(
         return _render_credits(view, height=height, width=width)
     if view.mode == "doctor":
         return _render_doctor(view, height=height, width=width)
+    if view.mode == "help":
+        return _render_help(view, height=height, width=width)
 
     s = view.settings
     # 바는 자리가 남을 때만 그린다. 억지로 넣으면 이메일·리셋 시각이 잘리는데, 둘 다
@@ -1013,20 +1219,21 @@ def render_screen(
     # 꼬리말은 **버릴 수 있는 순서**로 쌓는다. 화면이 짧으면 앞쪽부터 버리고, 메시지는
     # 마지막까지 남긴다 — 실패를 알리는 유일한 줄이라 그것을 잃으면 사용자는 아무것도
     # 안 일어난 줄 안다.
-    keys_text, keys_spans = keys_line(ACCOUNT_KEYS, width=width)
     # 꺼져 있을 때만 색을 준다. 자동 전환이 꺼진 것은 "왜 안 바뀌지" 의 첫 번째 원인인데,
     # 켜짐과 같은 dim 으로 두면 그 줄이 배경으로 읽혀 끝까지 눈에 안 들어온다. 반대로
     # 켜짐까지 강조하면 평상시 화면에서 가장 시끄러운 줄이 된다 — 정상은 조용해야 한다.
     # 자동 전환 상태는 **메뉴가 들고 있다.** 꼬리말에도 두던 때는 같은 사실을 두 곳이
     # 서로 다른 어휘로 말했다 — 메뉴는 "Toggle automatic switching", 꼬리말은
     # "Auto switch: on". 둘을 본 사람은 그것이 같은 것인지부터 확인해야 했다.
-    droppable: list[tuple[str, Style]] = [
-        (keys_text, Style("dim", spans=keys_spans)),
-    ]
+    #
+    # 이 목록은 **화면 순서의 역순**이다(아래 `reversed`). 조작법이 여러 줄로 접히면 뒤집어
+    # 넣어야 화면에서 첫 줄이 위에 온다 — 높이가 모자라 일부만 남을 때도 첫 줄이 남는다.
+    keys = _keys_block(account_keys(view), width, shape=ACCOUNT_KEYS)
     # `~` 는 낡은 값이라는 표시다. 범례가 없으면 사용자는 그 기호를 오류로 읽는다.
     # 낡은 행이 하나도 없으면 넣지 않는다 — 늘 떠 있는 안내는 곧 안 읽힌다.
+    legend: list[tuple[str, Style]] = []
     if any(r.stale for r in view.rows):
-        droppable.insert(0, (_help_line(*STALE_LEGENDS, width=width), _DIM))
+        legend = [(_help_line(*STALE_LEGENDS, width=width), _DIM)]
     # 활성 계정이 어느 슬롯과도 안 맞으면 전환이 지금 자격증명을 버린다. 조용히 두면
     # 사용자는 enter 한 번으로 그것을 잃는다.
     keep: list[tuple[str, Style]] = []
@@ -1052,7 +1259,7 @@ def render_screen(
         empty = [
             (_note("No accounts yet.", width), _PLAIN),
             ("", _PLAIN),
-            (_note("a  adopt the account you are logged in as   q  quit", width), _DIM),
+            *_keys_block(EMPTY_KEYS, width),
         ]
         if view.message:
             empty += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
@@ -1088,24 +1295,65 @@ def render_screen(
             (f"{pad}{labels}{_GUTTER}{AXIS_TICK_CURRENT} = current gate", _DIM),
         ]
 
-    tail_keep = [("", _PLAIN), *keep] if keep else []
+    menu_shape = "full"
+    windowed = False
+    spaced = True
 
     if height is None:
-        tail = [("", _PLAIN), *droppable[::-1], *keep]
+        tail = [("", _PLAIN), *keys, *legend, *keep]
     else:
-        # 최소 구성: 머리말 + 커서 행 1 + 지켜야 할 꼬리말. 남는 자리에 버릴 수 있는
-        # 줄을 중요한 것(조작법)부터 채워 넣는다.
-        room = height - len(header) - 1 - len(tail_keep)
-        shown = []
-        for entry in reversed(droppable):  # 조작법 → 자동전환 순
-            if len(shown) + 1 <= max(room - 1, 0):  # 빈 줄 하나 몫을 남긴다
-                shown.append(entry)
-        tail = ([("", _PLAIN), *shown] if shown else []) + tail_keep
-
-        budget = height - len(header) - len(tail) - len(axis_lines)
-        # 스크롤 표시가 붙을 수 있으므로 두 줄을 미리 뗀다.
-        if len(rows) > budget:
-            budget = max(budget - 2, 1)
+        # **무엇을 남길지는 화면 크기와 계정 수로만 정한다 — 커서는 보지 않는다.** 한때
+        # 커서가 메뉴에 들어서는 순간 세로 메뉴로 펼쳤는데, 그 한 번의 `↓` 에 메뉴가 두
+        # 줄에서 아홉 줄이 되고 조작법이 아래로 튀었다(PoC 로 비교한 A).
+        #
+        # 우선순위는 **지켜야 할 줄(메시지·경고) → 계정 → 메뉴 → 조작법 → 범례** 다. 플립
+        # 커버(28x12)에서 옛 순서(조작법·범례가 먼저 자리를 잡고 남는 것을 목록에)로 그리면
+        # 메뉴가 통째로 밀려나 할 수 있는 일 일곱 가지의 키가 화면 어디에도 없었다. 메뉴는
+        # 접으면 한두 줄이고, 조작법은 `? help  q quit` 한 줄로 줄여도 `?` 가 나머지를 준다.
+        # 위에서부터 들어가는 첫 구성을 쓴다.
+        folded_n = 1 + len(compact_menu(view, width))
+        minimal = _keys_block(MINIMAL_KEYS, width)
+        #
+        # 그래도 안 들어가면 **빈 줄부터** 뺀다(`tight`). 제목 아래·메뉴 앞·조작법 앞·메시지
+        # 앞의 빈 줄은 읽기 좋게 하려는 것이지 정보가 아니다 — 플립 커버에서는 그 넷이
+        # 메뉴 한 줄보다 비쌌다.
+        candidates = (
+            ("full", keys, legend, True, False),
+            ("full", keys, [], True, False),
+            ("folded", keys, legend, True, False),
+            ("folded", keys, [], False, False),
+            ("folded", keys, [], False, True),
+            ("folded", minimal, [], False, False),
+            ("folded", minimal, [], False, True),
+            ("none", minimal, [], False, True),
+            ("none", [], [], False, True),
+        )
+        for shape, foot, note, all_rows, tight in candidates:
+            gap = [] if tight else [("", _PLAIN)]
+            top = [header[0], header[-1]] if tight else header
+            tail = ([*gap, *foot, *note] if foot or note else []) + ([*gap, *keep] if keep else [])
+            menu_n = {"full": 1 + len(MENU), "folded": folded_n, "none": 1}[shape] - bool(tight)
+            for axis in (axis_lines, []):
+                room = height - len(top) - len(tail) - menu_n - len(axis)
+                # 전부 들어가거나, 창으로 볼 수 있으면(행 1 + 스크롤 표시 2) 된다.
+                if room >= len(rows) or (not all_rows and room >= 3):
+                    break
+            else:
+                continue
+            break
+        menu_shape, axis_lines, header = shape, axis, top
+        spaced = not tight
+        if menu_shape == "none" and selected_menu(view) is not None:
+            # 메뉴를 뺄 만큼 짧은 화면(대략 7 줄 이하)에서 커서가 메뉴에 있으면 그 항목이
+            # 안 보인다. 이때만 접힌 메뉴를 되살린다 — 넘치는 것은 아래 클램프가 본문에서
+            # 덜어 내고, 커서 줄은 지킨다. 이 높이에서는 모양이 흔들리는 것보다 커서를
+            # 잃는 것이 나쁘다.
+            menu_shape = "folded"
+        if len(rows) > room:
+            # 창으로 볼 때는 스크롤 표시 **두 줄을 늘** 쓴다. 표시가 필요할 때만 넣으면
+            # 커서가 맨 위·아래에 닿을 때마다 줄 수가 하나씩 바뀌어 조작법이 오르내렸다.
+            windowed = True
+            budget = max(room - 2, 1)
             at = min(view.cursor, len(rows) - 1)
             start = min(max(0, at - budget // 2), len(rows) - budget)
             rows = rows[start : start + budget]
@@ -1116,7 +1364,10 @@ def render_screen(
     body: list[tuple[str, Style]] = []
     cursor_at: int | None = None
     """커서가 `body` 의 몇 번째 줄인가. 없으면 `None`(행도 메뉴도 안 골린 상태)."""
-    if hidden_above:
+    # 창으로 볼 때는 두 표시를 **늘** 그린다(`0 more` 여도). 필요할 때만 넣으면 커서가
+    # 목록 끝에 닿을 때마다 줄 수가 바뀌어 조작법이 오르내렸다. 빈 줄로 자리만 채우면
+    # 메뉴 앞의 빈 줄과 겹쳐 두 줄이 빈다.
+    if hidden_above or windowed:
         body.append((f"{_INDENT}^ {hidden_above} more", _DIM))
     for i, row in enumerate(rows, start=start):
         cursor = ">" if i == view.cursor and selected_row(view) is not None else " "
@@ -1159,26 +1410,43 @@ def render_screen(
         if row.active:
             spans.append((2, 3 + len(row.label), Style(tone, bold=True)))
         body.append((line, Style(tone, spans=tuple(spans))))
-    if hidden_below:
+    if hidden_below or windowed:
         body.append((f"{_INDENT}v {hidden_below} more", _DIM))
     body += axis_lines
 
     # 메뉴. 커서가 계정 구간을 지나면 여기로 이어진다.
     menu_at = len(body)
-    menu_lines: list[tuple[str, Style]] = [("", _PLAIN)]
-    for i, (action, _) in enumerate(MENU):
+    folded = menu_shape == "folded"
+    menu_lines: list[tuple[str, Style]] = [("", _PLAIN)] if spaced else []
+    if folded:
+        menu_lines += compact_menu(view, width)
+        if selected_menu(view) is not None:
+            cursor_at = menu_at + next(
+                i
+                for i, (_, style) in enumerate(menu_lines)
+                if any(span.reverse for _, _, span in style.spans)
+            )
+    if menu_shape == "none":
+        menu_lines = []
+    for i, (action, _) in enumerate(MENU if menu_shape == "full" else ()):
         picked = view.cursor - len(view.rows) == i
         if picked:
             cursor_at = menu_at + len(menu_lines)
         title = menu_title(action, view, width=width)
         text = f" {'>' if picked else ' '} {title}"
         line = _clip(text, width) if width else text
-        spans = ((1, 2, _KEY_STYLE),) if picked else ()
         # 자동 전환이 꺼져 있으면 이 줄에 색을 준다. "왜 안 바뀌지" 의 첫 번째 원인인데,
         # 켜짐과 같은 밝기로 두면 배경으로 읽혀 끝까지 눈에 안 들어온다. 켜짐까지
         # 강조하면 평상시 화면에서 가장 시끄러운 줄이 된다 — 정상은 조용해야 한다.
         tone = "warn" if action == "auto" and view.auto_off else ("plain" if picked else "dim")
-        menu_lines.append((line, Style(tone, spans=spans)))
+        spans = [(1, 2, _KEY_STYLE)] if picked else []
+        # 단축키 글자는 굵게만 한다. 흐린 줄에서는 흐림을 벗긴다 — 흐린 채 굵으면 터미널에
+        # 따라 굵기가 흐림에 묻혀 칠한 뜻이 사라진다. 경고색 줄은 색을 그대로 둔다.
+        at = title.lower().find(MENU_KEYS[action])
+        if at >= 0:
+            start = len(text) - len(title) + at
+            spans.append((start, start + 1, Style("plain" if tone == "dim" else tone, bold=True)))
+        menu_lines.append((line, Style(tone, spans=tuple(spans))))
     body += menu_lines
 
     # 최종 클램프. 아주 짧은 화면에서는 스크롤 표시까지 합한 바닥(머리말 3 + 표시 2 +
@@ -1266,7 +1534,99 @@ def _credit_note(account: credits_core.Account, credit: Credit | None) -> str:
     return "-" if account.count is None else str(account.count)
 
 
-DOCTOR_KEYS = (("r", "recheck"), ("esc", "back"), ("q", "quit"))
+HELP_FOOTER = (("b", "back"), ("q", "quit"), ("↑↓", "scroll"))
+
+
+def _help_entries(view: View) -> list[tuple[str, str, str | None]]:
+    """도움말의 줄들. `(키, 설명, 굵게 칠할 글자)` 이고, 키가 빈 줄은 소제목이다.
+
+    **표에서 만든다.** 문장으로 따로 적어 두면 키를 바꿀 때 도움말만 옛 키를 말한다 —
+    이 화면이 생긴 이유가 조작법이 흩어져 있어서였는데, 그러면 흩어진 곳이 하나 늘 뿐이다.
+    """
+    out: list[tuple[str, str, str | None]] = [("", "On an account row", None)]
+    out.append(("enter", "switch to that account", None))
+    out += [(key, f"{label} the slot", None) for key, label in ACCOUNT_COMMAND_KEYS]
+    out += [("", "", None), ("", "Menu — the bold letter in each entry", None)]
+    out += [(MENU_KEYS[action], menu_title(action, view), MENU_KEYS[action]) for action, _ in MENU]
+    out += [
+        ("", "", None),
+        ("", "Everywhere", None),
+        ("↑↓", "move", None),
+        ("b", "back to the accounts (esc too; ← too, except in Policy)", None),
+        ("?", "this help (h too)", None),
+        ("q", "quit", None),
+    ]
+    return out
+
+
+def _help_body(view: View, width: int | None) -> list[tuple[str, Style]]:
+    """도움말 본문. 설명은 키 열 오른쪽에서 접힌다 — 좁은 화면이 이 화면의 주 사용처다."""
+    entries = _help_entries(view)
+    col = max(_width(key) for key, _, _ in entries) + 2
+    hang = _INDENT + " " * col
+    out: list[tuple[str, Style]] = []
+    for key, text, bold in entries:
+        if not key:
+            out.append((_note(text, width) if text else "", _PLAIN))
+            continue
+        wrapped = _wrapped_note(text, width, indent=hang)
+        first = _INDENT + _pad(key, col) + wrapped[0][len(hang) :]
+        spans: list[tuple[int, int, Style]] = [(len(_INDENT), len(_INDENT) + len(key), _KEY_STYLE)]
+        if bold is not None:
+            at = text.lower().find(bold)
+            if 0 <= at < len(wrapped[0]) - len(hang):
+                spans.append((len(hang) + at, len(hang) + at + 1, Style(bold=True)))
+        out.append((first, Style(spans=tuple(spans))))
+        out += [(line, _PLAIN) for line in wrapped[1:]]
+    return out
+
+
+def help_room(height: int | None, width: int | None) -> int | None:
+    """도움말 본문에 쓸 수 있는 줄 수. 높이를 모르면 None(전부 보인다)."""
+    if height is None:
+        return None
+    return max(height - 3 - len(keys_lines(HELP_FOOTER, width=width)), 1)
+
+
+def scroll_help(view: View, delta: int, *, height: int | None, width: int | None) -> View:
+    """도움말을 내린다. 끝에서 더 누르면 그 자리에 선다 — 늘기만 하면 돌아오는 데 그만큼 든다."""
+    room = help_room(height, width)
+    total = len(_help_body(view, width))
+    limit = 0 if room is None else max(total - room, 0)
+    return replace(view, help_scroll=min(max(view.help_scroll + delta, 0), limit))
+
+
+def open_help(view: View) -> View:
+    return replace(view, mode="help", help_scroll=0, message="")
+
+
+def _render_help(
+    view: View, *, height: int | None = None, width: int | None = None
+) -> list[tuple[str, Style]]:
+    """`?` 가 여는 조작법 전체. 조작법 줄은 자리가 모자라 줄여 적지만 여기는 다 적는다."""
+    body = _help_body(view, width)
+    room = help_room(height, width)
+    if room is not None and len(body) > room:
+        top = min(view.help_scroll, len(body) - room)
+        shown = body[top : top + room]
+        if top:
+            shown[0] = (f"{_INDENT}^ {top + 1} more", _DIM)
+        below = len(body) - (top + room)
+        if below:
+            shown[-1] = (f"{_INDENT}v {below + 1} more", _DIM)
+        body = shown
+    return [
+        ("codex-swap · help", _PLAIN),
+        ("", _PLAIN),
+        *body,
+        ("", _PLAIN),
+        *_keys_block(HELP_FOOTER, width),
+    ]
+
+
+DOCTOR_KEYS = (("t", "test again"), ("b", "back"), ("q", "quit"))
+"""점검 화면. **들어온 키가 다시 하는 키다** — `t` 로 열었으면 `t` 로 다시 해 본다. 쿠폰
+화면도 `r` 로 열고 `r` 로 다시 읽는다. 예전 키 `r` 도 여기서 그대로 먹는다."""
 
 
 def _render_doctor(
@@ -1277,7 +1637,7 @@ def _render_doctor(
     진단이 병명만 말하고 끝나면 사용자는 결국 검색을 해야 한다. 원인과 조치가 떨어져 있으면
     둘을 잇는 일이 사용자 몫이 된다 — 그 이음이 이 화면의 존재 이유다.
     """
-    out: list[tuple[str, Style]] = [("codex-swap · account check", _PLAIN), ("", _PLAIN)]
+    out: list[tuple[str, Style]] = [("codex-swap · login test", _PLAIN), ("", _PLAIN)]
 
     if view.findings is None:
         out.append((_note("Checking each account…", width), _DIM))
@@ -1295,8 +1655,8 @@ def _render_doctor(
         out.append(("", _PLAIN))
         out.append((_note(doctor.summary(list(view.findings)), width), _PLAIN))
 
-    keys_text, keys_spans = keys_line(DOCTOR_KEYS, width=width)
-    out += [("", _PLAIN), (keys_text, Style("dim", spans=keys_spans))]
+    out.append(("", _PLAIN))
+    out += _keys_block(DOCTOR_KEYS, width)
     if view.message:
         out.append((_note(view.message, width), _PLAIN))
     return out
@@ -1325,7 +1685,7 @@ def _render_credits(
     # `build_view` 가 `_reset_text` 를 같은 방식으로 쓴다.
     from codex_swap.cli import _expiry_text
 
-    out: list[tuple[str, Style]] = [("codex-swap · usage resets", _PLAIN), ("", _PLAIN)]
+    out: list[tuple[str, Style]] = [("codex-swap · reset usage", _PLAIN), ("", _PLAIN)]
 
     if view.credit_accounts is None:
         # **"없다" 가 아니라 "아직" 이다.** 하나로 두면 읽는 중에 "쿠폰 없음" 이 떠서
@@ -1376,17 +1736,15 @@ def _render_credits(
             tone = "plain" if picked else "dim"
             out.append((_clip(line, width) if width else line, Style(tone, spans=spans)))
 
-    keys_text, keys_spans = keys_line(CREDIT_KEYS, width=width)
+    out.append(("", _PLAIN))
+    out += _keys_block(CREDIT_KEYS, width)
+    # 접는다. 이 줄의 요점은 **뒤쪽**(되돌릴 수 없다)이라, 잘리면 하필 그것이 사라진다.
     out += [
-        ("", _PLAIN),
-        (keys_text, Style("dim", spans=keys_spans)),
-        (
-            _note(
-                "A usage reset gives that account a fresh window. Spending one cannot be undone.",
-                width,
-            ),
-            _DIM,
-        ),
+        (line, _DIM)
+        for line in _wrapped_note(
+            "A usage reset gives that account a fresh window. Spending one cannot be undone.",
+            width,
+        )
     ]
     if view.message:
         out += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
@@ -1401,30 +1759,56 @@ def _render_policy(
 ) -> list[tuple[str, Style]]:
     s = view.settings
     saved = view.saved_settings
-    out: list[tuple[str, Style]] = [("codex-swap · policy", _PLAIN), ("", _PLAIN)]
+    # 줄마다 **종류**를 붙여 둔다. 화면이 짧으면 종류 단위로 뺀다 — 뒤에서부터 자르던 때는
+    # 하필 조작법(`b cancel`·`s save`)이 먼저 잘려, 휴대폰에서 이 화면을 나가는 법이
+    # 보이지 않았다.
+    tagged: list[tuple[str, tuple[str, Style]]] = [
+        ("head", ("codex-swap · policy", _PLAIN)),
+        ("gap", ("", _PLAIN)),
+    ]
     for i, (key, title, why) in enumerate(POLICY_FIELDS):
         cursor = ">" if i == view.policy_cursor else " "
         value = ",".join(map(str, s.ladder)) if key == "ladder" else getattr(s, key)
         # 저장 안 된 편집을 표시한다. 아니면 화면의 숫자가 이미 반영된 것처럼 보인다.
         edited = " *" if saved is not None and getattr(s, key) != getattr(saved, key) else ""
         selected = i == view.policy_cursor
-        out.append((f" {cursor} {_pad(title, 14)} {value}{edited}", Style(bold=selected)))
+        kind = "picked" if selected else "field"
+        line = f" {cursor} {_pad(title, 14)} {value}{edited}"
+        if width is not None and _width(line) > width:
+            # 좁으면 값을 다음 줄로 내린다. 자르면 `50,70,85,9` 처럼 **다른 값**이 된다.
+            tagged.append((kind, (f" {cursor} {title}", Style(bold=selected))))
+            tagged.append((kind, (f"     {value}{edited}", Style(bold=selected))))
+        else:
+            tagged.append((kind, (line, Style(bold=selected))))
         if selected:
-            out.append((_note(f"  {why}", width), _DIM))
-    keys_text, keys_spans = keys_line(POLICY_KEYS, width=width)
-    out += [
-        ("", _PLAIN),
-        (keys_text, Style("dim", spans=keys_spans)),
-        (_note("s saves; automatic switching follows these values from then on", width), _DIM),
-        (_note(f"Saved to: {s.accounts_dir / config.CONFIG_NAME}", width), _DIM),
+            # 항목의 뜻은 접어서 다 보인다. 이 화면에서 값을 고치는 근거가 이 한 줄이다.
+            tagged += [
+                ("why", (text, _DIM)) for text in _wrapped_note(why, width, indent=_INDENT + "  ")
+            ]
+    tagged.append(("gap", ("", _PLAIN)))
+    tagged += [("keys", line) for line in _keys_block(POLICY_KEYS, width)]
+    tagged += [
+        ("note", (text, _DIM))
+        for text in _wrapped_note(
+            "s saves; automatic switching follows these values from then on", width
+        )
     ]
+    tagged.append(
+        ("note", (_note(f"Saved to: {s.accounts_dir / config.CONFIG_NAME}", width), _DIM))
+    )
     if view.message:
-        out += [("", _PLAIN), (_note(view.message, width), _PLAIN)]
-    if height is not None and len(out) > height:
-        # 메시지가 있으면 그것부터 지킨다.
-        keep = out[-2:] if view.message else []
-        out = out[: max(height - len(keep), 1)] + keep
-    return out
+        tagged += [("gap", ("", _PLAIN)), ("msg", (_note(view.message, width), _PLAIN))]
+    if height is not None:
+        # 빼는 순서: 덧붙인 안내 → 항목 설명 → 빈 줄 → 고르지 않은 항목(뒤에서부터).
+        # 조작법·메시지·고른 항목은 끝까지 남는다.
+        for drop in ("note", "why", "gap"):
+            if len(tagged) <= height:
+                break
+            tagged = [entry for entry in tagged if entry[0] != drop]
+        while len(tagged) > height and any(kind == "field" for kind, _ in tagged):
+            last = max(i for i, (kind, _) in enumerate(tagged) if kind == "field")
+            del tagged[last]
+    return [line for _, line in tagged]
 
 
 # ── 동작 ─────────────────────────────────────────────────────────────────────
@@ -1446,6 +1830,14 @@ def account_command_for(key: int) -> str | None:
         return None
     typed = chr(key).lower()
     return next((action for glyph, action in ACCOUNT_COMMAND_KEYS if glyph == typed), None)
+
+
+def menu_action_for(key: int) -> str | None:
+    """눌린 키가 어느 메뉴 항목의 단축키인가. 대소문자를 접는다."""
+    if not 0 <= key <= 255:
+        return None
+    typed = chr(key).lower()
+    return next((action for action, glyph in MENU_KEYS.items() if glyph == typed), None)
 
 
 def _slot_refusal_message(exc: account_slots.SlotRefusal) -> str:
@@ -1592,7 +1984,7 @@ def do_switch(view: View) -> View:
     target = selected_row(view)
     if target is None:
         # 커서가 메뉴 위다. 조용히 무시하면 키가 죽은 줄 안다.
-        return replace(view, message="Move to an account first, then press s")
+        return replace(view, message="Move to an account first")
     already_active = False
     refusal: store.UnregisteredActive | None = None
     refusal_confirmation: tuple[str, str] | None = None
@@ -1641,7 +2033,7 @@ def do_switch(view: View) -> View:
             view,
             switch_armed=True,
             switch_confirmation=refusal_confirmation,
-            message=f"{refusal}. Press s again to discard it",
+            message=f"{refusal}. Press enter again to discard it",
         )
     if already_active:
         # 아무것도 하지 않은 분기인데도 `carry` 가 필요하다. 전환이 캐시를 비운 직후
@@ -1749,7 +2141,7 @@ def do_refresh(view: View, labels: tuple[str, ...] | None = None) -> View:
         msg = "Usage refreshed"
     elif labels is not None:
         # 자동 조회의 실패는 사용자가 시킨 일이 아니다. 무엇이 비어 있는지만 알린다.
-        msg = f"Could not read usage for {', '.join(failed)} (r to retry)"
+        msg = f"Could not read usage for {', '.join(failed)} (f to retry)"
     else:
         msg = f"Probe failed: {', '.join(failed)}"
     picked = selected_row(view)
@@ -1791,6 +2183,11 @@ def activate(view: View) -> View:
     action = selected_menu(view)
     if action is None:
         return do_switch(view)
+    return open_menu(view, action)
+
+
+def open_menu(view: View, action: str) -> View:
+    """메뉴 항목 하나를 연다. `enter` 로 오든 단축키로 오든 **이 함수 하나**를 지난다."""
     if action == "policy":
         return replace(
             view, mode="policy", policy_cursor=0, saved_settings=view.settings, message=""
@@ -1809,13 +2206,14 @@ def do_toggle_auto(view: View) -> View:
         # 눌렀는데 off 파일만 새로 생기고, 메시지는 거꾸로 "on" 이라고 말한다.
         return replace(
             view,
-            message="Automatic switching remains off: CODEX_ROTATE_SKIP is set",
+            message="Mode stays manual: CODEX_ROTATE_SKIP is set",
         )
     try:
         now_on = policy_edit.set_auto(view.settings, not policy_edit.auto_on(view.settings))
     except OSError as exc:
         return replace(view, message=f"Could not toggle the switch: {exc}")
-    msg = f"Automatic switching {'on' if now_on else 'off'}"
+    # 휴대폰 폭(40 칸)에서도 잘리지 않는 길이로 둔다 — 뒤가 잘리면 무엇이 바뀌었는지가 빠진다.
+    msg = "Mode: auto — switches on its own" if now_on else "Mode: manual — switch by hand"
     return build_view(view.settings, select=select, message=msg, carry=_carry(view))
 
 
@@ -1904,7 +2302,7 @@ def leave_policy(view: View) -> View:
         return replace(
             view,
             discard_armed=True,
-            message="Unsaved changes — s to save, esc again to discard",
+            message="Unsaved changes — s to save, b again to discard",
         )
     return replace(view, mode="accounts", discard_armed=False, message="")
 
@@ -1987,6 +2385,8 @@ def _attr_of(style: Style, colored: bool) -> int:  # pragma: no cover - curses �
     유일한 신호가 아니다 — 활성은 `*`, 낡은 값은 `~`, 관문은 `┻` 로 이미 구별된다.
     """
     attr = curses.A_BOLD if style.bold else 0
+    if style.reverse:
+        attr |= curses.A_REVERSE
     if style.tone == "dim":
         return attr | curses.A_DIM
     if colored and style.tone in _TONE_COLORS:
@@ -2440,7 +2840,7 @@ def _refresh_message(settings: config.Settings, labels: tuple[str, ...]) -> str:
     failed = [lb for lb in labels if not _probe_into_cache(settings, lb, active, codex_bin)]
     if not failed:
         return "Usage refreshed"
-    return f"Could not read usage for {', '.join(failed)} (r to retry)"
+    return f"Could not read usage for {', '.join(failed)} (f to retry)"
 
 
 def apply_probe_result(view: View, message: str) -> View:
@@ -2569,22 +2969,34 @@ def _loop(
         if key == curses.KEY_RESIZE:
             continue
 
-        if view.mode == "doctor":
-            if key == 27:  # esc — 계정 화면으로
+        # 정책 화면 말고는 `←` 도 돌아간다. 휴대폰 SSH 앱은 `esc` 는 없어도 화살표는 둔다.
+        back = key in BACK_KEYS or (key == curses.KEY_LEFT and view.mode != "policy")
+
+        if view.mode == "help":
+            if back or key in HELP_KEYS or key in (curses.KEY_ENTER, 10, 13):
                 view = build_view(settings, cursor=view.cursor, carry=_carry(view))
-            elif key in (ord("r"), ord("R")):
+            elif key in (curses.KEY_UP, curses.KEY_DOWN):
+                height, width = stdscr.getmaxyx()
+                delta = -1 if key == curses.KEY_UP else 1
+                view = scroll_help(view, delta, height=height - 1, width=max(width - 1, 0))
+            continue
+
+        if view.mode == "doctor":
+            if back:
+                view = build_view(settings, cursor=view.cursor, carry=_carry(view))
+            elif key in tuple(map(ord, "tTrRfF")):
                 view = replace(view, findings=None, message="")
                 checker.start(settings)
             continue
 
         if view.mode == "credits":
-            if key == 27:  # esc — 계정 화면으로
+            if back:
                 view = build_view(settings, cursor=view.cursor, carry=_carry(view))
             elif key == curses.KEY_UP:
                 view = move_credits(view, -1)
             elif key == curses.KEY_DOWN:
                 view = move_credits(view, +1)
-            elif key in (ord("r"), ord("R")):
+            elif key in tuple(map(ord, "rRfF")):
                 view = replace(view, credit_accounts=None, credit_cursor=0, message="")
                 loader.start(settings)
             elif key in (curses.KEY_ENTER, 10, 13):
@@ -2597,7 +3009,7 @@ def _loop(
             continue
 
         if view.mode == "policy":
-            if key == 27:  # esc — 편집을 버린다 (남아 있으면 한 번 묻는다)
+            if back:  # 편집을 버린다 (남아 있으면 한 번 묻는다)
                 asked = leave_policy(view)
                 if asked.mode == "policy":
                     view = asked  # 아직 안 나간다 — 확인을 물었다
@@ -2636,7 +3048,9 @@ def _loop(
                 view = save_policy(view)
             continue
 
-        if key == curses.KEY_UP:
+        if key in HELP_KEYS:
+            view = open_help(view)
+        elif key == curses.KEY_UP:
             # 커서를 움직일 때마다 디스크를 다시 읽는다. 배경에서 rotate 가 돌면 `*` 가
             # 낡는데, 이 화면의 존재 이유가 바로 그 회전이다.
             view = build_view(settings, cursor=max(0, view.cursor - 1), carry=_carry(view))
@@ -2646,11 +3060,16 @@ def _loop(
                 cursor=min(cursor_limit(view), view.cursor + 1),
                 carry=_carry(view),
             )
-        elif key in (curses.KEY_ENTER, 10, 13):
+        elif key in (curses.KEY_ENTER, 10, 13) or menu_action_for(key) is not None:
             # `enter` 는 **들어간다** 하나다. 순수하게 끝나는 것은 `activate` 가 하고,
             # 프로브·프롬프트·종료가 걸린 것만 여기서 가로챈다 — 분기를 두 벌로 두지
             # 않으려고 양쪽 다 `selected_menu` 하나를 본다.
-            action = selected_menu(view)
+            #
+            # 메뉴 단축키도 이 분기로 온다. 커서를 그 항목에 두고 `enter` 를 누른 것과
+            # 같은 일이어야 한다 — 따로 적어 두던 때는 `r`·`a`·`p`·`o` 만 키가 있었고
+            # 나머지 넷은 커서로만 닿았다.
+            entered = key in (curses.KEY_ENTER, 10, 13)
+            action = selected_menu(view) if entered else menu_action_for(key)
             if action == "credits":
                 view = open_credits(view)
                 loader.start(settings)
@@ -2675,14 +3094,13 @@ def _loop(
                     view = replace(view, message="Already probing")
             elif action == "adopt":
                 view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
-            else:
+            elif action is None:
                 view = activate(view)
-            curses.flushinp()
-        elif key in (ord("s"), ord("S")):
-            # 전환은 캐시를 파일째 비운다. `carry` 가 직전 숫자를 이어받지만 그것도
-            # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 배경에서 채운다.
-            view = do_switch(view)
-            kick(auto_probe_targets(view, attempted))
+                # 전환은 캐시를 파일째 비운다. `carry` 가 직전 숫자를 이어받지만 그것도
+                # 없는 슬롯(이 화면에서 아직 한 번도 못 읽은 것)은 배경에서 채운다.
+                kick(auto_probe_targets(view, attempted))
+            else:
+                view = open_menu(view, action)
             curses.flushinp()
         elif account_command_for(key) == "rename":
             view = _rename_here(stdscr, view, drawn)
@@ -2690,22 +3108,6 @@ def _loop(
         elif account_command_for(key) == "remove":
             view = _remove_here(stdscr, view, colored)
             curses.flushinp()
-        elif key in (ord("r"), ord("R")):
-            # 사용자가 명시적으로 시켰으므로 자동 조회의 억제를 푼다 — 일시적인
-            # 네트워크 장애로 억제된 슬롯이 영영 물음표로 남으면 안 된다.
-            attempted.clear()
-            if not prober.start(settings, [r.label for r in view.rows]):
-                view = replace(view, message="Already probing")
-        elif key in (ord("o"), ord("O")):
-            view = do_toggle_auto(view)
-            curses.flushinp()
-        elif key in (ord("a"), ord("A")):
-            view = do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn))
-            curses.flushinp()
-        elif key in (ord("p"), ord("P")):
-            view = replace(
-                view, mode="policy", policy_cursor=0, message="", saved_settings=view.settings
-            )
 
 
 WANTS_UPDATE = 77
