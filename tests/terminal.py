@@ -38,7 +38,7 @@ from codex_swap.tui import _width
 
 FIXTURES = Path(__file__).parent / "fixtures" / "probe"
 
-_CSI = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])")
+_CSI = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z@])")
 _OTHER_ESC = re.compile(r"\x1b[()][B0]|\x1b[=>]|\x1b\][^\x07]*\x07")
 
 _ZERO_WIDTH = frozenset("\x0e\x0f\x07\x00")
@@ -175,6 +175,19 @@ def render(
                     for k in range(col, min(col + max(first, 1), cols)):
                         grid[row][k] = " "
                         attr_grid[row][k] = frozenset()
+                elif cmd in "P@":
+                    # DCH(`P`)·ICH(`@`) — 커서 자리에서 n 칸을 빼거나 끼우고 줄 나머지를 당기거나
+                    # 민다. ncurses 는 줄이 짧아지면(`enter switch` → `enter open`) 남는 글자를
+                    # 지우는 대신 이것으로 당긴다. 모르는 채 두면 옛 글자가 화면에 남은 것처럼
+                    # 읽혀, 제품에 없는 잔상을 결함으로 보고한다.
+                    n = min(max(first, 1), cols - col)
+                    line, attrs_line = grid[row], attr_grid[row]
+                    if cmd == "P":
+                        line[col:] = [*line[col + n :], *[" "] * n]
+                        attrs_line[col:] = [*attrs_line[col + n :], *[frozenset()] * n]
+                    else:
+                        line[col:] = [*[" "] * n, *line[col : cols - n]]
+                        attrs_line[col:] = [*[frozenset()] * n, *attrs_line[col : cols - n]]
                 elif cmd == "m":
                     # **왼쪽부터 차례로** 적용한다. `0;1` 은 "초기화한 뒤 굵게" 라,
                     # `0` 이 있다고 통째로 비우면 같은 시퀀스의 `1` 까지 잃는다 —
@@ -321,7 +334,7 @@ class Session:
         path.write_text(json.dumps(doc))
         os.chmod(path, 0o600)
 
-    def env(self) -> dict[str, str]:
+    def env(self, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS) -> dict[str, str]:
         return {
             **os.environ,
             "TERM": self.term,
@@ -336,8 +349,12 @@ class Session:
             "PROBE_EVENTS": str(self.events),
             # 상속된 설정이 화면의 전제를 조용히 바꾸지 않게 한다.
             "CODEX_ROTATE_SKIP": "",
-            "COLUMNS": str(DEFAULT_COLS),
-            "LINES": str(DEFAULT_ROWS),
+            # **`run` 이 연 크기와 같아야 한다.** curses 는 pty 크기보다 이 두 변수를 먼저
+            # 믿는다. 한동안 여기가 늘 기본값(140x24)이라, `cols=40` 으로 연 테스트도 화면은
+            # 140 칸으로 그려졌고 40 칸 에뮬레이터가 그것을 뭉개 읽었다 — 휴대폰 폭 검사가
+            # 실제로는 아무것도 재지 않은 채 통과했다.
+            "COLUMNS": str(cols),
+            "LINES": str(rows),
         }
 
     def run(
@@ -364,7 +381,7 @@ class Session:
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - 자식
             os.environ.clear()
-            os.environ.update(self.env())
+            os.environ.update(self.env(cols, rows))
             os.execv(
                 sys.executable, [sys.executable, "-c", "from codex_swap.cli import main; main()"]
             )
