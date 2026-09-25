@@ -263,6 +263,42 @@ def test_a_missing_installer_names_itself(monkeypatch: pytest.MonkeyPatch, capsy
     assert "not on PATH" in err, err
 
 
+def test_a_folder_install_does_not_claim_to_know_its_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """폴더에서 지은 설치에는 **어느 커밋으로 지었는지** 기록이 없다. 폴더의 지금 HEAD 는
+    그것이 아니다 — 깐 뒤에 `git pull` 했으면 폴더만 앞서 있다."""
+    _direct_url(monkeypatch, {"url": f"file://{tmp_path}", "dir_info": {}})
+    monkeypatch.setattr(selfupdate, "head_of", lambda _path: NEW)
+    install = selfupdate.detect("/usr")
+    assert install is not None
+    assert install.commit is None
+
+
+def test_a_folder_install_is_rebuilt_after_the_folder_moved_on(
+    monkeypatch: pytest.MonkeyPatch, ran: list[list[str]], capsys, tmp_path
+) -> None:
+    """**설치된 판과 폴더의 HEAD 를 견주면 늘 같다.** 둘 다 폴더에서 읽기 때문이다.
+
+    그래서 폴더에서 깐 사람은 폴더를 아무리 당겨도 `update` 가 "already up to date" 로 끝나
+    옛 판에 갇혔다 — 실제로 0.2.0 이 깔린 채 폴더는 0.3.0 이었다. 모르는 것을 같다고 하지
+    않고, 두 판 번호를 보여 준 뒤 다시 짓는다.
+    """
+    import codex_swap
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "codex-swap"\nversion = "9.9.9"\n')
+    _direct_url(monkeypatch, {"url": f"file://{tmp_path}", "dir_info": {}})
+    monkeypatch.setattr(selfupdate, "head_of", lambda _path: NEW)
+    monkeypatch.setattr(selfupdate, "_manager", lambda *_, **__: "uv")
+
+    assert cli.main(["update", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "already up to date" not in out, out
+    assert ran == [["uv", "tool", "install", "--force", str(tmp_path)]]
+    assert f"installed {codex_swap.__version__}" in out, out
+    assert "folder has 9.9.9" in out, out
+
+
 def test_upgrade_is_the_same_command(
     monkeypatch: pytest.MonkeyPatch, ran: list[list[str]], capsys
 ) -> None:

@@ -162,9 +162,26 @@ def detect(prefix: str | None = None) -> Install | None:
             source=str(path),
             editable=editable,
             local_path=path,
-            commit=head_of(path),
+            # **폴더에서 지은 판은 어느 커밋으로 지었는지 기록이 없다.** 폴더의 지금 HEAD 를
+            # 그 자리에 넣으면, 깐 뒤 `git pull` 한 폴더와 견줄 때 늘 "같다" 가 나온다 —
+            # `latest_commit` 도 같은 폴더를 읽기 때문이다. 실제로 0.2.0 이 깔린 채 폴더는
+            # 0.3.0 인데 `update` 가 "already up to date" 로 끝났다. editable 은 폴더가 곧
+            # 설치라 HEAD 가 맞다.
+            commit=head_of(path) if editable else None,
         )
     return None
+
+
+def folder_version(path: Path) -> str | None:
+    """폴더의 `pyproject.toml` 이 적은 판 번호. 못 읽으면 None."""
+    import tomllib
+
+    try:
+        project = tomllib.loads((path / "pyproject.toml").read_text()).get("project", {})
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return None
+    version = project.get("version") if isinstance(project, dict) else None
+    return version if isinstance(version, str) else None
 
 
 def head_of(repo: Path) -> str | None:
