@@ -21,6 +21,7 @@ import contextlib
 import curses
 import hashlib
 import io
+import os
 import queue
 import threading
 import time
@@ -172,9 +173,10 @@ class View:
     """`Account settings` 화면의 커서. 계정 행 다음에 항목이 이어진다(메인과 같은 모양)."""
 
     pick: str | None = None
-    """`Rename account`·`Delete account` 를 고른 뒤 **어느 계정인지 고르는 중**이면 그 동작.
+    """`Log in again`·`Rename account`·`Delete account` 를 고른 뒤 **어느 계정인지 고르는 중**이면
+    그 동작.
 
-    계정에 커서를 두고 `r`·`d` 를 누르면 곧바로 되지만, 항목을 먼저 고른 사람에게는 대상을
+    계정에 커서를 두고 `l`·`r`·`d` 를 누르면 곧바로 되지만, 항목을 먼저 고른 사람에게는 대상을
     되물어야 한다 — 커서는 계정과 항목에 동시에 있을 수 없다."""
 
     back_to: str = "accounts"
@@ -279,6 +281,7 @@ MENU_SHORT: dict[str, str] = {"policy": "Strategy", "accounts": "Accounts"}
 
 MANAGE_ITEMS: tuple[tuple[str, str], ...] = (
     ("adopt", "Add current login"),
+    ("relogin", "Log in again"),
     ("rename", "Rename account"),
     ("remove", "Delete account"),
     ("doctor", "Test all logins"),
@@ -287,9 +290,19 @@ MANAGE_ITEMS: tuple[tuple[str, str], ...] = (
 
 `Delete account` 가 `d` 인 것은 예전 메인의 지우기 키와 같게 하려는 것이다. 되돌릴 수 없는
 일이라 손버릇이 이어지는 편이 낫다(그래도 y/N 을 한 번 묻는다).
+
+`Log in again`(`l`) 은 계정은 목록에 있는데 토큰이 썩었거나 이유 모르게 거절될 때 **그
+자리에서** 다시 살린다. 없던 때는 CLI 로 `add <label> --force` 를 쳐야 했다 — 화면만 쓰는
+사람에게는 지우고 새로 넣는 길뿐이었고, 지우는 순간 되돌릴 수 없다.
 """
 
-MANAGE_KEYS: dict[str, str] = {"adopt": "a", "rename": "r", "remove": "d", "doctor": "t"}
+MANAGE_KEYS: dict[str, str] = {
+    "adopt": "a",
+    "relogin": "l",
+    "rename": "r",
+    "remove": "d",
+    "doctor": "t",
+}
 
 
 _UPDATE_ASK = "  Leave the screen and update codex-swap? [y/N] "
@@ -361,6 +374,7 @@ EMPTY_KEYS = (("a", "account settings"), ("?", "help"), ("q", "quit"))
 MANAGE_FOOTER = (
     ("enter", "select"),
     ("a", "add"),
+    ("l", "log in"),
     ("r", "rename"),
     ("d", "delete"),
     ("t", "test"),
@@ -369,7 +383,8 @@ MANAGE_FOOTER = (
     ("↑↓", "move"),
 )
 PICK_FOOTER = (("enter", "pick"), ("b", "cancel"), ("↑↓", "move"))
-"""`Rename account`·`Delete account` 를 골랐을 때 — 어느 계정인지 되묻는 동안의 조작법."""
+"""`Log in again`·`Rename account`·`Delete account` 를 골랐을 때 — 어느 계정인지 되묻는 동안의
+조작법."""
 STALE_LEGENDS = (
     "~ marks a stale cached value (f to fetch)",
     "~ = stale (f to fetch)",
@@ -2003,9 +2018,9 @@ def manage_press(view: View, key: str) -> tuple[View, str | None, str | None]:
     어느 계정에 할지만 정해 돌려주고 실행은 `_loop` 이 한다 — 그래서 이 판단은 터미널 없이
     잰다.
 
-    - 계정 행에서 `r`·`d`: 그 계정에 곧바로.
-    - 항목 `Rename account`·`Delete account` 를 고르면: 어느 계정인지 되묻는다(`pick`) —
-      커서가 계정 목록으로 올라간다. 거기서 `enter` 로 고른다.
+    - 계정 행에서 `l`·`r`·`d`: 그 계정에 곧바로.
+    - 항목 `Log in again`·`Rename account`·`Delete account` 를 고르면: 어느 계정인지
+      되묻는다(`pick`) — 커서가 계정 목록으로 올라간다. 거기서 `enter` 로 고른다.
     - `a`·`t`: 계정과 상관없이 곧바로.
     """
     n = len(view.rows)
@@ -2017,12 +2032,16 @@ def manage_press(view: View, key: str) -> tuple[View, str | None, str | None]:
         return view, None, None
     if key == "enter":
         if label is not None:
-            return replace(view, message="r renames this account, d deletes it"), None, None
+            return (
+                replace(view, message="l logs in again, r renames, d deletes this account"),
+                None,
+                None,
+            )
         key = MANAGE_KEYS[MANAGE_ITEMS[at - n][0]]
     action = next((a for a, glyph in MANAGE_KEYS.items() if glyph == key), None)
     if action in ("adopt", "doctor"):
         return view, action, None
-    if action in ("rename", "remove"):
+    if action in ("relogin", "rename", "remove"):
         if label is not None:
             return view, action, label
         if not n:
@@ -2089,9 +2108,9 @@ def _render_manage(
         )
 
     if view.pick is not None:
-        verb = "Rename" if view.pick == "rename" else "Delete"
+        ask = {"relogin": "Log in again to", "rename": "Rename", "remove": "Delete"}[view.pick]
         foot = [
-            (_note(f"{verb} which account? Move to it and press enter", width), Style("warn")),
+            (_note(f"{ask} which account? Move to it and press enter", width), Style("warn")),
             *_keys_block(PICK_FOOTER, width),
         ]
     else:
@@ -2373,6 +2392,47 @@ def do_adopt(view: View, label: str | None) -> View:
     except Exception as exc:
         return replace(view, message=f"Adopt failed: {exc}")
     return build_view(view.settings, select=label, message=f"Adopted {label}", carry=_carry(view))
+
+
+def over_ssh(environ: Mapping[str, str] | None = None) -> bool:
+    """이 화면이 SSH 너머에서 열렸나. 그렇다면 로그인은 기기 코드로 해야 끝난다."""
+    env = os.environ if environ is None else environ
+    return any(env.get(k) for k in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+
+
+def relogin(
+    view: View,
+    label: str,
+    *,
+    ssh: bool,
+    runner: Callable[[list[str], dict[str, str]], int] | None = None,
+) -> View:
+    """목록에 있는 계정에 다시 로그인한다. 토큰이 썩었거나 이유 모르게 거절될 때다.
+
+    일은 `add --force` 가 한다 — 빈 임시 홈에 로그인하고 **성공했을 때만** 슬롯을 갈아
+    끼우므로, 실패해도 마지막 정상 토큰은 남는다. 활성 계정은 같은 계정으로만 갈린다.
+
+    `codex login` 이 터미널에 직접 쓰고 사용자의 입력을 받으므로, 부르는 쪽이 curses 를
+    내려놓은 뒤에 부른다(`_relogin_here`). 그래서 출력을 삼키지 않는다.
+    """
+    from codex_swap import cli
+
+    # 이 계정의 거절 표시는 이어받지 않는다. 방금 새로 로그인했는데 `login needed` 가 남으면
+    # 된 것인지 안 된 것인지 읽히지 않는다. 사용량은 곧 새로 읽힌다.
+    carry = {k: v for k, v in _carry(view).items() if k != label}
+    try:
+        cli.cmd_add(view.settings, label, force=True, device_auth=ssh, runner=runner)
+    except Exception as exc:
+        return build_view(
+            view.settings, select=label, message=f"Log in again failed: {exc}", carry=_carry(view)
+        )
+    email = identity.email_of(store.slot_auth(view.settings, label)) or "email unknown"
+    return build_view(
+        view.settings,
+        select=label,
+        message=f"Logged in again: {label} ({email})",
+        carry=carry,
+    )
 
 
 _CACHE_WRITE = threading.Lock()
@@ -2957,6 +3017,42 @@ def _remove_here(
     return do_remove(warned, label, answer)
 
 
+def _relogin_here(stdscr, view: View, label: str) -> View:  # pragma: no cover - 터미널 필요
+    """화면을 잠시 내려놓고 평범한 터미널에서 `codex login` 을 돌린 뒤 돌아온다.
+
+    로그인은 URL·기기 코드를 터미널에 찍고 사용자를 기다린다. curses 가 화면을 쥔 채로는
+    그 출력이 화면 모델을 깨뜨리고, 사용자는 무엇을 열어야 하는지 볼 수도 없다.
+
+    **결과를 읽을 때까지 기다린다.** 끝나자마자 화면을 다시 올리면 codex 가 남긴 실패 사유가
+    그 아래로 사라진다.
+    """
+    ssh = over_ssh()
+    done = replace(view, message="Log in again cancelled")
+    curses.def_prog_mode()
+    curses.endwin()
+    try:
+        print(f"\ncodex-swap · log in again: {label}\n")
+        if ssh:
+            print("You are on SSH, so codex shows a one-time code. Open the link on any device,")
+            print("sign in as this account and enter the code.\n")
+        done = relogin(view, label, ssh=ssh)
+        if ssh and not done.message.startswith("Logged in again"):
+            # 기기 코드 로그인이 계정 쪽에서 막혀 있을 수 있다. 그때는 콜백 로그인이 유일한
+            # 길이고, 이 기기에 브라우저가 있거나 포트를 넘겨 뒀다면 된다.
+            print(f"\n{done.message}")
+            again = input("Try the browser login instead? [y/N] ").strip().lower()
+            if again in ("y", "yes"):
+                done = relogin(view, label, ssh=False)
+        print(f"\n{done.message}")
+        input("Press enter to go back to codex-swap ")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    finally:
+        curses.reset_prog_mode()
+        stdscr.refresh()
+    return done
+
+
 def _adopt_label(view: View) -> str:
     """`a` 가 물을 문구. **어느 계정을 보관하는지**를 이름에 넣는다.
 
@@ -3194,8 +3290,8 @@ def _refresh_outcome(
     parts = []
     if rejected:
         # 조회가 곧 로그인 점검이다. 거절이면 "읽지 못했다" 가 아니라 "로그인이 필요하다" 다 —
-        # 다시 읽어도 안 되고, 고치는 법은 로그인 점검 화면이 말한다.
-        parts.append(f"Login needed: {', '.join(rejected)} (Account settings → Test all logins)")
+        # 다시 읽어도 안 되고, 고치는 곳을 바로 가리킨다.
+        parts.append(f"Login needed: {', '.join(rejected)} (Account settings → Log in again)")
     if unread:
         parts.append(f"Could not read usage for {', '.join(unread)} (f to retry)")
     return ("; ".join(parts) if parts else "Usage refreshed"), rejected
@@ -3442,6 +3538,12 @@ def _loop(
             view, action, label = manage_press(view, pressed)
             if action == "adopt":
                 view = as_manage(do_adopt(view, _prompt(stdscr, _adopt_label(view), drawn)), here)
+            elif action == "relogin" and label is not None:
+                view = as_manage(_relogin_here(stdscr, view, label), here)
+                if view.message.startswith("Logged in again"):
+                    # 이번 세션에 이미 시도했던 라벨이어도 새 토큰으로는 다시 읽는다.
+                    attempted.discard(label)
+                    kick([label])
             elif action == "rename" and label is not None:
                 asked = f"  Rename '{label}' to: "
                 view = as_manage(do_rename(view, label, _prompt(stdscr, asked, drawn)), here)

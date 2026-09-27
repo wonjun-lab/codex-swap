@@ -48,10 +48,10 @@ def _login_hint(label: str) -> str:
     "다시 로그인하세요" 만으로는 SSH 에서 또 같은 결과가 나온다 — 사용자가 겪은 그대로다.
     """
     return (
-        f"log in again for this slot: codex-swap add {label} --force. "
-        "If you are on a remote box over SSH, do it while sitting at that machine or "
-        "forward the OAuth callback port — a browser on your laptop cannot reach the "
-        "listener on the remote, and the login half-finishes without saying so"
+        f"log in again for this slot: codex-swap add {label} --force "
+        "(or Log in again in the TUI's Account settings). Over SSH add --device-auth — "
+        "the browser login's callback cannot reach the listener on the remote, and the "
+        "login half-finishes without saying so"
     )
 
 

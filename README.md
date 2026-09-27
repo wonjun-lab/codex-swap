@@ -47,10 +47,21 @@ pick an account.
 
 `Account settings` holds what you do to the accounts themselves: **A**dd current login
 (keeps the login you are already in, `codex-swap adopt`; signing a new account in through the
-browser is `codex-swap add`), **R**ename account, **D**elete account, and **T**est all logins
-(really tries each one and says how to fix what fails, `codex-swap doctor`). Put the cursor on
-an account and press `r` or `d`; or pick `Rename account` / `Delete account` and it asks which
-account.
+browser is `codex-swap add`), **L**og in again, **R**ename account, **D**elete account, and
+**T**est all logins (really tries each one and says how to fix what fails, `codex-swap doctor`).
+Put the cursor on an account and press `l`, `r` or `d`; or pick `Log in again` /
+`Rename account` / `Delete account` and it asks which account.
+
+`Log in again` is for an account that is still listed but whose login no longer works — the
+token went stale, or the server refuses it for no reason you can see. The screen steps aside,
+`codex login` runs in the plain terminal, and `enter` brings you back; the account's usage is
+read again with the new login right away. It is `codex-swap add <label> --force`: the login
+happens in an empty staging home and replaces the slot only if it succeeds, so a failed attempt
+keeps the old credentials. The account in use only takes the same account again. Over SSH
+(`SSH_CONNECTION` is set) it uses `codex login --device-auth`, which prints a one-time code you
+enter from a browser on any device; the usual browser login cannot finish there, because its
+callback goes to the machine the browser runs on. If the code login fails it offers the browser
+login instead.
 
 On a screen too short for the whole menu — after the stale legend, the usage axis and the
 blank lines have already made room — it folds into one or two lines with the same bold
@@ -356,7 +367,7 @@ use and slots never read are still read.
 
 Reading usage is also a login check: it only works if the saved login does. When the server
 refuses one, its row turns red and says `login needed`, and the message line points you to
-`Account settings → Test all logins`, which says how to fix it. A reading that fails for any
+`Account settings → Log in again`. A reading that fails for any
 other reason (no network, codex not starting) says `Could not read usage` instead and keeps
 the old value.
 
@@ -430,7 +441,7 @@ live in `~/.codex/accounts/config.json`, and **environment variables win.**
 | --- | --- |
 | `codex-swap` (no arguments) | TUI: accounts, usage bars, swap strategy and account settings |
 | `codex-swap adopt <label>` | Store the account you are logged in as under `<label>` |
-| `codex-swap add <label>` | Log in to a new slot (opens a browser) |
+| `codex-swap add <label>` | Log in to a new slot (opens a browser). `--force` logs in again to an existing one; `--device-auth` signs in with a one-time code (over SSH) |
 | `codex-swap list [--fresh]` | Stored accounts and cached usage. `--fresh` probes every slot |
 | `codex-swap status [--fresh]` | Active account and its usage. `--fresh` probes now |
 | `codex-swap policy [--ladder …]` | Show or change the switching policy |
@@ -451,8 +462,9 @@ before its `[y/N]` prompt. `--yes` skips the CLI question; called from a script 
 ask at all, because a prompt behind a pipe never returns.
 
 If a slot's token has gone stale, `codex-swap add --force <label>` logs in again and
-replaces it. Without `--force` an existing label is refused — the point is that you should
-not have to `remove` (irreversible) before attempting a login (which can fail).
+replaces it (`Log in again` in the TUI). Without `--force` an existing label is refused — the
+point is that you should not have to `remove` (irreversible) before attempting a login (which
+can fail). Over SSH add `--device-auth`.
 
 ### Machine-readable output
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2 — 2026-09-27
+
+- **Log in again** (`l`) in Account settings signs a listed account in again when its login
+  stopped working, without deleting it first. The screen steps aside for `codex login` and
+  comes back when you press `enter`; the account's usage is read again right away. A failed
+  login keeps the old credentials, and the account in use only takes the same account.
+- Over SSH it uses `codex login --device-auth` (a one-time code you enter from any browser),
+  and offers the browser login if that fails. `codex-swap add` takes `--device-auth` too.
+- `login needed` now points to `Account settings → Log in again`.
+
 ## 0.4.1 — 2026-09-26
 
 - Opening the TUI reads what is out of date in the background: the account in use every

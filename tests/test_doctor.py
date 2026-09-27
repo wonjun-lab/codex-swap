@@ -68,7 +68,8 @@ def test_the_fix_warns_about_the_ssh_trap(
     _probe(monkeypatch, ProbeResult.auth_failed())
     fix = doctor.check(env, "master", "master").fix
     assert "SSH" in fix, fix
-    assert "port" in fix or "sitting" in fix, fix
+    # 함정을 말하는 데서 그치지 않고 SSH 에서도 끝나는 길(기기 코드)을 준다.
+    assert "--device-auth" in fix, fix
 
 
 def test_a_missing_auth_file_is_not_confused_with_a_dead_token(env: config.Settings) -> None:
