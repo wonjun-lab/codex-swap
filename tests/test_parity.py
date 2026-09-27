@@ -541,4 +541,9 @@ def test_the_screen_has_nothing_the_command_line_cannot_reach(_isolated_home: Pa
         if action == "refresh":
             assert "list" in commands, "화면의 새로고침에 대응하는 명령이 없다"
             continue
+        if action == "relogin":
+            # 다시 로그인은 `add <label> --force` 다. 플래그까지 있어야 닿는다.
+            add = sub.choices["add"]
+            assert {"--force", "--device-auth"} <= set(add._option_string_actions), action
+            continue
         assert action in commands, f"화면에만 있는 기능: {title}"

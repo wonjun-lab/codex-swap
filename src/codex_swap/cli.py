@@ -191,9 +191,14 @@ def cmd_add(
     label: str,
     *,
     force: bool = False,
+    device_auth: bool = False,
     runner: Callable[[list[str], dict[str, str]], int] | None = None,
 ) -> int:
     """새 슬롯에 브라우저 로그인시킨다.
+
+    `device_auth` 는 콜백 대신 기기 코드로 로그인한다. SSH 로 들어온 기기에서는 브라우저가
+    로컬에 있어 콜백이 원격의 대기 서버에 닿지 않는다 — 로그인이 말없이 반쪽으로 끝난다.
+    코드는 어느 기기의 브라우저에서든 넣을 수 있다.
 
     `adopt` 와 달리 자격증명을 **복사하지 않고** codex 에게 슬롯 홈으로 로그인시킨다.
     그래서 이 명령만은 사용자 상호작용(브라우저)을 끼고 돈다.
@@ -261,7 +266,8 @@ def cmd_add(
         env["CODEX_HOME"] = str(stage)
 
         run = runner or _run_login
-        argv = credentials.managed_argv(codex_bin, ("login",))
+        login = ("login", "--device-auth") if device_auth else ("login",)
+        argv = credentials.managed_argv(codex_bin, login)
         if run(list(argv), env) != 0:
             raise CliError("login failed")
 
@@ -1821,6 +1827,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--force", action="store_true", help="log in again even if the label already exists"
     )
+    p.add_argument(
+        "--device-auth",
+        action="store_true",
+        help="sign in with a one-time code instead of a browser callback (use over SSH)",
+    )
 
     p = sub.add_parser("list", aliases=["ls"], help="stored accounts and cached usage")
     p.add_argument("--fresh", action="store_true", help="probe every slot before printing")
@@ -1961,7 +1972,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "adopt":
                 return cmd_adopt(settings, args.label)
             case "add":
-                return cmd_add(settings, args.label, force=args.force)
+                return cmd_add(settings, args.label, force=args.force, device_auth=args.device_auth)
             case "list" | "ls":
                 if args.json:
                     if args.fresh:

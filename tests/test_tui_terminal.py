@@ -408,13 +408,46 @@ def test_esc_leaves_at_once_when_nothing_was_edited(session: Session) -> None:
 def test_picking_rename_asks_which_account_then_renames_it(session: Session) -> None:
     """`Rename account` 를 항목으로 고르면 어느 계정인지 되묻는다 — 커서가 계정 목록으로 올라가
     있고, 고른 뒤 `enter` 면 그 계정의 이름을 묻는다."""
-    down = [b"\x1bOB"] * 3  # master·shared 를 지나 두 번째 항목(Rename account)
+    down = [b"\x1bOB"] * 4  # master·shared 를 지나 세 번째 항목(Rename account)
     keys = [b"a", *down, b"\n", b"\x1bOB", b"\n", b"personal\n", b"q"]
     screen = session.run(keys, settle=0.6, total=40.0)
     assert screen.exit_code == 0
     assert "Renamed shared -> personal" in screen.text, screen.text
     assert "codex-swap · account settings" in screen.text, "이름을 바꾸고 메인으로 튕겨 나갔다"
     assert (session.accounts / "personal/auth.json").is_file()
+
+
+def test_log_in_again_leaves_the_screen_for_the_login_and_comes_back(session: Session) -> None:
+    """로그인은 URL·코드를 터미널에 찍고 사람을 기다린다. 화면을 내려놓고 돌린 뒤, 결과를 읽고
+    `enter` 를 누르면 Account settings 로 돌아와 있어야 한다.
+
+    돌아오면 그 계정의 사용량을 새 토큰으로 곧바로 읽고, 그 결과 문구가 이 문구를 덮는다 — 새
+    로그인이 실제로 통하는지가 바로 거기서 드러난다. 여기서는 조회를 붙잡아 두고 본다."""
+    session.login_as("b@example.com")
+    session.delay(30)
+    keys = [b"a", b"\x1bOB", b"l", b"\n", b"q"]
+    screen = session.run(keys, settle=0.8, total=40.0)
+    assert screen.exit_code == 0
+    assert "Logged in again: shared (b@example.com)" in screen.text, screen.text
+    assert "codex-swap · account settings" in screen.text, "로그인하고 메인으로 튕겨 나갔다"
+    assert session.login_args.read_text().split()[-1] == "login"
+
+
+def test_log_in_again_over_ssh_asks_for_a_device_code(session: Session) -> None:
+    session.login_as("b@example.com")
+    session.extra_env["SSH_CONNECTION"] = "10.0.0.2 5000 10.0.0.1 22"
+    session.delay(30)
+    screen = session.run([b"a", b"\x1bOB", b"l", b"\n", b"q"], settle=0.8, total=40.0)
+    assert "Logged in again: shared" in screen.text, screen.text
+    assert session.login_args.read_text().split()[-2:] == ["login", "--device-auth"]
+
+
+def test_a_failed_device_code_login_offers_the_browser_login(session: Session) -> None:
+    """기기 코드 로그인이 계정 쪽에서 막혀 있을 수 있다. 그때 콜백 로그인으로 다시 해 볼 길."""
+    session.extra_env["SSH_CONNECTION"] = "10.0.0.2 5000 10.0.0.1 22"
+    screen = session.run([b"a", b"\x1bOB", b"l", b"n\n", b"\n", b"q"], settle=0.8, total=40.0)
+    assert "Log in again failed: login failed" in screen.text, screen.text
+    assert session.login_args.read_text().split()[-1] == "--device-auth", "다시 묻지 않고 시도했다"
 
 
 def test_rename_and_delete_are_not_main_screen_keys_any_more(session: Session) -> None:

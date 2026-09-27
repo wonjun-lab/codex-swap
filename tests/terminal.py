@@ -287,9 +287,29 @@ class Session:
         self.scenario = home / "scenario.json"
         self.events = home / "events.ndjson"
         self.codex_bin = home / "fakecodex"
+        self.login_auth = home / "login-auth.json"
+        self.login_args = home / "login-args"
+        self.extra_env: dict[str, str] = {}
+        # `login` 이 끼면 로그인 대역이다. 받은 인자를 적고, 심어 둔 자격증명(`login_as`)이 있으면
+        # 받은 홈에 놓는다 — 없으면 실패한다. 그 밖의 호출은 가짜 app-server 로 간다.
+        server = f"{sys.executable!r} {str(FIXTURES / 'fake_app_server.py')!r}".replace("'", '"')
+        py = f'"{sys.executable}"'
+        copy = (
+            "import os, shutil, sys; "
+            "shutil.copy(sys.argv[1], os.path.join(os.environ['CODEX_HOME'], 'auth.json'))"
+        )
         self.codex_bin.write_text(
-            f"#!/bin/sh\nexec {sys.executable!r} "
-            f'{str(FIXTURES / "fake_app_server.py")!r} "$@"\n'.replace("'", '"')
+            "#!/bin/sh\n"
+            'for a in "$@"; do\n'
+            '  if [ "$a" = login ]; then\n'
+            f'    echo "$@" > "{self.login_args}"\n'
+            f'    [ -f "{self.login_auth}" ] || exit 1\n'
+            # `cp` 가 아니라 파이썬으로 옮긴다. 로그인 자식의 PATH 에는 codex 의 디렉토리만
+            # 앞에 붙는데, 그 PATH 로 외부 명령을 찾는 것에 기대지 않는다.
+            f'    exec {py} -c {copy!r} "{self.login_auth}"\n'
+            "  fi\n"
+            "done\n"
+            f'exec {server} "$@"\n'
         )
         self.codex_bin.chmod(0o700)
         self.delay(0.0)
@@ -320,6 +340,15 @@ class Session:
         claims = base64.urlsafe_b64encode(json.dumps({"email": email}).encode())
         path.write_text(json.dumps({"tokens": {"id_token": f"h.{claims.decode().rstrip('=')}.s"}}))
         os.chmod(path, 0o600)
+
+    def login_as(self, email: str) -> None:
+        """다음 `codex login` 이 이 계정으로 끝나게 한다."""
+        import base64
+
+        claims = base64.urlsafe_b64encode(json.dumps({"email": email}).encode())
+        self.login_auth.write_text(
+            json.dumps({"tokens": {"id_token": f"h.{claims.decode().rstrip('=')}.s"}})
+        )
 
     def activate(self, email: str) -> None:
         import base64
@@ -368,12 +397,17 @@ class Session:
             "PROBE_EVENTS": str(self.events),
             # 상속된 설정이 화면의 전제를 조용히 바꾸지 않게 한다.
             "CODEX_ROTATE_SKIP": "",
+            # 러너가 SSH 너머에 있으면 로그인이 기기 코드 쪽으로 갈린다. 그 갈래는 명시해서 연다.
+            "SSH_CONNECTION": "",
+            "SSH_CLIENT": "",
+            "SSH_TTY": "",
             # **`run` 이 연 크기와 같아야 한다.** curses 는 pty 크기보다 이 두 변수를 먼저
             # 믿는다. 한동안 여기가 늘 기본값(140x24)이라, `cols=40` 으로 연 테스트도 화면은
             # 140 칸으로 그려졌고 40 칸 에뮬레이터가 그것을 뭉개 읽었다 — 휴대폰 폭 검사가
             # 실제로는 아무것도 재지 않은 채 통과했다.
             "COLUMNS": str(cols),
             "LINES": str(rows),
+            **self.extra_env,
         }
 
     def run(

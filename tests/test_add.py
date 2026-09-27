@@ -283,3 +283,25 @@ def test_add_refuses_a_symlink_slot_before_login(env, tmp_path: Path) -> None:
 
     assert calls == []
     assert list(outside.iterdir()) == []
+
+
+def test_device_auth_asks_codex_for_a_code_instead_of_a_local_callback(env) -> None:
+    """SSH 로 들어온 기기에서는 브라우저 콜백이 원격의 대기 서버에 닿지 않는다 — 로그인이
+    반쪽으로 끝난다. 기기 코드 로그인은 콜백이 없어서 어느 기기의 브라우저로든 끝낼 수 있다."""
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def write_staged_auth() -> None:
+        _write_auth(Path(calls[-1][1]["CODEX_HOME"]) / "auth.json", "b@example.com")
+
+    cli.cmd_add(
+        env, "second", device_auth=True, runner=capture_runner(calls, writes=write_staged_auth)
+    )
+
+    assert calls[0][0][-2:] == ["login", "--device-auth"]
+
+
+def test_the_add_command_takes_device_auth(env, capsys) -> None:
+    _write_auth(store.slot_auth(env, "taken"), "a@example.com")
+    # 플래그를 모르면 argparse 가 2 로 끝난다. 1 은 플래그를 받고 라벨에서 거절했다는 뜻이다.
+    assert cli.main(["add", "taken", "--device-auth"]) == 1
+    assert "label already exists" in capsys.readouterr().err

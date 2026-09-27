@@ -1935,8 +1935,8 @@ def test_the_main_screen_no_longer_renames_or_deletes() -> None:
     assert {"adopt", "doctor"}.isdisjoint(dict(tui.MENU)), "계정 관리 항목이 메인에 남았다"
 
 
-def test_r_and_d_on_an_account_row_act_on_that_account(env) -> None:
-    for key, action in (("r", "rename"), ("d", "remove")):
+def test_r_d_and_l_on_an_account_row_act_on_that_account(env) -> None:
+    for key, action in (("r", "rename"), ("d", "remove"), ("l", "relogin")):
         view, done, label = tui.manage_press(_manage(env, cursor=1), key)
         assert (done, label) == (action, "b"), (key, done, label)
         assert view.pick is None
@@ -1962,7 +1962,7 @@ def test_add_and_test_do_not_need_an_account(env) -> None:
 
 def test_enter_on_an_account_row_says_what_to_press(env) -> None:
     view, done, _ = tui.manage_press(_manage(env, cursor=0), "enter")
-    assert done is None and "r renames" in view.message
+    assert done is None and "r renames" in view.message and "l logs in again" in view.message
 
 
 def test_rename_with_no_accounts_says_so(env) -> None:
@@ -1981,6 +1981,17 @@ def test_account_settings_draws_the_accounts_the_items_and_the_way_back(env) -> 
         assert bold == [title[0]], (title, bold)
     assert any("b back" in t for t in texts)
     assert any(t.startswith(" >") and "a@x" in t for t in texts), texts
+
+
+def test_picking_log_in_again_from_the_list_asks_which_account(env) -> None:
+    n = 2
+    at = n + [a for a, _ in tui.MANAGE_ITEMS].index("relogin")
+    view, done, _ = tui.manage_press(_manage(env, cursor=at), "enter")
+    assert done is None and view.pick == "relogin" and view.manage_cursor == 0
+    screen = tui.render_lines(view, width=100)
+    assert any("Log in again to which account?" in t for t in screen), screen
+    view, done, label = tui.manage_press(view, "enter")
+    assert (done, label) == ("relogin", "a")
 
 
 def test_the_pick_prompt_names_the_action_and_the_way_out(env) -> None:
@@ -2029,7 +2040,7 @@ def test_a_rejected_login_is_told_apart_from_an_unreachable_one(env, monkeypatch
     _probe_by_slot(monkeypatch, {".codex": "auth", "shared": "unknown"})
     message, rejected = tui._refresh_outcome(env, ("master", "shared"))
     assert rejected == ("master",)
-    assert "Login needed: master" in message and "Test all logins" in message, message
+    assert "Login needed: master" in message and "Log in again" in message, message
     assert "Could not read usage for shared" in message, message
 
 
@@ -2068,3 +2079,79 @@ def test_a_rejected_login_shows_on_its_row_until_a_fresh_reading(env) -> None:
     _cache_usage(env, "shared", 41)
     fresh = tui.build_view(env, carry=tui._carry(again))
     assert not next(r for r in fresh.rows if r.label == "shared").login_failed
+
+
+# ── 다시 로그인 ──────────────────────────────────────────────────────────────
+
+
+def _login_as(email: str | None, calls: list | None = None, rc: int = 0):
+    """`codex login` 대역. 받은 홈에 그 이메일의 `auth.json` 을 쓴다(None 이면 안 쓴다)."""
+
+    def run(argv: list[str], env_: dict[str, str]) -> int:
+        if calls is not None:
+            calls.append(argv)
+        if email is not None:
+            _write_auth(Path(env_["CODEX_HOME"]) / "auth.json", email)
+        return rc
+
+    return run
+
+
+@pytest.fixture
+def codex_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = tmp_path / "codex"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("CODEX_ACCOUNT_BIN", str(fake))
+
+
+def test_logging_in_again_replaces_the_slot_and_clears_the_warning(env, codex_bin, capsys) -> None:
+    """토큰이 썩은 계정을 지우지 않고 그 자리에서 다시 살린다."""
+    view = tui.apply_probe_result(tui.build_view(env), "Login needed: shared", ("shared",))
+    assert next(r for r in view.rows if r.label == "shared").login_failed
+
+    after = tui.relogin(view, "shared", ssh=False, runner=_login_as("b@example.com"))
+
+    assert after.message == "Logged in again: shared (b@example.com)", after.message
+    assert not next(r for r in after.rows if r.label == "shared").login_failed
+    assert identity.email_of(store.slot_auth(env, "shared")) == "b@example.com"
+
+
+def test_logging_in_again_over_ssh_uses_a_device_code(env, codex_bin) -> None:
+    calls: list[list[str]] = []
+    tui.relogin(tui.build_view(env), "shared", ssh=True, runner=_login_as("b@example.com", calls))
+    assert calls[0][-2:] == ["login", "--device-auth"]
+    calls.clear()
+    tui.relogin(tui.build_view(env), "shared", ssh=False, runner=_login_as("b@example.com", calls))
+    assert calls[0][-1] == "login"
+
+
+def test_a_failed_login_keeps_the_old_credentials(env, codex_bin) -> None:
+    """실패한 재로그인이 마지막 정상 토큰까지 가져가면, 다시 로그인하려다 계정을 잃는다."""
+    before = store.slot_auth(env, "shared").read_bytes()
+    after = tui.relogin(tui.build_view(env), "shared", ssh=False, runner=_login_as(None, rc=1))
+    assert after.message == "Log in again failed: login failed", after.message
+    assert store.slot_auth(env, "shared").read_bytes() == before
+
+
+def test_the_active_account_only_takes_the_same_login(env, codex_bin) -> None:
+    """활성 계정에 다른 계정으로 로그인하면 지금 쓰는 자리가 통째로 딴 계정이 된다."""
+    after = tui.relogin(tui.build_view(env), "master", ssh=False, runner=_login_as("z@example.com"))
+    assert after.message.startswith("Log in again failed: 'master' is the active slot"), (
+        after.message
+    )
+    assert identity.email_of(store.active_auth(env)) == "a@example.com"
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, False),
+        ({"SSH_CONNECTION": "10.0.0.2 5000 10.0.0.1 22"}, True),
+        ({"SSH_TTY": "/dev/pts/3"}, True),
+        ({"SSH_CLIENT": "10.0.0.2 5000 22"}, True),
+        ({"SSH_CONNECTION": ""}, False),
+    ],
+)
+def test_ssh_is_told_from_the_environment(environ, expected) -> None:
+    assert tui.over_ssh(environ) is expected
