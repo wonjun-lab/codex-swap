@@ -20,8 +20,8 @@ class CodexSwap < Formula
 
   desc "Keep several Codex accounts and swap between them as usage climbs"
   homepage "https://github.com/wonjun-lab/codex-swap"
-  url "https://github.com/wonjun-lab/codex-swap/archive/refs/tags/v0.4.3.tar.gz"
-  sha256 "3f0eac5693a3736b405a1fd1350ba0cebf8ce1bd92b786cf15105cda6c6de0ff"
+  url "https://github.com/wonjun-lab/codex-swap/archive/refs/tags/v0.4.4.tar.gz"
+  sha256 "35ba9e68acd5c7f35185810e02bb0fb5c8fb159b9d6893891cd5d6bebec58084"
   license "MIT"
   head "https://github.com/wonjun-lab/codex-swap.git", branch: "main"
 
