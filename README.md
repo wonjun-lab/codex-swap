@@ -224,6 +224,22 @@ curl -LsSf https://raw.githubusercontent.com/wonjun-lab/codex-swap/main/install.
 If it cannot tell where it came from it prints the command and stops rather than guessing:
 running the default URL over an install that came from a fork would quietly replace it.
 
+**Updating codex itself.** With the wrapper first on `PATH`, tools that update codex by
+looking at where `codex` lives (T3 Code's update button, for one) see the wrapper and give
+up, and a plain `codex update` runs the account policy first for nothing. This goes straight
+to the real binary:
+
+```bash
+codex-swap update --codex          # runs that codex's own `codex update` if npm has a newer one
+codex-swap update --codex --check  # compare versions, install nothing
+```
+
+`codex update` knows how it was installed (npm, bun, pnpm, Homebrew cask, standalone);
+codex-swap only finds the binary, puts the `npm` next to it first on `PATH` — so an nvm
+install is updated in place, not beside another Node — and skips the run when codex is
+already current. That makes it safe to call from a daily timer with `--yes`. Sessions
+already running keep the old version until they restart.
+
 ## First run
 
 This is what `init` walks you through. Automatic switching needs **two or more** accounts;
@@ -550,7 +566,9 @@ This tool moves OAuth tokens around, so here is what it does and does not do.
 
 - **It makes no outbound network requests.** The package has no HTTP client. Usage is
   read by spawning `codex app-server` and exchanging JSON-RPC over its stdio; the actual
-  API calls are the Codex CLI's. There is no telemetry and no auto-update.
+  API calls are the Codex CLI's. There is no telemetry and no auto-update. The two update
+  commands reach out only when you run them: `update` asks git for the latest commit,
+  `update --codex` asks npm for the latest version and lets `codex update` do the install.
 - **Tokens are never logged.** `rotate.log` holds a timestamp, labels and a reason.
   A test asserts that no token leaks into error output.
 - **File permissions.** Slot directories are `0700`; `auth.json` and the cache are
