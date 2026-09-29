@@ -57,6 +57,9 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     # 현재 파생 규칙" 이 아니고, 그 규칙이 바뀌는 날 조용히 새면 증상은 또 엉뚱한 곳에서
     # 나온다. 값이 셋 다 명시돼 있으면 그 결합이 끊긴다.
     monkeypatch.setenv("CODEX_ACCOUNTS_DIR", str(home / ".codex/accounts"))
+    # 화면을 여는 `main([])` 은 먼저 codex 새 판을 본다. 실제 npm 에 닿지 않게 끈다 —
+    # 그 갈래를 재는 테스트는 `env` 를 직접 넘긴다.
+    monkeypatch.setenv("CODEX_SWAP_UPDATE_CODEX_ON_OPEN", "0")
     # macOS 개발기에는 실제 `/Applications/ChatGPT.app`가 있을 수 있다. HOME만 바꾸면
     # 전역 설치 경로가 여전히 보여 앱 설치/제거 테스트의 가짜 기계가 항상 "설치됨"으로
     # 굳는다. 기본 경로도 임시 HOME 아래로 옮기며, 앱이 필요한 fixture는 직접 만든다.

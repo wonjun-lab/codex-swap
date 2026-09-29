@@ -397,6 +397,8 @@ class Session:
             "PROBE_EVENTS": str(self.events),
             # 상속된 설정이 화면의 전제를 조용히 바꾸지 않게 한다.
             "CODEX_ROTATE_SKIP": "",
+            # 화면을 열기 전 codex 갱신 확인. 테스트가 레지스트리에 닿거나 npm 을 돌리면 안 된다.
+            "CODEX_SWAP_UPDATE_CODEX_ON_OPEN": "0",
             # 러너가 SSH 너머에 있으면 로그인이 기기 코드 쪽으로 갈린다. 그 갈래는 명시해서 연다.
             "SSH_CONNECTION": "",
             "SSH_CLIENT": "",

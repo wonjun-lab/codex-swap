@@ -1807,10 +1807,10 @@ def cmd_update_codex(
     """upstream codex 를 새 판으로. **갱신은 codex 자신이 한다** — 여기서는 찾고 견줄 뿐이다.
 
     wrapper 가 PATH 앞에 있으면 `codex update` 는 계정 정책을 거치고, T3 Code 같은 앱은
-    wrapper 를 보고 갱신을 포기한다. 그래서 upstream 을 직접 찾아 그 `update` 를 부른다.
+    wrapper 를 보고 갱신을 포기한다. 그래서 upstream 을 직접 찾아 올린다 — npm 설치본이면
+    `npm install -g @openai/codex@latest`, 그 밖에는 그 codex 의 `update`.
 
-    **이미 최신이면 아무것도 안 한다.** 매일 도는 타이머가 부르는 자리라, 견주지 않으면
-    날마다 같은 판을 다시 깐다.
+    **이미 최신이면 아무것도 안 한다.** 견주지 않으면 부를 때마다 같은 판을 다시 깐다.
     """
     run = subprocess.run if runner is None else runner
     try:
@@ -1856,7 +1856,7 @@ def cmd_update_codex(
     try:
         code = run(command, env=env).returncode
     except OSError as exc:
-        raise CliError(f"could not start codex: {exc}") from exc
+        raise CliError(f"could not start {command[0]}: {exc}") from exc
     if code != 0:
         raise CliError(f"codex update failed (exit {code})")
 
@@ -1866,6 +1866,61 @@ def cmd_update_codex(
     # 화면이 옛 번호를 말하면 갱신이 안 된 줄 안다.
     print("Sessions already running keep the old version until they restart.")
     return 0
+
+
+UPDATE_CODEX_ON_OPEN_ENV = "CODEX_SWAP_UPDATE_CODEX_ON_OPEN"
+
+
+def update_codex_on_open(
+    env: Mapping[str, str] | None = None, *, runner: Callable[..., Any] | None = None
+) -> None:
+    """TUI 를 열기 전에 upstream codex 의 새 판을 보고, 있으면 그 자리에서 올린다.
+
+    사용자가 매번 손으로 치던 두 줄 — `npm install -g @openai/codex@latest` 와
+    `codex --version` — 을 대신 친다. 그래서 **npm 설치본만** 다룬다. brew cask·standalone
+    에 `npm install -g` 를 돌리면 갈아 끼우는 대신 두 번째 codex 를 옆에 깐다.
+
+    **어느 쪽이든 모르면 아무것도 안 한다.** `update --codex` 는 사람이 올리겠다고 친
+    명령이라 레지스트리를 못 읽어도 올리지만, 여기는 화면을 열 때마다 지나는 자리다.
+    오프라인에서 열 때마다 재설치를 돌리면 화면이 그만큼 늦게 뜬다. 실패해도 화면은 연다 —
+    갱신이 안 된 것 때문에 계정 관리까지 막을 이유는 없다.
+    """
+    table = os.environ if env is None else env
+    if (table.get(UPDATE_CODEX_ON_OPEN_ENV) or "").strip().lower() in {"0", "off", "false", "no"}:
+        return
+    run = subprocess.run if runner is None else runner
+    try:
+        real = discovery.resolve_codex_bin()
+    except Exception:
+        return
+    if not codexupdate.is_npm_install(real):
+        return
+    child_env = discovery.env_with_bin_dir(real)
+    have = codexupdate.installed_version(real, env=child_env, runner=run)
+    # 화면을 여는 길목이라 레지스트리를 오래 기다리지 않는다. 평소 0.5 초 안팎이다.
+    latest = codexupdate.latest_version(env=child_env, runner=run, timeout=10)
+    if have is None or latest is None or not codexupdate.is_newer(latest, have):
+        return
+
+    command = codexupdate.update_command(real)
+    # 자식이 같은 터미널에 바로 쓴다. 먼저 비우지 않으면 파이프에서 이 줄들이 뒤로 밀린다.
+    print(f"codex {have} → {latest}")
+    print(f"running: {' '.join(command)}", flush=True)
+    try:
+        code = run(command, env=child_env).returncode
+    except OSError as exc:
+        print(f"codex-swap: could not start {command[0]}: {exc}", file=sys.stderr)
+        return
+    if code != 0:
+        print(f"codex-swap: codex update failed (exit {code})", file=sys.stderr)
+    else:
+        print("running: codex --version", flush=True)
+        with contextlib.suppress(OSError):
+            run([os.fspath(real), "--version"], env=child_env)
+        print("Sessions already running keep the old version until they restart.")
+    # 곧 화면이 터미널을 덮는다. 방금 무엇이 깔렸는지(또는 왜 실패했는지)를 읽을 틈을 준다.
+    with contextlib.suppress(EOFError, KeyboardInterrupt):
+        input("Press enter to open codex-swap: ")
 
 
 # ── 진입점 ───────────────────────────────────────────────────────────────────
@@ -2011,6 +2066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             except config.ConfigError as exc:
                 print(f"codex-swap: {exc}", file=sys.stderr)
                 return 1
+            update_codex_on_open()
             code = tui.run(settings)
             if code != tui.WANTS_UPDATE:
                 return code

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4 — 2026-09-29
+
+- Opening the TUI updates codex when npm has a newer version: it runs
+  `npm install -g @openai/codex@latest` and `codex --version` with the `npm` beside codex,
+  then waits for `enter` before the screen opens. Only a codex installed with npm is touched;
+  if either version cannot be read, or the install fails, the screen opens as usual.
+  `CODEX_SWAP_UPDATE_CODEX_ON_OPEN=0` turns it off. No other command checks.
+- `update --codex` also runs `npm install -g @openai/codex@latest` for an npm install
+  (it used to run `codex update`, which does the same thing out of sight).
+
 ## 0.4.3 — 2026-09-29
 
 - `codex-swap update --codex` updates the codex CLI itself. It finds the real binary past
