@@ -7,9 +7,10 @@
 - T3 Code 같은 앱은 `codex` 의 실제 경로로 설치 방식을 가리는데, 그 경로가 wrapper 라
   "직접 갱신하라" 로 접는다. 그래서 사용자가 매번 `npm i -g @openai/codex` 를 손으로 쳤다.
 
-여기서 하는 일은 **upstream 을 찾아 판을 견주고, 새 판이 있을 때만 그 `update` 를 부르는
-것**이다. 설치 방식을 우리가 다시 가리지 않는다 — codex 가 이미 하는 일을 두 벌로 두면
-새 설치 방식이 생길 때마다 한쪽이 틀린다.
+여기서 하는 일은 **upstream 을 찾아 판을 견주고, 새 판이 있을 때만 올리는 것**이다.
+가리는 설치 방식은 npm 하나뿐이다 — 그때만 `npm install -g @openai/codex@latest` 를 직접
+돌리고, 나머지는 codex 자신의 `update` 에 맡긴다. 방식 전부를 여기서 다시 가리면 새 방식이
+생길 때마다 codex 와 이쪽 중 한쪽이 틀린다.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ def latest_version(
     *,
     env: Mapping[str, str] | None = None,
     runner: Runner | None = None,
+    timeout: float = 60,
 ) -> str | None:
     """npm 의 `latest` 태그. 모르면 None.
 
@@ -96,7 +98,7 @@ def latest_version(
             ["npm", "view", PACKAGE, "version"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
             env=None if env is None else dict(env),
         )
     except (OSError, subprocess.SubprocessError):
@@ -104,6 +106,26 @@ def latest_version(
     return parse_version(out.stdout) if out.returncode == 0 else None
 
 
+def is_npm_install(codex_bin: Path) -> bool:
+    """npm 전역 설치본인가 — 실제 경로가 `lib/node_modules/@openai/codex/` 아래인가.
+
+    T3 Code 가 설치 방식을 가리는 규칙과 같다. brew cask·standalone 에 `npm install -g` 를
+    돌리면 갈아 끼우는 것이 아니라 **두 번째 codex** 를 옆에 깐다.
+    """
+    try:
+        real = codex_bin.resolve()
+    except OSError:
+        return False
+    return f"/lib/node_modules/{PACKAGE}/" in real.as_posix()
+
+
 def update_command(codex_bin: Path) -> list[str]:
-    """codex 자신의 갱신 명령. 설치 방식은 codex 가 가린다."""
+    """codex 를 새 판으로 올리는 명령.
+
+    npm 설치본이면 사용자가 손으로 치던 그 명령(`npm install -g @openai/codex@latest`)을 그대로
+    쓴다 — `codex update` 도 결국 같은 것을 돌리지만, 무엇이 돌았는지 보이는 쪽이 낫다.
+    그 밖의 설치 방식은 codex 자신의 `update` 에 맡긴다.
+    """
+    if is_npm_install(codex_bin):
+        return ["npm", "install", "-g", f"{PACKAGE}@latest"]
     return [os.fspath(codex_bin), "update"]

@@ -226,19 +226,32 @@ running the default URL over an install that came from a fork would quietly repl
 
 **Updating codex itself.** With the wrapper first on `PATH`, tools that update codex by
 looking at where `codex` lives (T3 Code's update button, for one) see the wrapper and give
-up, and a plain `codex update` runs the account policy first for nothing. This goes straight
-to the real binary:
+up, and a plain `codex update` runs the account policy first for nothing. So codex-swap
+does it for you: **opening the TUI** first asks npm for the latest codex, and if the
+installed one is older it runs
 
 ```bash
-codex-swap update --codex          # runs that codex's own `codex update` if npm has a newer one
+npm install -g @openai/codex@latest
+codex --version
+```
+
+then waits for `enter` so you can read what happened before the screen opens. It only
+does this for a codex installed with npm, and does nothing when it cannot read either
+version (offline, say) or the install fails — the screen opens either way.
+`CODEX_SWAP_UPDATE_CODEX_ON_OPEN=0` turns it off. Other commands never check; `exec`,
+which every codex call goes through, least of all.
+
+To do it by hand:
+
+```bash
+codex-swap update --codex          # update if npm has a newer one
 codex-swap update --codex --check  # compare versions, install nothing
 ```
 
-`codex update` knows how it was installed (npm, bun, pnpm, Homebrew cask, standalone);
-codex-swap only finds the binary, puts the `npm` next to it first on `PATH` — so an nvm
-install is updated in place, not beside another Node — and skips the run when codex is
-already current. That makes it safe to call from a daily timer with `--yes`. Sessions
-already running keep the old version until they restart.
+codex-swap finds the real binary and puts the `npm` next to it first on `PATH` — so an nvm
+install is updated in place, not beside another Node. A codex installed some other way
+(Homebrew cask, standalone) is handed to its own `codex update`, which knows how it was
+installed. Sessions already running keep the old version until they restart.
 
 ## First run
 
@@ -566,9 +579,10 @@ This tool moves OAuth tokens around, so here is what it does and does not do.
 
 - **It makes no outbound network requests.** The package has no HTTP client. Usage is
   read by spawning `codex app-server` and exchanging JSON-RPC over its stdio; the actual
-  API calls are the Codex CLI's. There is no telemetry and no auto-update. The two update
-  commands reach out only when you run them: `update` asks git for the latest commit,
-  `update --codex` asks npm for the latest version and lets `codex update` do the install.
+  API calls are the Codex CLI's. There is no telemetry, and codex-swap never updates
+  itself. It reaches out through other tools only here: `update` asks git for the latest
+  commit, and opening the TUI or `update --codex` asks npm for codex's latest version and
+  lets npm (or `codex update`) do the install.
 - **Tokens are never logged.** `rotate.log` holds a timestamp, labels and a reason.
   A test asserts that no token leaks into error output.
 - **File permissions.** Slot directories are `0700`; `auth.json` and the cache are
