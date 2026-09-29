@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3 — 2026-09-29
+
+- `codex-swap update --codex` updates the codex CLI itself. It finds the real binary past
+  the wrapper, compares its version with npm's latest, and runs that binary's own
+  `codex update` only when there is something newer — with the `npm` beside it first on
+  `PATH`, so an nvm install is updated in place. No account policy runs first. `--check`
+  compares without installing, `--yes` skips the question (for a daily timer).
+  Tools that decide how to update codex from where `codex` lives, such as T3 Code's update
+  button, see the wrapper and give up; this is the way around that.
+
 ## 0.4.2 — 2026-09-27
 
 - **Log in again** (`l`) in Account settings signs a listed account in again when its login

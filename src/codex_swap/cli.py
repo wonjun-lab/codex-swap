@@ -31,6 +31,7 @@ from codex_swap import __version__
 from codex_swap.core import (
     account_slots,
     cache,
+    codexupdate,
     config,
     credentials,
     discovery,
@@ -1800,6 +1801,73 @@ def cmd_update(*, check_only: bool = False, assume_yes: bool = False) -> int:
     return 0
 
 
+def cmd_update_codex(
+    *, check_only: bool = False, assume_yes: bool = False, runner: Callable[..., Any] | None = None
+) -> int:
+    """upstream codex 를 새 판으로. **갱신은 codex 자신이 한다** — 여기서는 찾고 견줄 뿐이다.
+
+    wrapper 가 PATH 앞에 있으면 `codex update` 는 계정 정책을 거치고, T3 Code 같은 앱은
+    wrapper 를 보고 갱신을 포기한다. 그래서 upstream 을 직접 찾아 그 `update` 를 부른다.
+
+    **이미 최신이면 아무것도 안 한다.** 매일 도는 타이머가 부르는 자리라, 견주지 않으면
+    날마다 같은 판을 다시 깐다.
+    """
+    run = subprocess.run if runner is None else runner
+    try:
+        real = discovery.resolve_codex_bin()
+    except Exception as exc:
+        raise CliError(
+            f"cannot find the codex binary: {exc}. "
+            "Install it (npm install -g @openai/codex), or set CODEX_ACCOUNT_BIN"
+        ) from exc
+    # npm 설치본의 `update` 는 PATH 의 npm 을 부른다. codex 가 놓인 자리의 npm 을 앞에 두지
+    # 않으면, 다른 node 버전의 npm 이 **다른 prefix** 에 새 판을 깔고 쓰는 쪽은 그대로다.
+    env = discovery.env_with_bin_dir(real)
+
+    have = codexupdate.installed_version(real, env=env, runner=run)
+    latest = codexupdate.latest_version(env=env, runner=run)
+    print(f"codex at {real}")
+    print(f"  have {have or '?'} · latest {latest or '?'}")
+    if have and latest:
+        if not codexupdate.is_newer(latest, have):
+            print("codex is already up to date.")
+            return 0
+    elif latest is None:
+        # 못 읽은 것을 "최신" 으로 접으면, 갱신이 있는데도 없다고 믿게 된다.
+        print("  could not reach the npm registry to compare — updating anyway")
+
+    command = codexupdate.update_command(real)
+    shown = " ".join(command)
+    if check_only:
+        print(f"would run: {shown}")
+        return 0
+
+    if not assume_yes and sys.stdin.isatty():
+        print(f"about to run: {shown}")
+        try:
+            answer: str | None = input("Type y to continue: ")
+        except EOFError:
+            answer = None
+        if not credits_core.said_yes(answer):
+            print("Left it alone.")
+            return 1
+
+    print(f"running: {shown}")
+    try:
+        code = run(command, env=env).returncode
+    except OSError as exc:
+        raise CliError(f"could not start codex: {exc}") from exc
+    if code != 0:
+        raise CliError(f"codex update failed (exit {code})")
+
+    now = codexupdate.installed_version(real, env=env, runner=run)
+    print(f"codex is now {now or '?'}.")
+    # 떠 있는 codex(열린 창, T3 Code 의 app-server)는 옛 판을 쥐고 있다. 새 판이 깔렸는데
+    # 화면이 옛 번호를 말하면 갱신이 안 된 줄 안다.
+    print("Sessions already running keep the old version until they restart.")
+    return 0
+
+
 # ── 진입점 ───────────────────────────────────────────────────────────────────
 
 
@@ -1902,6 +1970,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed straight to codex")
 
     p = sub.add_parser("update", aliases=["upgrade"], help="get the newest codex-swap")
+    p.add_argument(
+        "--codex",
+        action="store_true",
+        help="update the codex CLI itself instead (skips the wrapper and the account policy)",
+    )
     p.add_argument(
         "--check",
         action="store_true",
@@ -2018,6 +2091,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_home(settings)
             case "update" | "upgrade":
                 # 계정을 건드리지 않는 유일한 명령이라 `settings` 를 받지 않는다.
+                if args.codex:
+                    return cmd_update_codex(check_only=args.check, assume_yes=args.yes)
                 return cmd_update(check_only=args.check, assume_yes=args.yes)
             case _:
                 raise CliError(f"unknown command: {args.command}")
