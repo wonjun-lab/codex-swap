@@ -108,15 +108,17 @@ pip install --user git+https://github.com/wonjun-lab/codex-swap.git
 
 `codex-swap update` knows which of these you used and reuses it.
 
-Or with Homebrew, on macOS or Linux:
+**Installed with Homebrew?** That distribution has ended (the `wonjun-lab/tap` tap is going
+away), so `brew upgrade` will not bring newer versions. Move over once, in this order:
 
 ```bash
-brew install wonjun-lab/tap/codex-swap
+brew uninstall codex-swap
+curl -LsSf https://raw.githubusercontent.com/wonjun-lab/codex-swap/main/install.sh | sh
+brew untap wonjun-lab/tap    # only if nothing else uses this tap
 ```
 
-Homebrew then owns the updates: `brew upgrade codex-swap`. `codex-swap update` says so instead
-of reaching into brew's directory with pip. The formula lives in
-[`packaging/homebrew/`](packaging/homebrew/codex-swap.rb) and goes to the tap with each release.
+Your accounts and settings are not touched. `codex-swap update` on a Homebrew install prints
+these same commands and runs nothing.
 
 ### Then run init
 

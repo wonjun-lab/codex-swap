@@ -312,18 +312,42 @@ def test_upgrade_is_the_same_command(
 # ── 다른 방식으로 깔린 경우 ─────────────────────────────────────────────────
 
 
-def test_a_homebrew_install_is_left_to_homebrew(monkeypatch: pytest.MonkeyPatch) -> None:
-    """**pip 이 brew 의 Cellar 를 헤집으면 안 된다.**
+def test_a_homebrew_install_is_pointed_at_the_installer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**pip 이 brew 의 Cellar 를 헤집으면 안 된다 — 그리고 `brew upgrade` 도 길이 아니다.**
 
-    brew 는 자기 안의 가상환경을 스스로 관리한다. 그 안에서 `pip install --force-reinstall`
-    을 돌리면 brew 가 아는 상태와 실제가 갈리고, 그 뒤로는 brew 쪽 명령이 전부 어긋난다.
+    Homebrew 배포는 끝났다. `update` 는 brew 를 대신 돌리지 않고, 옮겨 가는 명령을 순서대로
+    보여 준다: brew 판을 먼저 치우고, 설치 한 줄을 돌리고, 쓰는 곳이 없으면 tap 을 뗀다.
     """
     _direct_url(monkeypatch, _git_install())
     install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/0.1.0/libexec")
     assert install is not None
     assert install.manager == "brew"
-    with pytest.raises(selfupdate.UpdateError, match="brew upgrade"):
+    with pytest.raises(selfupdate.UpdateError) as caught:
         selfupdate.upgrade_command(install)
+    text = str(caught.value)
+    assert "has ended" in text
+    assert "brew upgrade codex-swap" not in text.replace("`brew upgrade`", "")
+    assert "--fetch-HEAD" not in text
+    uninstall = text.index("brew uninstall codex-swap")
+    one_liner = text.index(selfupdate.INSTALL_ONE_LINER)
+    untap = text.index("brew untap wonjun-lab/tap")
+    assert uninstall < one_liner < untap
+
+
+def test_update_on_a_homebrew_install_prints_the_migration_and_runs_nothing(
+    monkeypatch: pytest.MonkeyPatch, ran: list[list[str]], capsys
+) -> None:
+    """안내만 한다. brew 도 설치 한 줄도 우리가 실행하지 않는다 — `--yes` 를 줘도."""
+    monkeypatch.setattr(
+        selfupdate,
+        "detect",
+        lambda prefix=None: selfupdate.Install(manager="brew", source="homebrew"),
+    )
+    assert cli.main(["update", "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "brew uninstall codex-swap" in err
+    assert selfupdate.INSTALL_ONE_LINER in err
+    assert ran == []
 
 
 @pytest.mark.parametrize(
@@ -341,38 +365,6 @@ def test_homebrew_is_recognised_on_every_platform(
     _direct_url(monkeypatch, _git_install())
     install = selfupdate.detect(prefix)
     assert install is not None and install.manager == "brew"
-
-
-def test_a_brew_head_install_is_told_about_fetch_head() -> None:
-    install = selfupdate.Install(manager="brew", source="git+https://example/repo.git")
-    with pytest.raises(selfupdate.UpdateError, match="--fetch-HEAD"):
-        selfupdate.upgrade_command(install)
-
-
-def test_a_stable_homebrew_install_is_told_plain_brew_upgrade(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """**첫 릴리스부터 brew 는 안정판으로 깔린다.** 그때도 `--fetch-HEAD` 를 안내하면 틀린 말이다.
-
-    brew 의 설치 기록(`direct_url.json`)은 빌드하던 임시 디렉토리를 가리켜 둘을 가르지
-    못한다. 가르는 것은 keg 이름이다 — 안정판은 버전 번호, HEAD 는 `HEAD-<커밋>`.
-    """
-    _direct_url(monkeypatch, _git_install())
-    install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/0.2.0/libexec")
-    assert install is not None
-    with pytest.raises(selfupdate.UpdateError) as caught:
-        selfupdate.upgrade_command(install)
-    assert "Run: brew upgrade codex-swap" in str(caught.value)
-    assert "--fetch-HEAD" not in str(caught.value)
-
-
-def test_a_head_homebrew_install_is_told_to_fetch_head(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HEAD 로 깐 formula 는 `brew upgrade` 가 **건너뛴다** — 옵션을 안 주면 옛 판에 갇힌다."""
-    _direct_url(monkeypatch, _git_install())
-    install = selfupdate.detect("/opt/homebrew/Cellar/codex-swap/HEAD-1a2b3c4/libexec")
-    assert install is not None
-    with pytest.raises(selfupdate.UpdateError, match="brew upgrade --fetch-HEAD codex-swap"):
-        selfupdate.upgrade_command(install)
 
 
 def test_homebrew_is_recognised_without_an_install_record(monkeypatch: pytest.MonkeyPatch) -> None:

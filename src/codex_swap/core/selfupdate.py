@@ -32,6 +32,11 @@ FALLBACK_SOURCE = "git+https://github.com/wonjun-lab/codex-swap.git"
 포크나 사내 미러에서 깔아 쓰던 사람의 설치를 조용히 원본으로 바꿔 놓는다.
 """
 
+INSTALL_ONE_LINER = (
+    "curl -LsSf https://raw.githubusercontent.com/wonjun-lab/codex-swap/main/install.sh | sh"
+)
+"""README 의 설치 한 줄과 같다. Homebrew 에서 옮겨 오는 사람에게 그대로 보여 준다."""
+
 
 class UpdateError(Exception):
     """갱신을 시작할 수 없다. **아직 아무것도 바뀌지 않았다.**"""
@@ -55,13 +60,6 @@ class Install:
 
     local_path: Path | None = None
     """로컬 경로에서 깔렸다면 그 경로. 거기가 깃이면 무엇이 바뀌는지까지 보여 줄 수 있다."""
-
-    brew_stable: bool = False
-    """brew 가 **버전 번호가 붙은 keg**(`Cellar/codex-swap/0.2.0`)에 깐 것이 확실할 때만 참.
-
-    HEAD 로 깐 것(`HEAD-1a2b3c4`)은 `brew upgrade` 가 건너뛰므로 `--fetch-HEAD` 를 안내해야
-    한다. 안정판에 그 옵션을 붙여도 해는 없어서, 모르면 HEAD 쪽 안내로 기운다.
-    """
 
     @property
     def is_git(self) -> bool:
@@ -100,18 +98,10 @@ def _manager(prefix: str | None = None) -> str:
     if "/Cellar/" in where or "/homebrew/" in where or "/linuxbrew/" in where:
         # **여기를 놓치면 pip 이 brew 의 설치를 헤집는다.** brew 는 자기 Cellar 안의
         # 가상환경을 스스로 관리하는데, 그 안에서 `pip install --force-reinstall` 을
-        # 돌리면 brew 가 아는 상태와 실제가 갈린다. 갱신은 brew 에게 맡긴다.
+        # 돌리면 brew 가 아는 상태와 실제가 갈린다. Homebrew 배포는 끝났다 — 우리가
+        # 갱신하지 않고 uv/pipx/pip 로 옮겨 가는 길만 안내한다(`upgrade_command`).
         return "brew"
     return "pip"
-
-
-def _brew_keg(prefix: str) -> str | None:
-    """brew 의 Cellar 안이면 keg 이름(`0.2.0` · `HEAD-1a2b3c4`). 아니면 None."""
-    parts = prefix.replace(os.sep, "/").split("/")
-    if "Cellar" not in parts:
-        return None
-    at = parts.index("Cellar") + 2
-    return parts[at] if len(parts) > at and parts[at] else None
 
 
 def detect(prefix: str | None = None) -> Install | None:
@@ -125,14 +115,9 @@ def detect(prefix: str | None = None) -> Install | None:
     if manager == "brew":
         # **brew 의 설치 기록은 쓸 데가 없다.** 빌드하던 임시 디렉토리를 가리키고 그 자리는
         # 설치가 끝나면 사라진다. 기록이 아예 없을 때 아래로 내려가면 None 이 되고, 그러면
-        # `update` 가 uv 재설치 명령을 안내한다 — brew 사용자에게 틀린 길이다. 안내할 명령을
-        # 가르는 것은 keg 이름뿐이다: 안정판은 `Cellar/codex-swap/0.2.0`, HEAD 는 `HEAD-…`.
-        keg = _brew_keg(where)
-        return Install(
-            manager="brew",
-            source="homebrew",
-            brew_stable=keg is not None and not keg.startswith("HEAD"),
-        )
+        # `update` 가 uv 재설치 명령을 안내한다 — brew 사용자에게는 그 위에 겹쳐 까는 길이다.
+        # 경로만으로 알아내 이전 안내(`upgrade_command`)를 띄운다.
+        return Install(manager="brew", source="homebrew")
 
     info = _dist_direct_url()
     if info is None:
@@ -237,18 +222,18 @@ def upgrade_command(install: Install) -> list[str]:
         )
     if install.manager == "brew":
         # 우리가 실행하지 않는다. brew 가 관리하는 것을 pip 으로 덮으면 brew 가 아는
-        # 상태와 실제가 갈리고, 그 뒤로는 brew 쪽 명령이 전부 어긋난다.
-        # HEAD 로 깐 formula 는 `brew upgrade` 가 **건너뛴다** — `--fetch-HEAD` 를 줘야 새
-        # 커밋을 받는다. 앞쪽만 안내하면 사용자는 명령이 성공했는데도 옛 판에 갇힌다.
-        # 안정판에는 그 옵션이 필요 없고 설명이 틀린 말이 된다. 확실히 안정판일 때만 뺀다.
-        if install.brew_stable:
-            raise UpdateError(
-                "this was installed with Homebrew, which manages its own updates. "
-                "Run: brew upgrade codex-swap"
-            )
+        # 상태와 실제가 갈리고, Homebrew 배포 자체가 끝났으니 `brew upgrade` 도 길이 아니다.
+        # **순서가 중요하다**: brew 판을 먼저 치워야 새로 깐 `codex-swap` 이 PATH 에서
+        # 옛 실행 파일에 가려지지 않는다.
         raise UpdateError(
-            "this was installed with Homebrew, which manages its own updates. "
-            "Run: brew upgrade --fetch-HEAD codex-swap (plain brew upgrade skips HEAD installs)"
+            "Homebrew distribution of codex-swap has ended, so `brew upgrade` will not "
+            "bring newer versions. Move to the installer:\n"
+            "  brew uninstall codex-swap\n"
+            f"  {INSTALL_ONE_LINER}\n"
+            "Then, if nothing else uses the tap (check with `brew list --full-name | grep "
+            "wonjun-lab/tap`):\n"
+            "  brew untap wonjun-lab/tap\n"
+            "Your accounts and settings are not touched."
         )
     if install.manager == "uv":
         return ["uv", "tool", "install", "--force", install.source]

@@ -1,6 +1,6 @@
 """버전 번호는 세 곳에 적힌다 — `pyproject.toml`, `codex_swap.__version__`, `uv.lock`.
 
-`--version` 은 `__version__` 을 읽고, 패키지 메타데이터와 brew formula 는 `pyproject.toml` 을
+`--version` 은 `__version__` 을 읽고, 패키지 메타데이터는 `pyproject.toml` 을
 읽는다. 한쪽만 올리면 사용자가 보는 번호와 설치된 판이 갈린다. 첫 릴리스를 찍으며 셋을 묶는다.
 """
 
