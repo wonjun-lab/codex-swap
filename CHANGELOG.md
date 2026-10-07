@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Homebrew distribution has ended.** The `wonjun-lab/tap` tap is going away and the formula
+  (`packaging/homebrew/`) is gone from this repository. Install with the one-line installer
+  (uv, pipx or pip) instead.
+- `update` on a Homebrew install no longer says `brew upgrade codex-swap`. It prints the move,
+  in order — `brew uninstall codex-swap`, the installer one-liner, then `brew untap
+  wonjun-lab/tap` if nothing else uses the tap — and runs none of it.
+
 ## 0.4.4 — 2026-09-29
 
 - Opening the TUI updates codex when npm has a newer version: it runs
