@@ -108,8 +108,8 @@ pip install --user git+https://github.com/wonjun-lab/codex-swap.git
 
 `codex-swap update` knows which of these you used and reuses it.
 
-**Installed with Homebrew?** That distribution has ended (the `wonjun-lab/tap` tap is going
-away), so `brew upgrade` will not bring newer versions. Move over once, in this order:
+**Installed with Homebrew?** That distribution has ended (the `wonjun-lab/tap` tap has been
+removed), so `brew upgrade` will not bring newer versions. Move over once, in this order:
 
 ```bash
 brew uninstall codex-swap
